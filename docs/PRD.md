@@ -283,33 +283,41 @@ secrets:
 
 ### 3.3 앱 식별 및 권한: AAP Console 연동
 
-Config Server는 자체적으로 클라이언트 등록이나 scope 관리를 하지 않는다. **AAP Console** (`github.com/alxdr3k/aap-console`)이 org/project/service/app의 계층 구조와 권한의 단일 소스(Single Source of Truth)이다.
+Config Server는 자체적으로 클라이언트 등록이나 scope 관리를 하지 않는다. **AAP Console**이 org/project/service/app의 계층 구조와 권한의 단일 소스(Single Source of Truth)이다.
 
 #### App ID 기반 식별
 
 각 클라이언트 서비스(litellm 등)는 AAP Console에서 발급받은 **App ID**로 자신을 식별한다.
 
 ```
-AAP Console                              Config Server
-    │                                         │
-    ├─ App 등록 (org, project, service 매핑)   │
-    ├─ App ID + App Secret 발급               │
-    ├─ 암호화 공개키 등록                       │
-    ├─ 접근 scope 정의                         │
-    │         │                               │
-    │         ├─ App Registry API ────────────▶│  (주기적 sync 또는 캐시)
-    │         │                               │
-    │                                         │
-    │         litellm (app_id: "app-abc123")   │
-    │              │                           │
-    │              ├─ GET /api/v1/.../config ──▶│
-    │              │  Header: X-App-ID          │
-    │              │  Header: X-App-Secret      │
-    │              │                           ├─ App Registry에서 검증
-    │              │                           ├─ scope 확인 (org/project/service)
-    │              │                           ├─ 암호화 키 조회
-    │              │                           ├─ 응답
+Admin                    AAP Console              Config Server
+  │                         │                          │
+  ├─ App 등록 요청 ─────────▶│                          │
+  │  (org, project, service) │                          │
+  │                         ├─ App ID + App Secret 발급 │
+  │                         │                          │
+  ├─ ECDH P-256 키 쌍 생성   │                          │
+  ├─ 공개키를 App에 등록 ───▶│                          │
+  │  (Console UI/API)       │                          │
+  ├─ 비밀키 → K8s Secret ──▶ 클라이언트 Pod에 마운트     │
+  │                         │                          │
+  │                         │    (시작 시 전체 로드 +    │
+  │                         ├─── 주기적 poll) ─────────▶│
+  │                         │                          ├─ App Registry 캐시
+  │                         │                          │
+  │         litellm (app_id: "app-abc123")              │
+  │              │                                      │
+  │              ├─ GET /api/v1/.../config ─────────────▶│
+  │              │  Header: X-App-ID                     │
+  │              │  Header: X-App-Secret                 │
+  │              │                                      ├─ App Registry 캐시에서 검증
+  │              │                                      ├─ scope 확인 (org/project/service)
+  │              │                                      ├─ 공개키 조회 → 시크릿 암호화
+  │              │◀──────────────────────────────────────┤  응답
 ```
+
+- **Admin**이 키 쌍을 생성하고, 공개키를 Console에 등록, 비밀키를 K8s Secret으로 배포
+- **Config Server**는 Console의 App Registry를 읽어서 공개키를 캐시할 뿐, 키를 생성하거나 등록하지 않음
 
 #### AAP Console App Registry 데이터 모델
 
@@ -346,22 +354,33 @@ Config Server는 AAP Console로부터 다음 정보를 조회/캐시한다:
 - 앱 등록/폐기, scope 변경 같은 lifecycle은 Console의 책임
 - Config Server는 **설정 저장 + 서빙**에만 집중, 권한은 Console에 위임
 
-#### AAP Console 연동 방식
+#### AAP Console 연동 방식: 시작 시 전체 로드 + 주기적 Poll
 
-| 방식 | 동작 | 적합한 경우 |
-|------|------|------------|
-| **주기적 poll** | Config Server가 Console API를 주기적으로 호출하여 App Registry 캐시 갱신 | 단순, Console 장애 시 캐시로 동작 |
-| **Webhook** | Console에서 앱 등록/변경 시 Config Server에 알림 | 실시간 반영 필요 시 |
-| **시작 시 로드 + poll** | 시작 시 전체 로드 후 주기적 변경분 poll | 추천 (기본 방식) |
+```
+Config Server 시작
+    │
+    ├─ 1. Console API 호출: 전체 App Registry 로드
+    │     GET /api/v1/apps?all=true
+    │     → 메모리에 캐시
+    │
+    ├─ 2. Readiness: App Registry 로드 완료 시 readyz=true
+    │
+    └─ 3. 주기적 Poll (예: 30초 간격)
+          GET /api/v1/apps?updated_since={last_sync_time}
+          → 변경된 앱만 캐시 갱신
+          → Console 장애 시 기존 캐시로 계속 서빙 (graceful degradation)
+```
 
 ### 3.4 시크릿 관리: Volume Mount + Reference 패턴
+
+#### 전체 구조
 
 ```
 ┌─ Git Repo ─────────────────────┐
 │  secrets.yaml (메타데이터만)     │
 │  - id: "api-key-abc"           │
 │  - k8s_secret: name, key       │
-│  - description, rotation_policy│
+│  - description                 │
 └────────────┬───────────────────┘
              │ 참조
              ▼
@@ -376,20 +395,98 @@ Config Server는 AAP Console로부터 다음 정보를 조회/캐시한다:
 ┌─ Config Server Pod ────────────┐
 │  /secrets/ai-platform/         │
 │    llm-provider-keys/          │
-│      azure-gpt4                │
-│      anthropic                 │
+│      azure-gpt4    ← 파일      │
+│      anthropic     ← 파일      │
 └────────────────────────────────┘
 ```
 
-K8s Secret을 Volume Mount로 마운트하여 파일 읽기로 접근한다. K8s API를 매 요청마다 호출하는 방식 대비:
+#### Volume Mount 동작 원리
 
-- **네트워크 불필요**: 로컬 파일 읽기이므로 API Server 부하 없음
-- **kubelet 자동 갱신**: Secret 변경 시 kubelet이 마운트된 파일을 자동 갱신 (~1분 이내)
-- **고빈도 조회 안전**: K8s API throttling 걱정 없음
+K8s Secret을 Pod에 volume으로 마운트하면, Secret의 각 `data` key가 **개별 파일**로 마운트된다. Config Server Pod의 Deployment manifest에서 이를 설정한다:
 
-설정 서버 특성상 시크릿의 1분 이내 갱신 지연은 허용 가능하다.
+```yaml
+# Config Server Deployment (발췌)
+apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    spec:
+      containers:
+        - name: config-server
+          volumeMounts:
+            # 시크릿별로 마운트 경로 지정
+            - name: litellm-secrets
+              mountPath: /secrets/ai-platform/litellm-secrets
+              readOnly: true
+            - name: llm-provider-keys
+              mountPath: /secrets/ai-platform/llm-provider-keys
+              readOnly: true
+            - name: litellm-infra
+              mountPath: /secrets/ai-platform/litellm-infra
+              readOnly: true
 
-### 3.4 설정 상속 (Config Inheritance)
+      volumes:
+        - name: litellm-secrets
+          secret:
+            secretName: litellm-secrets       # K8s Secret 객체 이름
+        - name: llm-provider-keys
+          secret:
+            secretName: llm-provider-keys
+        - name: litellm-infra
+          secret:
+            secretName: litellm-infra
+```
+
+마운트 결과 Config Server Pod 내부의 파일 시스템:
+
+```
+/secrets/ai-platform/
+├── litellm-secrets/
+│   ├── master-key           ← "sk-actual-master-key" (평문)
+│   ├── database-url         ← "postgresql://..." (평문)
+│   └── ui-password          ← "actual-password" (평문)
+├── llm-provider-keys/
+│   ├── azure-gpt4           ← "sk-azure-..." (평문)
+│   └── anthropic            ← "sk-ant-..." (평문)
+└── litellm-infra/
+    ├── redis-host           ← "redis.svc..." (평문)
+    └── redis-password       ← "redis-pass" (평문)
+```
+
+> **참고**: K8s Secret의 `data`는 base64로 인코딩되어 저장되지만, volume mount 시 kubelet이 자동으로 base64 **디코딩**하여 파일에 기록한다. Config Server는 파일을 읽으면 바로 평문 시크릿 값을 얻는다.
+
+#### 시크릿 자동 갱신
+
+K8s Secret 값이 변경되면 (`kubectl edit secret` 등), **kubelet이 자동으로 마운트된 파일을 갱신**한다:
+
+1. kubelet은 주기적으로 마운트된 Secret의 변경을 확인 (기본 `--sync-frequency=60s`)
+2. 변경이 감지되면 마운트된 파일을 새 값으로 교체 (symlink swap 방식)
+3. **Pod 재시작 없이** 파일 내용이 바뀜
+4. Config Server는 `fsnotify`로 파일 변경을 감지하여 메모리 캐시를 갱신
+
+```
+kubectl edit secret llm-provider-keys
+  (azure-gpt4 값 변경)
+         │
+         ▼
+kubelet: 변경 감지 (~60초 이내)
+         │
+         ▼
+/secrets/.../azure-gpt4 파일 내용 갱신 (symlink swap, atomic)
+         │
+         ▼
+Config Server: fsnotify 이벤트 수신
+         │
+         ▼
+메모리 캐시 갱신 → 다음 API 요청부터 새 시크릿 반영
+```
+
+**주의사항**:
+- `subPath`로 마운트한 Secret은 **자동 갱신이 되지 않는다** — 반드시 디렉토리 단위로 마운트해야 함
+- 갱신 지연은 kubelet sync period에 의존 (기본 ~60초, 최대 `sync-frequency + watch cache propagation delay`)
+- 설정 서버 특성상 시크릿의 1분 이내 갱신 지연은 허용 가능하다
+
+### 3.5 설정 상속 (Config Inheritance)
 
 설정 중복을 줄이기 위한 계층적 상속 구조:
 
@@ -697,33 +794,7 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch?vers
 
 ### 5.4 암호화 키 관리
 
-암호화 키의 등록과 순환은 **AAP Console**에서 관리한다 (3.3절 참조).
-
-#### 등록 흐름
-
-```
-Admin                    AAP Console             Config Server
-  │                         │                         │
-  ├─ ECDH P-256 키 쌍 생성   │                         │
-  │                         │                         │
-  ├─ 공개키를 App에 등록 ───▶│                         │
-  │  (Console UI/API)       │                         │
-  │                         ├─ App Registry 갱신 ────▶│  (poll/webhook)
-  │                         │                         ├─ 공개키 캐시 갱신
-  │                         │                         │
-  ├─ 비밀키를 K8s Secret ──▶ 클라이언트 Pod에 마운트    │
-  │  으로 배포               │                         │
-```
-
-#### 키 순환 (Key Rotation)
-
-AAP Console의 App Registry에서 키 순환을 관리한다:
-
-- Admin이 Console에서 새 공개키를 등록 (status: `active`)
-- 이전 키를 `deprecated`로 변경 + 만료일 설정
-- Config Server가 App Registry 갱신 시 반영
-- 클라이언트는 요청 시 `X-Key-ID` 헤더로 사용할 키를 지정
-- `deprecated` 키는 유예 기간 동안 허용, 만료 후 거부
+암호화 공개키의 등록, 순환, 폐기는 모두 **AAP Console**에서 관리한다. 상세 흐름은 3.3절 참조.
 
 ### 5.5 시크릿 값 Resolve 전체 흐름
 
