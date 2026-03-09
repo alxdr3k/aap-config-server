@@ -102,9 +102,6 @@ config-repo/
 ├── _defaults/                    # 전역 기본 설정
 │   └── common.yaml
 │
-├── clients/                      # 클라이언트 등록 정보
-│   └── {client-id}.yaml          # 클라이언트별 공개키, 권한 등
-│
 ├── orgs/
 │   └── {org-name}/
 │       ├── _defaults/            # 조직 레벨 기본 설정
@@ -284,25 +281,80 @@ secrets:
       key: "api-key"
 ```
 
-#### 클라이언트 등록 (`clients/{client-id}.yaml`)
+### 3.3 앱 식별 및 권한: AAP Console 연동
 
-```yaml
-# clients/litellm-prod.yaml
-client_id: "litellm-prod"
-description: "Production LiteLLM instance"
-public_key: |
-  -----BEGIN PUBLIC KEY-----
-  MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
-  -----END PUBLIC KEY-----
-allowed_scopes:
-  - org: "myorg"
-    project: "ai-platform"
-    service: "litellm"
-    resolve_secrets: true
-created_at: "2026-03-01T00:00:00Z"
+Config Server는 자체적으로 클라이언트 등록이나 scope 관리를 하지 않는다. **AAP Console** (`github.com/alxdr3k/aap-console`)이 org/project/service/app의 계층 구조와 권한의 단일 소스(Single Source of Truth)이다.
+
+#### App ID 기반 식별
+
+각 클라이언트 서비스(litellm 등)는 AAP Console에서 발급받은 **App ID**로 자신을 식별한다.
+
+```
+AAP Console                              Config Server
+    │                                         │
+    ├─ App 등록 (org, project, service 매핑)   │
+    ├─ App ID + App Secret 발급               │
+    ├─ 암호화 공개키 등록                       │
+    ├─ 접근 scope 정의                         │
+    │         │                               │
+    │         ├─ App Registry API ────────────▶│  (주기적 sync 또는 캐시)
+    │         │                               │
+    │                                         │
+    │         litellm (app_id: "app-abc123")   │
+    │              │                           │
+    │              ├─ GET /api/v1/.../config ──▶│
+    │              │  Header: X-App-ID          │
+    │              │  Header: X-App-Secret      │
+    │              │                           ├─ App Registry에서 검증
+    │              │                           ├─ scope 확인 (org/project/service)
+    │              │                           ├─ 암호화 키 조회
+    │              │                           ├─ 응답
 ```
 
-### 3.3 시크릿 관리: Volume Mount + Reference 패턴
+#### AAP Console App Registry 데이터 모델
+
+Config Server는 AAP Console로부터 다음 정보를 조회/캐시한다:
+
+```json
+{
+  "app_id": "app-abc123",
+  "app_name": "litellm-prod",
+  "org": "myorg",
+  "project": "ai-platform",
+  "service": "litellm",
+  "permissions": {
+    "config_read": true,
+    "env_vars_read": true,
+    "resolve_secrets": true
+  },
+  "encryption": {
+    "public_keys": [
+      {
+        "key_id": "key-2026-03",
+        "status": "active",
+        "public_key": "BASE64_ENCODED_ECDH_P256_PUBLIC_KEY"
+      }
+    ]
+  },
+  "created_at": "2026-03-01T00:00:00Z"
+}
+```
+
+#### 왜 Config Server가 직접 관리하지 않는가
+
+- org/project/service 계층은 AAP Console이 이미 관리하고 있으므로 이중 관리가 됨
+- 앱 등록/폐기, scope 변경 같은 lifecycle은 Console의 책임
+- Config Server는 **설정 저장 + 서빙**에만 집중, 권한은 Console에 위임
+
+#### AAP Console 연동 방식
+
+| 방식 | 동작 | 적합한 경우 |
+|------|------|------------|
+| **주기적 poll** | Config Server가 Console API를 주기적으로 호출하여 App Registry 캐시 갱신 | 단순, Console 장애 시 캐시로 동작 |
+| **Webhook** | Console에서 앱 등록/변경 시 Config Server에 알림 | 실시간 반영 필요 시 |
+| **시작 시 로드 + poll** | 시작 시 전체 로드 후 주기적 변경분 poll | 추천 (기본 방식) |
+
+### 3.4 시크릿 관리: Volume Mount + Reference 패턴
 
 ```
 ┌─ Git Repo ─────────────────────┐
@@ -643,22 +695,21 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch?vers
 - 시크릿(`master_key`, `api_key`)만 `$encrypted` 객체로 암호화
 - 각 시크릿은 고유한 `nonce`를 가짐 → 동일한 시크릿 값이라도 다른 ciphertext 생성
 
-### 5.4 클라이언트 등록 및 키 관리
+### 5.4 암호화 키 관리
+
+암호화 키의 등록과 순환은 **AAP Console**에서 관리한다 (3.3절 참조).
 
 #### 등록 흐름
 
 ```
-Admin                    Git Repo                Config Server
+Admin                    AAP Console             Config Server
   │                         │                         │
-  ├─ 클라이언트 키 쌍 생성    │                         │
-  │  (ECDH P-256)           │                         │
+  ├─ ECDH P-256 키 쌍 생성   │                         │
   │                         │                         │
-  ├─ clients/litellm.yaml  │                         │
-  │  (공개키 포함) PR ──────▶│                         │
-  │                         │                         │
-  │   (리뷰 & 승인 & merge)  │                         │
-  │                         ├─ sync ─────────────────▶│
-  │                         │                         ├─ 공개키 메모리 적재
+  ├─ 공개키를 App에 등록 ───▶│                         │
+  │  (Console UI/API)       │                         │
+  │                         ├─ App Registry 갱신 ────▶│  (poll/webhook)
+  │                         │                         ├─ 공개키 캐시 갱신
   │                         │                         │
   ├─ 비밀키를 K8s Secret ──▶ 클라이언트 Pod에 마운트    │
   │  으로 배포               │                         │
@@ -666,41 +717,27 @@ Admin                    Git Repo                Config Server
 
 #### 키 순환 (Key Rotation)
 
-```yaml
-# clients/litellm-prod.yaml — 키 순환 시
-client_id: "litellm-prod"
-public_keys:
-  - key_id: "key-2026-03"
-    status: "active"
-    public_key: |
-      -----BEGIN PUBLIC KEY-----
-      (새 키)
-      -----END PUBLIC KEY-----
-  - key_id: "key-2026-01"
-    status: "deprecated"      # 유예 기간 후 삭제
-    expires_at: "2026-04-01T00:00:00Z"
-    public_key: |
-      -----BEGIN PUBLIC KEY-----
-      (이전 키)
-      -----END PUBLIC KEY-----
-```
+AAP Console의 App Registry에서 키 순환을 관리한다:
 
+- Admin이 Console에서 새 공개키를 등록 (status: `active`)
+- 이전 키를 `deprecated`로 변경 + 만료일 설정
+- Config Server가 App Registry 갱신 시 반영
 - 클라이언트는 요청 시 `X-Key-ID` 헤더로 사용할 키를 지정
-- `deprecated` 키는 유예 기간 동안 허용, 이후 거부
-- Config Server가 알 수 없는 `key_id`로 요청 시 `401` 응답
+- `deprecated` 키는 유예 기간 동안 허용, 만료 후 거부
 
 ### 5.5 시크릿 값 Resolve 전체 흐름
 
 ```
 1. 클라이언트가 설정 요청
    GET /api/v1/.../config?resolve_secrets=true
-   Header: Authorization: Bearer <token>
-   Header: X-Client-ID: litellm-prod
+   Header: X-App-ID: app-abc123
+   Header: X-App-Secret: <app-secret>
    Header: X-Key-ID: key-2026-03
 
 2. Config Server: 인증/인가 검증
-   - Bearer Token 유효성
-   - 클라이언트 ID의 allowed_scopes에 해당 서비스 + resolve_secrets 권한 확인
+   - App ID + App Secret 유효성 확인 (AAP Console App Registry 캐시 참조)
+   - App의 scope이 요청한 org/project/service와 일치하는지 확인
+   - resolve_secrets 권한 확인
 
 3. Config Server: 설정 조립
    - config.yaml에서 *_secret_ref 필드 탐지
@@ -709,7 +746,7 @@ public_keys:
 
 4. Config Server: 시크릿 암호화
    - 임시 ECDH 키 쌍 생성
-   - 클라이언트 공개키(key_id로 조회) + 임시 비밀키 → ECDH 공유 비밀
+   - App의 공개키(key_id로 App Registry에서 조회) + 임시 비밀키 → ECDH 공유 비밀
    - HKDF-SHA256으로 AES-256-GCM 키 유도
    - 각 시크릿 필드를 개별 nonce로 AES-256-GCM 암호화
 
@@ -738,9 +775,9 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config
 
 | 헤더 | 필수 | 설명 |
 |------|------|------|
-| `Authorization` | Y | `Bearer <token>` |
-| `X-Client-ID` | 시크릿 요청 시 | 클라이언트 식별자 |
-| `X-Key-ID` | 시크릿 요청 시 | 사용할 공개키 식별자 |
+| `X-App-ID` | Y | AAP Console에서 발급받은 App ID |
+| `X-App-Secret` | Y | AAP Console에서 발급받은 App Secret |
+| `X-Key-ID` | 시크릿 요청 시 | 사용할 암호화 공개키 식별자 |
 
 **Query Parameters**:
 
@@ -945,8 +982,9 @@ Admin                  K8s Cluster            Config Server
 | 계층 | 방식 |
 |------|------|
 | 서비스 간 통신 | mTLS (전송 채널 암호화) |
-| API 인증 | Bearer Token (static token 또는 K8s SA token) |
-| 시크릿 접근 제어 | 클라이언트 등록 정보의 `allowed_scopes`에서 `resolve_secrets` 권한 확인 |
+| API 인증 | App ID + App Secret (AAP Console에서 발급) |
+| 접근 제어 | AAP Console App Registry의 scope 및 permissions로 검증 |
+| 시크릿 접근 제어 | App의 `resolve_secrets` 권한 확인 |
 | 시크릿 페이로드 | ECDH + AES-256-GCM 필드 단위 암호화 (5절 참조) |
 
 ### 9.2 시크릿 보호 원칙
@@ -958,7 +996,7 @@ Admin                  K8s Cluster            Config Server
 | **로그 금지** | 시크릿 값은 절대 로그에 출력하지 않음, 로그에는 secret_ref ID만 기록 |
 | **캐시 금지** | 시크릿 포함 응답에 `Cache-Control: no-store` 헤더, ETag 미적용 |
 | **Forward Secrecy** | 매 응답마다 임시 키 사용 → 키 유출 시에도 과거 응답 복호화 불가 |
-| **감사 로깅** | 시크릿 접근 시 클라이언트 ID, 시간, 요청 scope을 감사 로그에 기록 |
+| **감사 로깅** | 시크릿 접근 시 App ID, 시간, 요청 scope을 감사 로그에 기록 |
 | **메모리 내 시크릿** | 사용 후 메모리에서 즉시 제로화 (Go `crypto/subtle.ConstantTimeCompare` 패턴) |
 
 ### 9.3 위협 시나리오별 방어
@@ -1009,7 +1047,7 @@ Admin                  K8s Cluster            Config Server
 
 - [ ] Volume Mount 기반 시크릿 로딩
 - [ ] `secrets.yaml` 파싱 및 시크릿 참조 resolve (config + env_vars 모두)
-- [ ] 클라이언트 등록 및 공개키 관리
+- [ ] AAP Console App Registry 연동 (poll/webhook 기반 캐시)
 - [ ] ECDH + AES-256-GCM 필드 단위 암호화 구현
 - [ ] `resolve_secrets` 쿼리 파라미터 구현
 - [ ] 키 순환 (deprecated key 유예 기간) 지원
@@ -1027,8 +1065,8 @@ Admin                  K8s Cluster            Config Server
 
 ### Phase 4: Auth & Security
 
-- [ ] Bearer Token 인증 미들웨어
-- [ ] 클라이언트별 `allowed_scopes` 인가 검증
+- [ ] App ID + App Secret 인증 미들웨어
+- [ ] App Registry 기반 scope 인가 검증
 - [ ] 시크릿 메모리 제로화
 - [ ] 보안 헤더 설정 (`Cache-Control: no-store` 등)
 - [ ] shared volume tmpfs (Memory medium) 적용
