@@ -164,7 +164,8 @@ config-repo/
 │                       └── sealed-secrets/          # SealedSecret YAML (암호화됨)
 │                           ├── litellm-secrets.yaml
 │                           ├── llm-provider-keys.yaml
-│                           └── litellm-infra.yaml
+│                           ├── litellm-infra.yaml
+│                           └── guardrail-keys.yaml
 ```
 
 ### 3.2 설정 파일 형식
@@ -919,7 +920,7 @@ metadata:
   name: config-agent-litellm
   namespace: ai-platform
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: config-agent
