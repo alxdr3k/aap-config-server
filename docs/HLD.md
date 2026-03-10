@@ -210,10 +210,22 @@ containers:
 
 **시크릿이 litellm에 도달하는 경로:**
 
-| 경로 | 흐름 | 용도 |
-|------|------|------|
-| **환경변수 (Config Agent)** | Config Server (resolve) → Config Agent → K8s Secret (env.sh) → Pod 재시작 → `os.environ/` 참조 resolve | config.yaml 내 시크릿, 환경변수 시크릿 |
-| **Volume Mount (SealedSecret)** | SealedSecret Controller → K8s Secret → kubelet sync → 파일 | litellm이 시크릿 파일을 직접 읽는 경우 (guardrail-keys 등) |
+```
+SealedSecret Controller → K8s Secret 복호화
+        │
+        ▼
+Config Server Pod (Volume Mount로 시크릿 파일 읽기)
+        │
+        ▼ resolve_secrets
+Config Agent (polling) → K8s Secret (env.sh) 업데이트 → Rolling restart
+        │
+        ▼
+litellm Pod (source /env/env.sh → os.environ/ 참조 resolve)
+```
+
+- Config Server가 Volume Mount로 K8s Secret 파일을 읽어 resolve한다
+- Config Agent가 resolve된 값을 K8s Secret (env.sh)에 반영한다
+- litellm Pod는 재시작 시 env.sh를 source하여 환경변수로 주입받는다
 
 ---
 
@@ -416,9 +428,9 @@ Console              Config Server           Git Repo        K8s Cluster        
   │                       │                     │                 │  Rolling restart   │
 ```
 
-**시크릿 변경 시 두 경로로 litellm에 반영:**
-1. **Volume Mount 경로**: SealedSecret Controller → K8s Secret → kubelet sync → litellm 파일 자동 갱신
-2. **Config Agent 경로**: Config Server 폴링 → resolve_secrets → ConfigMap/Secret 업데이트 → Rolling restart
+**시크릿 변경 시 litellm 반영 경로:**
+
+SealedSecret Controller → K8s Secret 복호화 → Config Server Pod Volume Mount 자동 갱신 (~60초) → Config Agent polling → resolve_secrets → K8s Secret (env.sh) 업데이트 → Rolling restart → litellm Pod 재시작 → env.sh source → os.environ/ resolve
 
 ---
 
