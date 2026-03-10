@@ -13,29 +13,63 @@ AAP Config Server는 서비스 설정을 중앙에서 관리하고, 시크릿을
 ### 1.1 컴포넌트 구성
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              AAP Platform                                    │
-│                                                                              │
-│  ┌─────────────┐     ┌──────────────────┐     ┌────────────────────┐        │
-│  │ AAP Console │────▶│  Config Server   │────▶│  Git Repository    │        │
-│  │ (UI/API)    │     │  (Go)            │◀────│  (config + sealed  │        │
-│  └─────────────┘     └────────┬─────────┘     │   secrets)         │        │
-│                               │               └────────────────────┘        │
-│                               │ K8s API                                      │
-│                               ▼                                              │
-│                      ┌──────────────────┐                                    │
-│                      │ SealedSecret     │                                    │
-│                      │ Controller       │                                    │
-│                      │ (복호화 → Secret) │                                    │
-│                      └────────┬─────────┘                                    │
-│                               │                                              │
-│                               ▼                                              │
-│  ┌──────────────────┐  ┌──────────────┐  ┌─────────────────────────────┐    │
-│  │  Config Agent    │  │  K8s Secret  │  │  litellm Deployment         │    │
-│  │  (polling)       │──│              │──│  (32 replicas)              │    │
-│  └──────────────────┘  └──────────────┘  └─────────────────────────────┘    │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌─────────────┐
+│ AAP Console │
+│ (시크릿 생성) │
+└──────┬──────┘
+       │ webhook
+       ▼
+┌──────────────────────────────┐
+│     Config Server (Go)       │
+│                              │
+│  ┌──────────────┐            │
+│  │ SealedSecret │            │
+│  │ Manager      │            │
+│  │ (kubeseal)   │            │
+│  └──┬───────┬───┘            │
+│     │       │                │
+│  ┌──┴───────────────┐       │
+│  │ In-Memory        │       │
+│  │ Config Store     │       │
+│  └──────┬───────────┘       │
+│  ┌──────▼───────────┐       │
+│  │ REST API Handler │       │
+│  └──────┬───────────┘       │
+└─────┼───┼───────────┼───────┘
+      │   │    ▲  ▲   │
+apply │   │git │  │   │ polling
+      │   │push│  │   │ (30초)
+      │   │    │  │   │
+      │┌──▼────┴──┐   │  volume
+      ││ Git Repo │   │  mount
+      ││ (config +│   │   │
+      ││ sealed-  │   │   │
+      ││ secrets/)│   │   │
+      │└──────────┘   │   │
+      │               │   │
+      │  ┌────────────┴─┐ │
+      │  │  K8s Secret  │ │
+      │  │  (etcd)      │ │
+      │  └──────────────┘ │
+      │        ▲          │
+      │        │ 복호화    │
+      ▼        │          │
+┌─────────────┐│          │
+│SealedSecret ││          │
+│Controller   │┘          │
+└─────────────┘           │
+                          │
+       ┌──────────────────▼──────────┐
+       │   Config Agent (replica=1)  │
+       │   polling → ConfigMap/Secret│
+       │   업데이트 → Rolling restart │
+       │   (maxUnavail/Surge: 25%)   │
+       └──────────────┬──────────────┘
+                      │
+       ┌──────────────▼──────────────┐
+       │   litellm Deployment        │
+       │   (32 replicas)             │
+       └─────────────────────────────┘
 ```
 
 ### 1.2 각 컴포넌트 역할
@@ -313,12 +347,12 @@ Developer/Console       Git Repo         Config Server       Config Agent       
    │                      │                   │                   │         │          │
    │                      │                   │                   │   K8s rolling      │
    │                      │                   │                   │   update 시작      │
-   │                      │                   │                   │   maxUnavailable:1 │
+   │                      │                   │                   │   maxUnavail: 25%  │
    │                      │                   │                   │   → 1개씩 순차     │
    │                      │                   │                   │     재시작          │
 ```
 
-**반영 방식**: Secret 업데이트 + Deployment annotation 패치 → K8s rolling update (31/32 항상 가용)
+**반영 방식**: Secret 업데이트 + Deployment annotation 패치 → K8s rolling update (maxUnavailable/maxSurge: 25%)
 
 ### 4.3 시크릿 변경 (Console에서 시작)
 
