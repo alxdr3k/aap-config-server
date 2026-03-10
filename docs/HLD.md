@@ -87,7 +87,53 @@ apply │   │git │  │   │ polling
 
 ## 2. 핵심 흐름
 
-### 2.1 시크릿 생성/변경 흐름
+### 2.1 설정 쓰기 흐름 (Console → Config Server → Git)
+
+Console이 설정을 변경하면, Config Server가 검증 후 Git에 commit & push한다. Console은 Git을 직접 조작하지 않는다.
+
+```
+Console                Config Server                Git Repo
+  │                         │                          │
+  │  PUT /config            │                          │
+  │  (설정 변경 요청)        │                          │
+  ├────────────────────────▶│                          │
+  │                         │                          │
+  │                         │  1. 스키마 검증            │
+  │                         │  2. secret_ref 유효성 확인 │
+  │                         │                          │
+  │                         │  3. Git commit & push    │
+  │                         ├─────────────────────────▶│
+  │                         │   config.yaml 업데이트    │
+  │                         │                          │
+  │                         │  4. In-memory 갱신        │
+  │                         │                          │
+  │  응답: {version: "..."}  │                          │
+  │◀────────────────────────┤                          │
+  │                         │                          │
+```
+
+**쓰기 API 목록:**
+
+| API | 용도 |
+|-----|------|
+| `PUT /api/v1/.../config` | 서비스 설정 (config.yaml) 업데이트 |
+| `PUT /api/v1/.../env_vars` | 환경변수 (env_vars.yaml) 업데이트 |
+| `POST /api/v1/admin/secrets/webhook` | 시크릿 생성/변경 (kubeseal 암호화 후 Git push + K8s apply) |
+| `POST /api/v1/.../config/validate` | 설정 검증 (dry-run, Git commit 없음) |
+
+**읽기/탐색 API 목록:**
+
+| API | 용도 | 호출 주체 |
+|-----|------|----------|
+| `GET /api/v1/.../config` | 설정 조회 | Config Agent, Console |
+| `GET /api/v1/.../env_vars` | 환경변수 조회 | Config Agent, Console |
+| `GET /api/v1/.../secrets` | 시크릿 메타데이터 조회 (평문 없음) | Console |
+| `GET /api/v1/.../config/watch` | 설정 변경 감지 (long polling) | Config Agent |
+| `GET /api/v1/.../env_vars/watch` | 환경변수 변경 감지 (long polling) | Config Agent |
+| `GET /api/v1/orgs` / `projects` / `services` | 서비스 탐색 | Console |
+| `GET /api/v1/.../history` | 변경 이력 조회 (Git 기반) | Console |
+
+### 2.2 시크릿 생성/변경 흐름
 
 Console이 시크릿을 생성하면, Config Server가 관리 주체로서 암호화, Git 저장, 클러스터 apply를 모두 수행한다.
 
@@ -121,7 +167,7 @@ Console                Config Server                Git Repo            K8s Clus
 
 **SealedSecret이란**: Bitnami SealedSecrets는 K8s Secret을 공개키로 암호화하여 Git에 안전하게 저장할 수 있게 하는 CRD이다. 클러스터 내 SealedSecret Controller만이 비밀키로 복호화할 수 있다.
 
-### 2.2 설정 변경 감지 + 적용 흐름
+### 2.3 설정 변경 감지 + 적용 흐름
 
 Config Agent는 Config Server를 주기적으로 폴링하여 변경을 감지하고, K8s 리소스를 업데이트한다.
 
@@ -154,7 +200,7 @@ Config Agent               Config Server                K8s Cluster
   │                              │                 재시작 + 새 설정
 ```
 
-### 2.3 litellm Pod 내부 구조
+### 2.4 litellm Pod 내부 구조
 
 litellm Pod는 ConfigMap(설정)과 Secret(환경변수)을 분리하여 마운트한다. config.yaml의 시크릿은 `os.environ/` 참조를 통해 환경변수에서 주입된다.
 
