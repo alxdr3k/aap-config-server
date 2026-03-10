@@ -193,21 +193,21 @@ Admin (Browser)        Console                    Config Server
   ├─ App 등록 요청 ────────▶│                             │
   │  (org/project/        │                             │
   │   service 지정)        │                             │
-  │                       ├─ App ID 발급 + DB 저장       │
-  │                       │                             │
-  │                       ├─ POST /admin/               │
-  │                       │  app-registry/webhook       │
-  │                       │  {action: "create",         │
-  │                       │   app_id, org,              │
-  │                       │   project, service,         │
-  │                       │   permissions}              │
-  │                       │────────────────────────────▶│
-  │                       │                             ├─ App Registry 캐시에 추가
-  │                       │◀────────────────────────────┤  {status: "ok"}
+  │                       ├─ 1. App ID 발급 + DB 저장    │
   │                       │                             │
   │◀── UI: Project 정보   ─┤                             │
   │    (App ID 포함) 표시   │                             │
+  │                       │                             │
+  │                       ├─ 2. POST /admin/            │
+  │                       │  app-registry/webhook       │
+  │                       │  (fire-and-forget,          │
+  │                       │   실패 시 async retry)       │
+  │                       │────────────────────────────▶│
+  │                       │                             ├─ App Registry 캐시에 추가
+  │                       │◀────────────────────────────┤  {status: "ok"}
 ```
+
+> webhook 전송은 DB 저장 이후 **비동기**로 수행된다. Config Server가 응답하지 않아도 Console의 App CRUD는 완료된다. 실패한 webhook은 async retry queue에서 재시도하며, 최종적으로는 Config Server의 주기적 전체 동기화가 정합성을 보장한다.
 
 #### App 수정 / 삭제
 
@@ -242,8 +242,12 @@ Config Server                Console API
 **시작 순서 독립성 (데드락 방지):**
 
 Console과 Config Server는 **부팅 시 상호 의존하지 않도록** 설계한다:
-- **Console**: 독립적으로 부팅 가능. Config Server가 없어도 App 관리(CRUD), 인증 등 핵심 기능은 동작한다. 단, 설정 조회/히스토리 등 Config Server 읽기 API에 의존하는 화면은 일시적으로 에러 상태가 된다 (runtime dependency).
+- **Console**: 독립적으로 부팅 가능. App CRUD 시 Config Server webhook은 **fire-and-forget + async retry** 방식으로 처리하여, Config Server가 다운이어도 Console DB에는 정상 저장된다. 단, Config Server가 복구될 때까지 아래 기능은 제한된다:
+  - App Registry webhook 전달 실패 → Config Server 캐시 불일치 (해당 App의 API 인증 불가)
+  - 설정 조회/히스토리 등 Config Server 읽기 API 의존 화면 → 에러 상태
 - **Config Server**: Console API에서 App Registry를 로드한다. Console이 아직 준비되지 않은 경우 **exponential backoff retry** (최대 5회)로 재시도하고, 실패 시에도 빈 캐시 상태로 기동하여 설정 서빙은 정상 수행한다 (App 인증만 불가). Console이 복구되면 webhook 수신 또는 주기적 전체 동기화로 캐시를 채운다.
+
+**캐시 정합성 보정**: Console의 webhook이 실패한 경우를 대비하여 Config Server는 **주기적 전체 동기화** (예: 5분 간격)로 Console API를 호출해 App Registry 캐시를 보정한다. 이로써 webhook 유실이나 일시적 장애로 인한 불일치가 자동 복구된다.
 
 따라서 **어떤 순서로 기동해도 부팅 데드락이 발생하지 않는다**. 양쪽 모두 상대방 없이 readyz=true까지 도달할 수 있으며, runtime 시 상대방이 복구되면 정상 기능이 점진적으로 회복된다.
 
