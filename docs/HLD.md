@@ -241,11 +241,11 @@ Config Server                Console API
 
 **시작 순서 독립성 (데드락 방지):**
 
-Console과 Config Server는 상호 의존하지 않도록 설계한다:
-- **Console**: 독립적으로 부팅 가능. Config Server가 없어도 App 관리, UI 등 핵심 기능은 동작한다.
+Console과 Config Server는 **부팅 시 상호 의존하지 않도록** 설계한다:
+- **Console**: 독립적으로 부팅 가능. Config Server가 없어도 App 관리(CRUD), 인증 등 핵심 기능은 동작한다. 단, 설정 조회/히스토리 등 Config Server 읽기 API에 의존하는 화면은 일시적으로 에러 상태가 된다 (runtime dependency).
 - **Config Server**: Console API에서 App Registry를 로드한다. Console이 아직 준비되지 않은 경우 **exponential backoff retry** (최대 5회)로 재시도하고, 실패 시에도 빈 캐시 상태로 기동하여 설정 서빙은 정상 수행한다 (App 인증만 불가). Console이 복구되면 webhook 수신 또는 주기적 전체 동기화로 캐시를 채운다.
 
-따라서 **어떤 순서로 기동해도 데드락이 발생하지 않는다**.
+따라서 **어떤 순서로 기동해도 부팅 데드락이 발생하지 않는다**. 양쪽 모두 상대방 없이 readyz=true까지 도달할 수 있으며, runtime 시 상대방이 복구되면 정상 기능이 점진적으로 회복된다.
 
 ### 2.4 설정 변경 감지 + 적용 흐름
 
