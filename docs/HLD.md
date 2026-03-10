@@ -134,63 +134,60 @@ Config Agent               Config Server                K8s Cluster
   │  응답: {changed: true}       │                            │
   │◀─────────────────────────────┤                            │
   │                              │                            │
-  │  GET /config                 │                            │
-  │  ?resolve_secrets=true       │                            │
+  │  GET /config                 │  (os.environ/ 참조 유지)    │
   ├─────────────────────────────▶│                            │
-  │                              │  Volume Mount 경로에서       │
-  │                              │  시크릿 값 읽기              │
-  │                              │  (/secrets/{ns}/{name}/{key})│
-  │                              │                            │
-  │  응답: 전체 설정 + 시크릿     │                            │
+  │  응답: 설정 (시크릿 미포함)   │                            │
   │◀─────────────────────────────┤                            │
   │                              │                            │
-  │  ConfigMap 업데이트            │                            │
-  ├──────────────────────────────────────────────────────────▶│
+  │  GET /env_vars               │                            │
+  │  ?resolve_secrets=true       │                            │
+  ├─────────────────────────────▶│  Volume Mount에서           │
+  │                              │  시크릿 값 읽기              │
+  │  응답: 환경변수 + 시크릿 평문  │                            │
+  │◀─────────────────────────────┤                            │
   │                              │                            │
-  │  (환경변수 변경 시)            │                            │
+  │  ConfigMap 업데이트 (config)   │                            │
+  │  Secret 업데이트 (env.sh)     │                            │
   │  Rolling restart 트리거       │                            │
   ├──────────────────────────────────────────────────────────▶│
-  │                              │                            │
   │                              │                 litellm Pods
   │                              │                 재시작 + 새 설정
 ```
 
 ### 2.3 litellm Pod 내부 구조
 
-litellm Pod는 두 가지 경로로 설정과 시크릿을 수신한다.
+litellm Pod는 ConfigMap(설정)과 Secret(환경변수)을 분리하여 마운트한다. config.yaml의 시크릿은 `os.environ/` 참조를 통해 환경변수에서 주입된다.
 
 ```
 litellm Pod
 ┌──────────────────────────────────────────────────────────────┐
 │                                                              │
-│  ConfigMap (Volume Mount)                                    │
+│  ConfigMap: litellm-config (Volume Mount /config/)           │
 │  └── config.yaml  ← Config Agent가 업데이트                   │
 │      (litellm proxy_config 형식)                              │
 │      - model_list, router_settings, ...                      │
-│      - 시크릿 값 포함 (Config Server에서 resolve됨)             │
+│      - api_key: os.environ/AZURE_API_KEY  ← 환경변수 참조    │
+│      - 시크릿 평문 없음                                       │
 │                                                              │
-│  Secret (Volume Mount)                                       │
-│  └── api-keys     ← SealedSecret Controller가 업데이트        │
-│                      kubelet이 자동 sync (~60초)              │
-│                                                              │
-│  환경변수                                                     │
-│  └── source /config/env.sh                                   │
+│  Secret: litellm-env-secret (Volume Mount /env/)             │
+│  └── env.sh       ← Config Agent가 업데이트                   │
 │      - 평문 환경변수 (LITELLM_LOG_LEVEL, ...)                  │
-│      - 시크릿 환경변수 (DATABASE_URL, MASTER_KEY, ...)          │
-│      ← Config Agent가 Secret 리소스로 관리                    │
+│      - 시크릿 환경변수 (AZURE_API_KEY, DATABASE_URL, ...)      │
+│      - Config Server가 resolve한 시크릿 평문 포함              │
 │                                                              │
 │  Entrypoint:                                                 │
-│  source /config/env.sh && litellm --config /config/config.yaml│
+│  source /env/env.sh && litellm --config /config/config.yaml  │
+│  → litellm이 os.environ/KEY 읽으면 env.sh의 값이 사용됨       │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**시크릿이 litellm에 도달하는 두 경로:**
+**시크릿이 litellm에 도달하는 경로:**
 
 | 경로 | 흐름 | 용도 |
 |------|------|------|
-| **Volume Mount** | SealedSecret Controller → K8s Secret → kubelet sync → 파일 | litellm이 시크릿 파일을 직접 읽는 경우 |
-| **Config Agent** | Config Server (resolve) → Config Agent → ConfigMap/Secret → Pod 재시작 | config.yaml 내 시크릿, 환경변수 시크릿 |
+| **환경변수 (Config Agent)** | Config Server (resolve) → Config Agent → K8s Secret (env.sh) → Pod 재시작 → `os.environ/` 참조 resolve | config.yaml 내 시크릿, 환경변수 시크릿 |
+| **Volume Mount (SealedSecret)** | SealedSecret Controller → K8s Secret → kubelet sync → 파일 | litellm이 시크릿 파일을 직접 읽는 경우 (guardrail-keys 등) |
 
 ---
 
