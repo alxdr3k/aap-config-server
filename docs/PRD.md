@@ -324,7 +324,7 @@ Admin                    AAP Console              Config Server
 
 #### AAP Console App Registry 데이터 모델
 
-Config Server는 AAP Console로부터 다음 정보를 조회/캐시한다:
+Config Server는 AAP Console로부터 다음 정보를 수신/캐시한다:
 
 ```json
 {
