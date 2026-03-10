@@ -89,13 +89,15 @@ apply │   │git │  │   │ polling
 
 ### 2.1 설정 쓰기 흐름 (Console → Config Server → Git)
 
-Console이 설정을 변경하면, Config Server가 검증 후 Git에 commit & push한다. Console은 Git을 직접 조작하지 않는다.
+Console이 설정을 변경하면, Config Server Admin API를 호출한다. Console은 Git/kubeseal/kubectl을 직접 조작하지 않는다 (**Console Creates, Server Manages** 원칙).
+
+> **`aap-console` PRD 참조**: Console → Config Server 인터페이스는 Console PRD Section 3 "시스템 아키텍처 개요"에 정의된 Admin API 계약을 따른다.
 
 ```
 Console                Config Server                Git Repo
   │                         │                          │
-  │  PUT /config            │                          │
-  │  (설정 변경 요청)        │                          │
+  │  POST /admin/configs    │                          │
+  │  (config + env_vars)    │                          │
   ├────────────────────────▶│                          │
   │                         │                          │
   │                         │  1. 스키마 검증            │
@@ -104,6 +106,7 @@ Console                Config Server                Git Repo
   │                         │  3. Git commit & push    │
   │                         ├─────────────────────────▶│
   │                         │   config.yaml 업데이트    │
+  │                         │   env_vars.yaml 업데이트  │
   │                         │                          │
   │                         │  4. In-memory 갱신        │
   │                         │                          │
@@ -112,26 +115,33 @@ Console                Config Server                Git Repo
   │                         │                          │
 ```
 
-**쓰기 API 목록:**
+**Console → Config Server Admin API:**
 
 | API | 용도 |
 |-----|------|
-| `PUT /api/v1/.../config` | 서비스 설정 (config.yaml) 업데이트 |
-| `PUT /api/v1/.../env_vars` | 환경변수 (env_vars.yaml) 업데이트 |
-| `POST /api/v1/admin/secrets/webhook` | 시크릿 생성/변경 (kubeseal 암호화 후 Git push + K8s apply) |
-| `POST /api/v1/.../config/validate` | 설정 검증 (dry-run, Git commit 없음) |
+| `POST /api/v1/admin/configs` | 설정 생성/변경 (config.yaml + env_vars.yaml → Git commit & push) |
+| `DELETE /api/v1/admin/configs` | 설정 삭제 (Project 삭제 시 설정 파일 제거) |
+| `POST /api/v1/admin/configs/validate` | 설정 검증 (dry-run, Git commit 없음) |
+| `POST /api/v1/admin/secrets/webhook` | 시크릿 생성/변경/삭제 (kubeseal 암호화 후 Git push + K8s apply) |
+| `POST /api/v1/admin/app-registry/webhook` | App 등록/수정/삭제 (인메모리 인증 캐시 갱신) |
 
-**읽기/탐색 API 목록:**
+**Config Agent → Config Server 읽기 API:**
 
-| API | 용도 | 호출 주체 |
-|-----|------|----------|
-| `GET /api/v1/.../config` | 설정 조회 | Config Agent, Console |
-| `GET /api/v1/.../env_vars` | 환경변수 조회 | Config Agent, Console |
-| `GET /api/v1/.../secrets` | 시크릿 메타데이터 조회 (평문 없음) | Console |
-| `GET /api/v1/.../config/watch` | 설정 변경 감지 (long polling) | Config Agent |
-| `GET /api/v1/.../env_vars/watch` | 환경변수 변경 감지 (long polling) | Config Agent |
-| `GET /api/v1/orgs` / `projects` / `services` | 서비스 탐색 | Console |
-| `GET /api/v1/.../history` | 변경 이력 조회 (Git 기반) | Console |
+| API | 용도 |
+|-----|------|
+| `GET /api/v1/.../config` | 설정 조회 (os.environ/ 참조 유지) |
+| `GET /api/v1/.../env_vars` | 환경변수 조회 (resolve_secrets=true 시 시크릿 평문 포함) |
+| `GET /api/v1/.../config/watch` | 설정 변경 감지 (long polling) |
+| `GET /api/v1/.../env_vars/watch` | 환경변수 변경 감지 (long polling) |
+
+**Console 읽기/탐색 API:**
+
+| API | 용도 |
+|-----|------|
+| `GET /api/v1/.../config` | 설정 조회 |
+| `GET /api/v1/.../secrets` | 시크릿 메타데이터 조회 (평문 없음) |
+| `GET /api/v1/orgs` / `projects` / `services` | 서비스 탐색 |
+| `GET /api/v1/.../history` | 변경 이력 조회 (Git 기반) |
 
 ### 2.2 시크릿 생성/변경 흐름
 
