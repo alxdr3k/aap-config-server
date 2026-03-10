@@ -177,7 +177,63 @@ Console                Config Server                Git Repo            K8s Clus
 
 **SealedSecret이란**: Bitnami SealedSecrets는 K8s Secret을 공개키로 암호화하여 Git에 안전하게 저장할 수 있게 하는 CRD이다. 클러스터 내 SealedSecret Controller만이 비밀키로 복호화할 수 있다.
 
-### 2.3 설정 변경 감지 + 적용 흐름
+### 2.3 App Registry (Project/App CRUD) 흐름
+
+Console이 org/project/service/app을 생성·수정·삭제하면, webhook으로 Config Server에 통지한다. Config Server는 인메모리 App Registry 캐시를 갱신하여 이후 API 인증/인가에 활용한다.
+
+#### App 등록
+
+```
+Admin              Console              Config Server
+  │                   │                       │
+  ├─ App 등록 요청 ───▶│                       │
+  │  (org/project/    │                       │
+  │   service 지정)    │                       │
+  │                   ├─ App ID 발급           │
+  │◀── App ID 반환 ───┤                       │
+  │                   │                       │
+  │                   ├─ POST /admin/         │
+  │                   │  app-registry/webhook │
+  │                   │  {action: "create",   │
+  │                   │   app_id, org,        │
+  │                   │   project, service,   │
+  │                   │   permissions}        │
+  │                   │──────────────────────▶│
+  │                   │                       ├─ App Registry 캐시에 추가
+  │                   │◀──────────────────────┤  {status: "ok"}
+```
+
+#### App 수정 / 삭제
+
+```
+Console              Config Server
+  │                       │
+  ├─ POST /admin/         │
+  │  app-registry/webhook │
+  │  {action: "update"    │   권한 변경, scope 수정 등
+  │   또는 "delete"}      │
+  │──────────────────────▶│
+  │                       ├─ 캐시 갱신 (update) 또는 캐시 제거 (delete)
+  │◀──────────────────────┤  {status: "ok"}
+```
+
+#### Config Server 시작 시 전체 로드
+
+```
+Config Server                Console API
+      │                          │
+      ├─ GET /api/v1/apps?all ──▶│
+      │                          ├─ 전체 App Registry 반환
+      │◀─── [{app_id, org,  ─────┤
+      │      project, service,   │
+      │      permissions}, ...]  │
+      ├─ 메모리에 캐시 로드       │
+      ├─ readyz=true             │
+```
+
+> Config Server는 App Registry를 **직접 관리하지 않는다**. Console이 Single Source of Truth이며, Config Server는 캐시만 유지한다. Console 장애 시 기존 캐시로 서빙을 계속한다 (graceful degradation).
+
+### 2.4 설정 변경 감지 + 적용 흐름
 
 Config Agent는 Config Server를 주기적으로 폴링하여 변경을 감지하고, K8s 리소스를 업데이트한다.
 
@@ -210,7 +266,7 @@ Config Agent               Config Server                K8s Cluster
   │                              │                 재시작 + 새 설정
 ```
 
-### 2.4 litellm Pod 내부 구조
+### 2.5 litellm Pod 내부 구조
 
 litellm Pod는 ConfigMap(설정)과 Secret(환경변수)을 분리하여 마운트한다. config.yaml의 시크릿은 `os.environ/` 참조를 통해 환경변수에서 주입된다.
 
