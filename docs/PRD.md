@@ -1293,89 +1293,9 @@ type ConfigStore struct {
 
 ---
 
-## 8. 설정 변경 워크플로우
+## 8. 보안
 
-### 8.1 일반 설정 변경
-
-```
-Developer        Git Repo         Config Server       Config Agent        litellm Pods
-   │                │                   │                   │                   │
-   ├─ PR merge ────▶│                   │                   │                   │
-   │                ├─ webhook ────────▶│                   │                   │
-   │                │                   ├─ git pull         │                   │
-   │                │                   ├─ 메모리 갱신       │                   │
-   │                │                   │                   │                   │
-   │                │                   │◀── long poll ─────┤                   │
-   │                │                   ├── 변경 응답 ──────▶│                   │
-   │                │                   │                   ├─ ConfigMap 업데이트 │
-   │                │                   │                   ├─ Deployment        │
-   │                │                   │                   │  annotation 패치   │
-   │                │                   │                   │         │          │
-   │                │                   │                   │   Rolling restart  │
-   │                │                   │                   │   maxUnavail: 25%  │
-   │                │                   │                   │   maxSurge: 25%    │
-   │                │                   │                   │         └─────────▶│
-   │                │                   │                   │      (새 Pod 시작 →│
-   │                │                   │                   │       새 설정 로드) │
-```
-
-### 8.2 환경변수 변경 (Rolling Restart)
-
-```
-Developer        Git Repo         Config Server       Config Agent        litellm Pods
-   │                │                   │                   │                   │
-   ├─ PR merge ────▶│                   │                   │                   │
-   │                ├─ webhook ────────▶│                   │                   │
-   │                │                   ├─ 메모리 갱신       │                   │
-   │                │                   │◀── long poll ─────┤                   │
-   │                │                   ├── 변경 응답 ──────▶│                   │
-   │                │                   │                   ├─ Secret 업데이트   │
-   │                │                   │                   ├─ Deployment        │
-   │                │                   │                   │  annotation 패치   │
-   │                │                   │                   │         │          │
-   │                │                   │                   │         ▼          │
-   │                │                   │                   │   K8s rolling      │
-   │                │                   │                   │   update 시작      │
-   │                │                   │                   │         │          │
-   │                │                   │                   │   maxUnavail: 25%  │
-   │                │                   │                   │   maxSurge: 25%    │
-   │                │                   │                   │     재시작          │
-```
-
-### 8.3 시크릿 변경 (Console → Config Server → SealedSecret)
-
-```
-Console              Config Server           Git Repo        K8s Cluster         Config Agent
-  │                       │                     │                 │                   │
-  │  POST /webhook        │                     │                 │                   │
-  │  (새 시크릿 값)        │                     │                 │                   │
-  ├──────────────────────▶│                     │                 │                   │
-  │                       │                     │                 │                   │
-  │                       ├─ kubeseal 암호화     │                 │                   │
-  │                       ├─ Git commit & push ▶│                 │                   │
-  │                       ├─ kubectl apply ─────────────────────▶│                   │
-  │                       │  SealedSecret       │                 │                   │
-  │                       │                     │  SealedSecret   │                   │
-  │                       │                     │  Controller     │                   │
-  │                       │                     │  복호화 →       │                   │
-  │                       │                     │  K8s Secret     │                   │
-  │                       │                     │                 │                   │
-  │                       │                     │  Volume Mount   │                   │
-  │                       │                     │  자동 sync      │                   │
-  │                       │                     │                 │                   │
-  │                       │                     │                 │◀── poll (30초) ───┤
-  │                       │                     │                 ├── {changed} ─────▶│
-  │                       │                     │                 │                   │
-  │                       │                     │                 │  ConfigMap/Secret  │
-  │                       │                     │                 │  업데이트 +        │
-  │                       │                     │                 │  Rolling restart   │
-```
-
----
-
-## 9. 보안
-
-### 9.1 인증/인가
+### 8.1 인증/인가
 
 | 계층 | 방식 |
 |------|------|
@@ -1384,7 +1304,7 @@ Console              Config Server           Git Repo        K8s Cluster        
 | 접근 제어 | AAP Console App Registry의 scope 및 permissions로 검증 |
 | 시크릿 접근 제어 | App의 `resolve_secrets` 권한 확인 |
 
-### 9.2 시크릿 보호 원칙
+### 8.2 시크릿 보호 원칙
 
 | 원칙 | 구현 |
 |------|------|
@@ -1395,7 +1315,7 @@ Console              Config Server           Git Repo        K8s Cluster        
 | **감사 로깅** | 시크릿 접근 시 App ID, 시간, 요청 scope을 감사 로그에 기록 |
 | **메모리 내 시크릿** | 사용 후 메모리에서 즉시 제로화 |
 
-### 9.3 위협 시나리오별 방어
+### 8.3 위협 시나리오별 방어
 
 | 위협 | 방어 |
 |------|------|
@@ -1405,7 +1325,7 @@ Console              Config Server           Git Repo        K8s Cluster        
 
 ---
 
-## 10. 기술 스택
+## 9. 기술 스택
 
 | 구성 요소 | 기술 | 선택 이유 |
 |-----------|------|-----------|
@@ -1423,149 +1343,13 @@ Console              Config Server           Git Repo        K8s Cluster        
 
 ---
 
-## 11. 개발 프로세스: TDD
+## 10. 개발 프로세스: TDD
 
-### 11.1 TDD 원칙
-
-모든 기능 구현은 **Red → Green → Refactor** 사이클을 따른다:
-
-1. **Red**: 실패하는 테스트를 먼저 작성한다
-2. **Green**: 테스트를 통과하는 최소한의 코드를 작성한다
-3. **Refactor**: 동작을 유지하면서 코드를 개선한다
-
-### 11.2 테스트 계층
-
-| 계층 | 범위 | 도구 | 실행 빈도 |
-|------|------|------|----------|
-| **Unit Test** | 개별 함수/메서드 | `go test` | 코드 변경 시마다 |
-| **Integration Test** | 컴포넌트 간 상호작용 (Git sync + Config Store + API) | `go test -tags=integration` | PR마다 |
-| **E2E Test** | 전체 시스템 (Config Server + Agent + K8s) | `kind` + `go test -tags=e2e` | 릴리스 전 |
-
-### 11.3 Phase별 TDD 전략
-
-#### Phase 1: Core (MVP)
-
-```
-테스트 먼저                          구현
-━━━━━━━━━━━━━━━━━━━━                ━━━━━━━━━━━━━━━━━━
-1. config.yaml 파싱 테스트           → YAML 파서 구현
-2. env_vars.yaml 파싱 테스트         → 환경변수 파서 구현
-3. secrets.yaml 파싱 테스트          → 시크릿 메타데이터 파서 구현
-4. ConfigStore CRUD 테스트           → In-memory store 구현 (COW)
-5. Git clone/pull 테스트             → Git sync 로직 구현
-6. REST API 핸들러 테스트            → HTTP 핸들러 구현
-   - GET /config 응답 형식
-   - 쿼리 파라미터 처리
-   - 에러 응답
-7. Health check 테스트               → /healthz, /readyz 구현
-```
-
-**테스트 예시 (Phase 1)**:
-```go
-// config_parser_test.go — Red: 이 테스트를 먼저 작성
-func TestParseConfigYAML(t *testing.T) {
-    input := `
-version: "1"
-metadata:
-  service: litellm
-  org: myorg
-  project: ai-platform
-config:
-  model_list:
-    - model_name: "azure-gpt4"
-      litellm_params:
-        model: "azure/gpt-4"
-        api_key_secret_ref: "azure-gpt4-api-key"
-`
-    cfg, err := ParseConfig([]byte(input))
-    require.NoError(t, err)
-    assert.Equal(t, "litellm", cfg.Metadata.Service)
-    assert.Len(t, cfg.Config.ModelList, 1)
-    assert.Equal(t, "azure-gpt4-api-key",
-        cfg.Config.ModelList[0].LitellmParams.APIKeySecretRef)
-}
-```
-
-#### Phase 2: Secrets
-
-```
-테스트 먼저                          구현
-━━━━━━━━━━━━━━━━━━━━                ━━━━━━━━━━━━━━━━━━
-1. Volume Mount 파일 읽기 테스트     → Secret loader 구현
-2. secret_ref resolve 테스트         → resolve 로직 구현
-   - config 내 *_secret_ref 치환
-   - env_vars 내 secret_refs 치환
-3. SealedSecret 생성 테스트          → kubeseal 연동 구현
-4. SealedSecret Git push 테스트      → Git commit/push 구현
-5. resolve_secrets=true 응답 테스트  → API 파라미터 처리
-6. Cache-Control 헤더 테스트         → 보안 헤더 미들웨어
-7. 감사 로깅 테스트                  → audit logger 구현
-```
-
-#### Phase 3: Config Agent
-
-```
-테스트 먼저                          구현
-━━━━━━━━━━━━━━━━━━━━                ━━━━━━━━━━━━━━━━━━
-1. Config Server API 호출 테스트     → HTTP client 구현
-   (httptest.Server 사용)
-2. 변경 감지 로직 테스트             → version 비교 로직
-3. litellm config.yaml 생성 테스트   → 설정 변환기 구현
-4. env.sh 생성 테스트                → 환경변수 파일 생성기
-5. ConfigMap CRUD 테스트             → K8s client-go (fake client)
-6. Secret CRUD 테스트                → K8s client-go (fake client)
-7. Rolling restart 트리거 테스트     → Deployment patch 로직
-8. 변경 유형 판별 테스트             → config vs env_vars 구분
-```
-
-### 11.4 테스트 작성 규칙
-
-| 규칙 | 설명 |
-|------|------|
-| **테스트 파일 위치** | 구현 파일과 동일 패키지 (`_test.go` 접미사) |
-| **테이블 드리븐 테스트** | 복수 케이스는 `[]struct{ name, input, expected }` 패턴 사용 |
-| **외부 의존성 격리** | interface로 추상화, 테스트에서 mock/fake 주입 |
-| **K8s 테스트** | `client-go/kubernetes/fake` 사용, 실제 클러스터 불필요 |
-| **Git 테스트** | 임시 디렉토리에 test fixture repo 생성 |
-| **HTTP 테스트** | `httptest.NewServer`로 실제 HTTP 통신 테스트 |
-| **시크릿 테스트** | 테스트 데이터에 실제 시크릿 절대 포함 금지 |
-
-### 11.5 개발 워크플로우
-
-```
-기능 하나당 반복:
-
-1. 요구사항에서 테스트 케이스 도출
-2. 실패하는 테스트 작성 (Red)
-3. go test → 실패 확인
-4. 테스트 통과하는 최소 코드 작성 (Green)
-5. go test → 통과 확인
-6. 리팩토링 (Refactor)
-7. go test → 여전히 통과 확인
-8. 커밋
-9. 다음 기능으로
-```
-
-### 11.6 커밋 컨벤션
-
-```
-test: <scope> - 실패하는 테스트 추가
-feat: <scope> - 테스트 통과하는 구현
-refactor: <scope> - 코드 개선 (동작 변경 없음)
-fix: <scope> - 버그 수정
-docs: <scope> - 문서 변경
-```
-
-예시:
-```
-test: config-parser - add YAML parsing test for model_list
-feat: config-parser - implement ParseConfig for model_list
-refactor: config-parser - extract common YAML parsing logic
-```
+> 상세 내용은 [development-process.md](./development-process.md) 참조
 
 ---
 
-## 12. 마일스톤
+## 11. 마일스톤
 
 ### Phase 1: Core (MVP)
 
