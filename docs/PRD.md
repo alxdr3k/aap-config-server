@@ -306,9 +306,8 @@ Admin                    AAP Console              Config Server
   │  (org, project, service) │                          │
   │                         ├─ App ID 발급              │
   │                         │                          │
-  │                         │    (시작 시 전체 로드 +    │
-  │                         ├─── 주기적 poll) ─────────▶│
-  │                         │                          ├─ App Registry 캐시
+  │                         ├─── webhook push ────────▶│
+  │                         │   (App 등록/수정/삭제 시)  ├─ App Registry 캐시 갱신
   │                         │                          │
   │         litellm (app_id: "app-abc123")              │
   │              │                                      │
@@ -320,7 +319,8 @@ Admin                    AAP Console              Config Server
 ```
 
 - **Admin**이 AAP Console에서 App을 등록하고 App ID를 발급
-- **Config Server**는 Console의 App Registry를 읽어서 인증/인가 정보를 캐시할 뿐, 직접 관리하지 않음
+- **AAP Console**이 App Registry 변경 시 Config Server로 webhook push
+- **Config Server**는 push받은 정보로 인증/인가 캐시를 갱신할 뿐, 직접 관리하지 않음
 
 #### AAP Console App Registry 데이터 모델
 
@@ -348,7 +348,7 @@ Config Server는 AAP Console로부터 다음 정보를 조회/캐시한다:
 - 앱 등록/폐기, scope 변경 같은 lifecycle은 Console의 책임
 - Config Server는 **설정 저장 + 서빙**에만 집중, 권한은 Console에 위임
 
-#### AAP Console 연동 방식: 시작 시 전체 로드 + 주기적 Poll
+#### AAP Console 연동 방식: 시작 시 전체 로드 + Webhook Push
 
 ```
 Config Server 시작
@@ -359,10 +359,12 @@ Config Server 시작
     │
     ├─ 2. Readiness: Git sync + App Registry 로드 모두 완료 시 readyz=true
     │
-    └─ 3. 주기적 Poll (예: 30초 간격)
-          GET /api/v1/apps?updated_since={last_sync_time}
-          → 변경된 앱만 캐시 갱신
+    └─ 3. Console → Config Server webhook 수신 (실시간)
+          POST /api/v1/admin/app-registry/webhook
+          → Console이 App 등록/수정/삭제 시 push
+          → Config Server가 캐시 갱신
           → Console 장애 시 기존 캐시로 계속 서빙 (graceful degradation)
+          → Config Server 재시작 시 1번으로 전체 재로드
 ```
 
 ### 3.4 시크릿 관리: Volume Mount + Reference 패턴
@@ -1102,10 +1104,11 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch?versio
 ### 6.3 헬스체크 / 운영 API
 
 ```
-GET /healthz                      # Liveness
-GET /readyz                       # Readiness (git sync + App Registry 로드 완료 여부)
-GET /api/v1/status                # 서버 상태 (마지막 sync 시각, 로드된 설정 수 등)
-POST /api/v1/admin/reload         # 수동 설정 리로드 트리거
+GET /healthz                                    # Liveness
+GET /readyz                                     # Readiness (git sync + App Registry 로드 완료 여부)
+GET /api/v1/status                              # 서버 상태 (마지막 sync 시각, 로드된 설정 수 등)
+POST /api/v1/admin/reload                       # 수동 설정 리로드 트리거
+POST /api/v1/admin/app-registry/webhook         # AAP Console App Registry 변경 수신
 ```
 
 ---
@@ -1292,7 +1295,7 @@ Admin                  K8s Cluster            Config Server       Config Agent
 
 - [ ] Volume Mount 기반 시크릿 로딩
 - [ ] `secrets.yaml` 파싱 및 시크릿 참조 resolve (config + env_vars 모두)
-- [ ] AAP Console App Registry 연동 (poll/webhook 기반 캐시)
+- [ ] AAP Console App Registry 연동 (시작 시 전체 로드 + webhook push 수신)
 - [ ] `resolve_secrets` 쿼리 파라미터 구현
 - [ ] 시크릿 포함 응답에 `Cache-Control: no-store` 헤더 적용
 - [ ] 시크릿 접근 감사 로깅
