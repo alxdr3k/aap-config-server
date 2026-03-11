@@ -105,7 +105,7 @@ apply │   │git │  │   │ polling
 
 | API | 용도 |
 |-----|------|
-| `GET /api/v1/.../config` | 설정 조회 (os.environ/ 참조 유지) |
+| `GET /api/v1/.../config` | 설정 조회 (시크릿 미치환, `os.environ/KEY` 문자열 그대로 반환) |
 | `GET /api/v1/.../env_vars` | 환경변수 조회 (resolve_secrets=true 시 시크릿 평문 포함) |
 | `GET /api/v1/.../config/watch` | 설정 변경 감지 (long polling) |
 | `GET /api/v1/.../env_vars/watch` | 환경변수 변경 감지 (long polling) |
