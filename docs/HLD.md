@@ -95,11 +95,10 @@ apply │   │git │  │   │ polling
 
 | API | 용도 |
 |-----|------|
-| `POST /api/v1/admin/configs` | 설정 생성/변경 (config.yaml + env_vars.yaml → Git commit & push) |
-| `DELETE /api/v1/admin/configs` | 설정 삭제 (Project 삭제 시 설정 파일 제거) |
-| `POST /api/v1/admin/configs/validate` | 설정 검증 (dry-run, Git commit 없음) |
-| `POST /api/v1/admin/configs/rollback` | 특정 버전으로 설정/시크릿 롤백 (새 Git commit 생성) |
-| `POST /api/v1/admin/secrets/webhook` | 시크릿 생성/변경/삭제 (kubeseal 암호화 후 Git push + K8s apply) |
+| `POST /api/v1/admin/changes` | 설정/시크릿 일괄 생성·변경 (단일 atomic Git commit) |
+| `DELETE /api/v1/admin/changes` | 설정/시크릿 일괄 삭제 (단일 atomic Git commit) |
+| `POST /api/v1/admin/changes/validate` | 설정 검증 (dry-run, Git commit 없음) |
+| `POST /api/v1/admin/changes/revert` | 특정 버전으로 설정/시크릿 롤백 (새 Git commit 생성) |
 | `POST /api/v1/admin/app-registry/webhook` | App 등록/수정/삭제 (인메모리 인증 캐시 갱신) |
 
 **Config Agent → Config Server 읽기 API:**
@@ -122,62 +121,58 @@ apply │   │git │  │   │ polling
 
 ### 2.1 설정 쓰기 흐름 (Console → Config Server → Git)
 
-Console이 설정을 변경하면, Config Server Admin API를 호출한다. Console은 Git/kubeseal/kubectl을 직접 조작하지 않는다 (**Console Creates, Server Manages** 원칙).
+Console이 설정/시크릿을 변경하면, Config Server의 통합 Admin API (`POST /admin/changes`)를 호출한다. Console은 Git/kubeseal/kubectl을 직접 조작하지 않는다 (**Console Creates, Server Manages** 원칙).
 
 > **`aap-console` PRD 참조**: Console → Config Server 인터페이스는 Console PRD Section 3 "시스템 아키텍처 개요"에 정의된 Admin API 계약을 따른다.
 
 ```
-Console                Config Server                Git Repo
-  │                         │                          │
-  │  POST /admin/configs    │                          │
-  │  (config + env_vars)    │                          │
-  ├────────────────────────▶│                          │
-  │                         │                          │
-  │                         │  1. 스키마 검증            │
-  │                         │  2. secret_ref 유효성 확인 │
-  │                         │                          │
-  │                         │  3. Git commit & push    │
-  │                         ├─────────────────────────▶│
-  │                         │   config.yaml 업데이트    │
-  │                         │   env_vars.yaml 업데이트  │
-  │                         │                          │
-  │                         │  4. In-memory 갱신        │
-  │                         │                          │
-  │  응답: {version: "..."}  │                          │
-  │◀────────────────────────┤                          │
-  │                         │                          │
-```
-
-### 2.2 시크릿 생성/변경 흐름
-
-Console이 시크릿을 생성하면, Config Server가 관리 주체로서 암호화, Git 저장, 클러스터 apply를 모두 수행한다.
-
-```
 Console                Config Server                Git Repo            K8s Cluster
   │                         │                          │                      │
-  │  POST /webhook          │                          │                      │
-  │  (시크릿 평문 포함)       │                          │                      │
+  │  POST /admin/changes    │                          │                      │
+  │  (config + env_vars     │                          │                      │
+  │   + secrets)            │                          │                      │
   ├────────────────────────▶│                          │                      │
   │                         │                          │                      │
-  │                         │  1. kubeseal 암호화       │                      │
-  │                         │     (공개키로 SealedSecret│                      │
-  │                         │      YAML 생성)          │                      │
+  │                         │  1. 스키마 검증            │                      │
+  │                         │  2. secret_ref 유효성 확인 │                      │
+  │                         │  3. secrets 있으면         │                      │
+  │                         │     kubeseal 암호화       │                      │
   │                         │                          │                      │
-  │                         │  2. Git commit & push    │                      │
+  │                         │  4. 단일 Git commit & push│                      │
   │                         ├─────────────────────────▶│                      │
-  │                         │   sealed-secrets/        │                      │
-  │                         │     litellm-secrets.yaml │                      │
+  │                         │   config.yaml            │                      │
+  │                         │   env_vars.yaml          │                      │
+  │                         │   sealed-secrets/*.yaml  │                      │
   │                         │                          │                      │
-  │                         │  3. K8s API apply        │                      │
-  │                         │     SealedSecret         │                      │
+  │                         │  5. SealedSecret 변경 시   │                      │
+  │                         │     K8s API apply        │                      │
   │                         ├─────────────────────────────────────────────────▶│
   │                         │                          │                      │
-  │                         │                          │  SealedSecret Controller
-  │                         │                          │  복호화 → K8s Secret 생성
+  │                         │  6. In-memory 갱신        │                      │
   │                         │                          │                      │
-  │                         │                          │  kubelet: Config Server Pod
-  │                         │                          │  Volume Mount 자동 sync (~60초)
+  │  응답: {version: "..."}  │                          │                      │
+  │◀────────────────────────┤                          │                      │
   │                         │                          │                      │
+  │  Console DB에 version 저장│                          │                      │
+```
+
+### 2.2 시크릿 처리 흐름 (changes API 내부)
+
+`POST /admin/changes`에 `secrets` 필드가 포함되면, Config Server는 설정 변경과 함께 시크릿 암호화 + SealedSecret apply를 **단일 atomic commit**으로 처리한다.
+
+```
+POST /admin/changes 수신 (secrets 필드 포함)
+      │
+      ├─ 1. kubeseal 암호화 (공개키로 SealedSecret YAML 생성)
+      │
+      ├─ 2. config.yaml + env_vars.yaml + SealedSecret YAML
+      │     → 단일 Git commit & push
+      │
+      ├─ 3. K8s API apply SealedSecret
+      │     → SealedSecret Controller가 복호화 → K8s Secret 생성
+      │     → kubelet: Config Server Pod Volume Mount 자동 sync (~60초)
+      │
+      └─ 4. In-memory 갱신 → 응답: {version: "..."}
 ```
 
 **SealedSecret이란**: Bitnami SealedSecrets는 K8s Secret을 공개키로 암호화하여 Git에 안전하게 저장할 수 있게 하는 CRD이다. 클러스터 내 SealedSecret Controller만이 비밀키로 복호화할 수 있다.
@@ -303,7 +298,7 @@ Console이 특정 버전(Git commit hash)으로 롤백을 요청하면, Config S
 Console              Config Server              Git Repo           K8s Cluster
   │                       │                        │                    │
   │  POST /admin/         │                        │                    │
-  │  configs/rollback     │                        │                    │
+  │  changes/revert     │                        │                    │
   │  {target_version:     │                        │                    │
   │   "a3f2b1c"}          │                        │                    │
   ├──────────────────────▶│                        │                    │
@@ -523,12 +518,12 @@ rules:
 
 #### Console을 통한 설정 변경 (주 경로)
 
-Console은 `POST /api/v1/admin/configs`를 호출한다. Config Server가 Git commit & push를 수행한다.
+Console은 `POST /api/v1/admin/changes`를 호출한다. Config Server가 Git commit & push를 수행한다.
 
 ```
 Console            Config Server          Git Repo         Config Agent        litellm Pods
   │                      │                   │                   │                   │
-  ├─ POST /admin/configs▶│                   │                   │                   │
+  ├─ POST /admin/changes▶│                   │                   │                   │
   │                      ├─ 스키마 검증       │                   │                   │
   │                      ├─ Git commit&push ▶│                   │                   │
   │                      ├─ 메모리 갱신       │                   │                   │
@@ -571,12 +566,12 @@ Developer          Git Repo         Config Server       Config Agent        lite
 
 ### 4.2 환경변수 변경 (env_vars.yaml)
 
-Console이 `POST /api/v1/admin/configs`에 `env_vars` 필드를 포함하여 호출한다. (config과 env_vars를 동시에 변경할 수도 있다.)
+Console이 `POST /api/v1/admin/changes`에 `env_vars` 필드를 포함하여 호출한다. (config, env_vars, secrets를 동시에 변경할 수 있다.)
 
 ```
 Console            Config Server          Git Repo         Config Agent        litellm Pods
   │                      │                   │                   │                   │
-  ├─ POST /admin/configs▶│                   │                   │                   │
+  ├─ POST /admin/changes▶│                   │                   │                   │
   │  (env_vars 포함)      │                   │                   │                   │
   │                      ├─ Git commit&push ▶│                   │                   │
   │                      ├─ 메모리 갱신       │                   │                   │
@@ -603,8 +598,8 @@ Console            Config Server          Git Repo         Config Agent        l
 ```
 Console              Config Server           Git Repo        K8s Cluster         Config Agent
   │                       │                     │                 │                   │
-  │  POST /webhook        │                     │                 │                   │
-  │  (새 시크릿 값)        │                     │                 │                   │
+  │  POST /admin/changes  │                     │                 │                   │
+  │  (secrets 필드 포함)    │                     │                 │                   │
   ├──────────────────────▶│                     │                 │                   │
   │                       │                     │                 │                   │
   │                       ├─ kubeseal 암호화     │                 │                   │
@@ -614,8 +609,8 @@ Console              Config Server           Git Repo        K8s Cluster        
   │                       ├─ K8s API apply ─────────────────────▶│                   │
   │                       │  SealedSecret       │                 │                   │
   │                       │                     │                 │                   │
-  │                       │                     │  SealedSecret   │                   │
-  │                       │                     │  Controller     │                   │
+  │  {version: "..."}     │                     │  SealedSecret   │                   │
+  │◀──────────────────────┤                     │  Controller     │                   │
   │                       │                     │  복호화 →       │                   │
   │                       │                     │  K8s Secret     │                   │
   │                       │                     │  생성/업데이트   │                   │
