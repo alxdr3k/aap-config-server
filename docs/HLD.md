@@ -98,6 +98,7 @@ apply │   │git │  │   │ polling
 | `POST /api/v1/admin/configs` | 설정 생성/변경 (config.yaml + env_vars.yaml → Git commit & push) |
 | `DELETE /api/v1/admin/configs` | 설정 삭제 (Project 삭제 시 설정 파일 제거) |
 | `POST /api/v1/admin/configs/validate` | 설정 검증 (dry-run, Git commit 없음) |
+| `POST /api/v1/admin/configs/rollback` | 특정 버전으로 설정/시크릿 롤백 (새 Git commit 생성) |
 | `POST /api/v1/admin/secrets/webhook` | 시크릿 생성/변경/삭제 (kubeseal 암호화 후 Git push + K8s apply) |
 | `POST /api/v1/admin/app-registry/webhook` | App 등록/수정/삭제 (인메모리 인증 캐시 갱신) |
 
@@ -294,7 +295,47 @@ Config Agent               Config Server                K8s Cluster
   │                              │                 재시작 + 새 설정
 ```
 
-### 2.5 litellm Pod 내부 구조
+### 2.5 설정 롤백 흐름
+
+Console이 특정 버전(Git commit hash)으로 롤백을 요청하면, Config Server가 해당 시점의 모든 파일(config, env_vars, SealedSecret)을 복원한다. 롤백도 새 Git commit으로 생성되어 이력이 forward-only로 유지된다.
+
+```
+Console              Config Server              Git Repo           K8s Cluster
+  │                       │                        │                    │
+  │  POST /admin/         │                        │                    │
+  │  configs/rollback     │                        │                    │
+  │  {target_version:     │                        │                    │
+  │   "a3f2b1c"}          │                        │                    │
+  ├──────────────────────▶│                        │                    │
+  │                       │                        │                    │
+  │                       │  1. git show a3f2b1c:  │                    │
+  │                       │     config.yaml        │                    │
+  │                       │     env_vars.yaml      │                    │
+  │                       │     sealed-secrets/    │                    │
+  │                       ├───────────────────────▶│                    │
+  │                       │◀───────────────────────┤                    │
+  │                       │                        │                    │
+  │                       │  2. 파일 내용 복원       │                    │
+  │                       │     + 단일 Git commit   │                    │
+  │                       │     & push             │                    │
+  │                       ├───────────────────────▶│                    │
+  │                       │                        │                    │
+  │                       │  3. SealedSecret       │                    │
+  │                       │     K8s API apply      │                    │
+  │                       ├────────────────────────────────────────────▶│
+  │                       │                        │                    │
+  │                       │  4. In-memory 갱신      │                    │
+  │                       │                        │                    │
+  │  {version: "d7e8f9a"} │  ← 새 commit hash      │                    │
+  │◀──────────────────────┤                        │                    │
+  │                       │                        │                    │
+  │  Console DB에          │                        │                    │
+  │  새 version 저장       │                        │                    │
+```
+
+> **Atomic Commit 원칙**: 모든 변경(설정 생성/수정/삭제/롤백)은 단일 Git commit으로 처리한다. Console은 응답의 `version` (commit hash)을 DB에 저장하여 이력 추적과 롤백에 사용한다.
+
+### 2.6 litellm Pod 내부 구조
 
 litellm Pod는 ConfigMap(설정)과 Secret(환경변수)을 분리하여 마운트한다. config.yaml의 시크릿은 `os.environ/` 참조를 통해 환경변수에서 주입된다.
 
