@@ -400,7 +400,9 @@ Config Server는 AAP Console로부터 다음 정보를 수신/캐시한다:
 - 앱 등록/폐기, scope 변경 같은 lifecycle은 Console의 책임
 - Config Server는 **설정 저장 + 서빙**에만 집중, 권한은 Console에 위임
 
-#### AAP Console 연동 방식: 시작 시 전체 로드 + Webhook Push
+#### AAP Console 연동 방식
+
+**시작 시 전체 로드:**
 
 ```
 Config Server 시작
@@ -408,20 +410,27 @@ Config Server 시작
     ├─ 1. Console API 호출: 전체 App Registry 로드
     │     GET /api/v1/apps?all=true
     │     → 메모리에 캐시
+    │     → 실패 시 exponential backoff retry (최대 5회)
+    │     → 최종 실패 시 빈 캐시로 기동 (설정 서빙은 정상, App 인증만 불가)
     │
-    ├─ 2. Readiness: Git sync + App Registry 로드 모두 완료 시 readyz=true
-    │
-    ├─ 3. Console → Config Server webhook 수신 (실시간)
-    │     POST /api/v1/admin/app-registry/webhook
-    │     → Console이 App 등록/수정/삭제 시 fire-and-forget push
-    │     → Config Server가 캐시 갱신
-    │     → Console 장애 시 기존 캐시로 계속 서빙 (graceful degradation)
-    │     → Config Server 재시작 시 1번으로 전체 재로드
-    │
-    └─ 4. 주기적 전체 동기화 (예: 5분 간격)
-          → Console API 호출하여 캐시 보정
-          → webhook 유실 대비 정합성 보장
+    └─ 2. Readiness: Git sync + App Registry 로드 모두 완료 시 readyz=true
+          (App Registry 로드 실패 시에도 readyz=true, 단 인증 기능 제한)
 ```
+
+**런타임 캐시 갱신:**
+
+Console이 App을 등록/수정/삭제하면 fire-and-forget webhook으로 Config Server에 통지한다. Config Server는 webhook을 수신하여 인메모리 캐시를 갱신한다.
+
+```
+Console                          Config Server
+  │                                    │
+  ├─ POST /admin/app-registry/webhook ▶│
+  │  (fire-and-forget + async retry)   ├─ 캐시 갱신
+  │◀── {status: "ok"} ────────────────┤
+```
+
+- webhook 유실 시: Console의 async retry queue가 재시도
+- Config Server 재시작 시: 시작 시 전체 로드(1번)로 캐시 복구
 
 ### 3.4 시크릿 관리: Volume Mount + Reference 패턴
 
