@@ -10,6 +10,9 @@
 #
 # Incremental: stores last synced origin commit in refs/sync-state/, only rewrites new commits.
 # Full: reset + filter-branch on entire history (slow for many commits).
+#
+# On cherry-pick conflict: always prefer origin (--theirs); samsung/main changes are discarded.
+# Empty cherry-picks (no diff after resolution) are skipped; script runs to completion non-interactively.
 
 set -e
 
@@ -52,16 +55,32 @@ if [[ -z "$FORCE_FULL" ]] && git rev-parse "$SYNC_REF" &>/dev/null; then
   git reset --hard samsung/main
 
   TEMP_MSG=$(mktemp)
+  trap 'rm -f "$TEMP_MSG"' EXIT
   for commit in $(git rev-list --reverse "$LAST_SYNCED".."$ORIGIN_HEAD"); do
-    git cherry-pick "$commit" || {
-      echo "Conflict on cherry-pick. Resolve and: git cherry-pick --continue"
-      echo "Then re-run this script."
-      rm -f "$TEMP_MSG"
-      exit 1
-    }
-    git log -1 --format=%B "$commit" | sed '/https:\/\/claude\.ai\//d' > "$TEMP_MSG"
-    GIT_COMMITTER_NAME="$AUTHOR_NAME" GIT_COMMITTER_EMAIL="$AUTHOR_EMAIL" \
-      git commit --amend --author="$AUTHOR_NAME <$AUTHOR_EMAIL>" -F "$TEMP_MSG"
+    APPLIED=1
+    if ! git cherry-pick "$commit"; then
+      echo "Conflict: auto-resolving with origin (theirs)"
+      git checkout --theirs -- .
+      git add -A
+      if GIT_EDITOR=: git cherry-pick --continue 2>/dev/null; then
+        APPLIED=1
+      elif git cherry-pick --skip 2>/dev/null; then
+        echo "  (skipped empty commit ${commit:0:7})"
+        APPLIED=0
+      else
+        echo "Could not continue or skip cherry-pick. Resolve manually: git cherry-pick --continue or --skip"
+        echo "Then re-run this script."
+        exit 1
+      fi
+    fi
+    if [[ "$APPLIED" -eq 1 ]]; then
+      git log -1 --format=%B "$commit" | sed '/https:\/\/claude\.ai\//d' > "$TEMP_MSG"
+      AUTHOR_DATE=$(git log -1 --format=%aI "$commit")
+      COMMITTER_DATE=$(git log -1 --format=%cI "$commit")
+      GIT_COMMITTER_NAME="$AUTHOR_NAME" GIT_COMMITTER_EMAIL="$AUTHOR_EMAIL" \
+        GIT_COMMITTER_DATE="$COMMITTER_DATE" \
+        git commit --amend --author="$AUTHOR_NAME <$AUTHOR_EMAIL>" --date="$AUTHOR_DATE" -F "$TEMP_MSG"
+    fi
   done
   rm -f "$TEMP_MSG"
 
@@ -85,7 +104,7 @@ git checkout main
 git reset --hard "$ORIGIN_HEAD"
 
 git filter-branch -f \
-  --env-filter "export GIT_AUTHOR_NAME='$AUTHOR_NAME'; export GIT_AUTHOR_EMAIL='$AUTHOR_EMAIL'; export GIT_COMMITTER_NAME='$AUTHOR_NAME'; export GIT_COMMITTER_EMAIL='$AUTHOR_EMAIL';" \
+  --env-filter "export GIT_AUTHOR_NAME='$AUTHOR_NAME'; export GIT_AUTHOR_EMAIL='$AUTHOR_EMAIL'; export GIT_COMMITTER_NAME='$AUTHOR_NAME'; export GIT_COMMITTER_EMAIL='$AUTHOR_EMAIL'; export GIT_AUTHOR_DATE=\$(git log -1 --format=%aI \$GIT_COMMIT); export GIT_COMMITTER_DATE=\$(git log -1 --format=%cI \$GIT_COMMIT);" \
   --msg-filter 'sed "/https:\/\/claude\.ai\//d"' \
   main
 
