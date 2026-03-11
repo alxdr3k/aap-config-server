@@ -1,0 +1,14 @@
+---
+description: Git push — samsung remote only, NEVER origin
+alwaysApply: true
+---
+
+# Git Push: Samsung Only
+
+**절대 origin에 push하지 말 것. samsung remote에만 push.**
+
+- `git push origin ...` → **금지**
+- `git push samsung ...` → **허용**
+
+scripts 브랜치, main 브랜치 등 모든 push는 `samsung` remote로만 수행한다.
+origin은 fetch용, samsung은 배포/동기화용이다.
