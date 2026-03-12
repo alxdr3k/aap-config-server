@@ -686,6 +686,73 @@ POST /api/v1/admin/changes
 
 > **Atomic Commit 원칙**: 하나의 API 호출로 발생하는 모든 파일 변경(config.yaml, env_vars.yaml, SealedSecret YAML)은 **반드시 단일 Git commit**으로 처리한다. 이 commit hash가 해당 변경의 유일한 버전 식별자가 되며, Console은 이 값을 DB에 저장하여 이력 추적 및 롤백에 사용한다.
 
+#### 동시 변경 처리 (Git Push Conflict)
+
+두 명의 Console 사용자가 거의 동시에 설정을 변경하면, 먼저 push한 요청은 성공하고 뒤따르는 요청은 `git push` rejected 에러를 받는다. Config Server는 **pull-rebase-retry** 전략으로 이를 처리한다:
+
+```
+User A 요청          User B 요청
+    │                    │
+    ▼                    ▼
+ 파일 수정            파일 수정
+ git commit           git commit
+ git push ✓ (성공)    git push ✗ (rejected)
+                         │
+                         ▼
+                      git pull --rebase
+                         │
+                    ┌────▼────┐
+                    │충돌 여부?│
+                    └────┬────┘
+                    │         │
+                 충돌 없음   충돌 발생 (같은 파일의 같은 키)
+                    │         │
+                    ▼         ▼
+              git push ✓   rebase 중단
+              (자동 해결)   → 409 Conflict 응답
+                           → Console에 재시도 안내
+```
+
+**처리 규칙**:
+
+| 상황 | 동작 |
+|------|------|
+| **서로 다른 서비스** 변경 (A: litellm, B: gateway) | 충돌 없음 → pull-rebase → 자동 성공 |
+| **같은 서비스, 다른 파일** (A: config.yaml, B: env_vars.yaml) | 충돌 없음 → pull-rebase → 자동 성공 |
+| **같은 파일, 다른 키** (A: model_list, B: router_settings) | 대부분 충돌 없음 → pull-rebase → 자동 성공 |
+| **같은 파일, 같은 키** (A: model_list 변경, B: model_list 변경) | 충돌 → `409 Conflict` 응답, Console이 최신 설정 fetch 후 재시도 |
+
+**직렬화 보장**: 동일 서비스에 대한 `POST /admin/changes` 요청은 Config Server 내부에서 **서비스 경로별 mutex**로 직렬화한다. 이로써 같은 서비스에 대한 동시 요청은 순차 처리되어 Git 충돌 자체가 발생하지 않는다:
+
+```go
+// 서비스 경로별 lock (fine-grained locking)
+type AdminHandler struct {
+    serviceLocks sync.Map  // key: "org/project/service" → *sync.Mutex
+}
+
+func (h *AdminHandler) getServiceLock(org, project, service string) *sync.Mutex {
+    key := fmt.Sprintf("%s/%s/%s", org, project, service)
+    lock, _ := h.serviceLocks.LoadOrStore(key, &sync.Mutex{})
+    return lock.(*sync.Mutex)
+}
+```
+
+- 같은 서비스: mutex로 직렬화 → Git 충돌 불가
+- 다른 서비스: 서로 다른 mutex → 병렬 처리 가능, Git 충돌 시 pull-rebase로 자동 해결
+- pull-rebase 최대 3회 재시도 후 실패 시 `503 Service Unavailable` 응답
+
+**`409 Conflict` 응답 형식**:
+
+```json
+{
+  "error": "conflict",
+  "message": "Concurrent modification detected on the same config keys",
+  "current_version": "aaa111",
+  "conflicting_files": ["config.yaml"],
+  "retry": "Fetch latest config with GET /api/v1/.../config and resubmit"
+}
+```
+
 ### 4.5 FR-5: 설정/시크릿 일괄 삭제 Admin API `[FR-5]`
 
 Project 삭제 시 해당 서비스의 설정 + 시크릿 전체를 제거한다. Console이 Project 삭제 워크플로우에서 호출한다.
@@ -1349,6 +1416,42 @@ spec:
 ```
 
 이 방식으로 32개 replica 중 **최대 25%(8개)만 동시에 재시작**되므로, 나머지는 항상 서비스 가능 상태를 유지한다.
+
+#### 연속 변경 시 Rolling Restart 중첩 처리
+
+짧은 간격으로 여러 설정 변경이 발생하면, Config Agent의 polling 주기(30초)와 K8s Deployment controller의 네이티브 동작이 이를 자연스럽게 처리한다:
+
+**시나리오 1: 두 변경이 같은 polling 주기 안에 발생 (가장 빈번)**
+
+```
+T=0s   User A: POST /admin/changes → Git commit A (ver: aaa111)
+T=3s   User B: POST /admin/changes → Git commit B (ver: bbb222)
+T=30s  Config Agent poll → 최신 version: bbb222 (A+B 모두 반영된 상태)
+       → ConfigMap/Secret 1회 업데이트 (A+B 통합)
+       → Rolling restart 1회만 발생
+```
+
+30초 polling 주기가 자연스러운 **변경 배칭(batching)** 역할을 한다. 짧은 간격의 연속 변경은 하나의 업데이트로 합쳐진다.
+
+**시나리오 2: 두 변경이 polling 주기를 걸쳐 발생 (rolling restart 중첩)**
+
+```
+T=0s   User A: POST /admin/changes → Git commit A
+T=2s   Config Agent poll → 변경 감지 → ConfigMap 업데이트 → rolling restart 시작
+       (32 replicas, maxUnavailable 25% → 8개씩 순차 재시작, ~2-3분 소요)
+T=60s  User B: POST /admin/changes → Git commit B
+T=62s  Config Agent poll → 또 변경 감지 → ConfigMap 업데이트 → annotation 재패치
+       → K8s Deployment controller: 진행 중인 rollout을 즉시 중단하고
+         새로운 pod template(B의 설정)으로 새 rollout 시작
+```
+
+K8s Deployment controller는 rolling update 중에 pod template이 다시 변경되면, **진행 중인 rollout을 중단하고 최신 template으로 새 rollout을 시작**한다. 이것은 K8s의 네이티브 동작이다:
+
+- 이미 새 template으로 시작된 Pod: 그대로 유지 (B의 설정으로 다시 교체됨)
+- 아직 이전 template인 Pod: B의 설정으로 직접 업데이트
+- **maxUnavailable/maxSurge 제약은 항상 유지**되므로 서비스 가용성은 보장
+
+> **결론**: Config Agent가 "기다렸다가 적용"할 필요가 없다. K8s Deployment controller가 overlapping rollout을 네이티브로 처리하므로, Config Agent는 변경을 감지할 때마다 즉시 ConfigMap 업데이트 + annotation 패치만 하면 된다.
 
 #### Config Agent API
 
