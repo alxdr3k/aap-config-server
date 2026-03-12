@@ -422,13 +422,12 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config
 
 | 파라미터 | 타입 | 설명 |
 |----------|------|------|
-| `resolve_secrets` | bool | `true`면 시크릿 값을 resolve하여 평문으로 포함 (default: `false`) |
 | `keys` | string | 쉼표 구분, 특정 키만 반환 (예: `model_list,router_settings`) |
 | `format` | string | `yaml` 또는 `json` (default: `json`) |
 | `inherit` | bool | `true`면 상위 레벨 기본값 merge (default: `true`) |
 | `version` | string | 특정 Git commit hash의 설정을 반환 (default: 최신) |
 
-**Response** (`resolve_secrets=false`):
+**Response**:
 
 ```json
 {
@@ -449,41 +448,8 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config
 }
 ```
 
-**Response** (`resolve_secrets=true`):
-
-```json
-{
-  "metadata": {
-    "org": "myorg",
-    "project": "ai-platform",
-    "service": "litellm",
-    "version": "a3f2b1c",
-    "updated_at": "2026-03-09T10:00:00Z"
-  },
-  "config": {
-    "general_settings": {
-      "master_key": "EXAMPLE-master-key-replace-me"
-    },
-    "model_list": [
-      {
-        "model_name": "gpt-4",
-        "litellm_params": {
-          "model": "azure/gpt-4",
-          "api_base": "https://my-azure.openai.azure.com",
-          "api_key": "EXAMPLE-azure-key-replace-me"
-        }
-      }
-    ],
-    "router_settings": {
-      "routing_strategy": "least-busy",
-      "num_retries": 3
-    }
-  }
-}
-```
-
-- 일반 설정(`model`, `api_base`, `router_settings`)과 시크릿(`master_key`, `api_key`) 모두 평문
-- `Cache-Control: no-store` 헤더로 캐싱 방지
+- Config API는 시크릿을 resolve하지 않는다. `*_secret_ref` 참조를 그대로 반환한다.
+- 시크릿 resolve는 환경변수 API(`GET .../env_vars?resolve_secrets=true`)에서만 지원한다.
 
 #### 다중 서비스 설정 일괄 조회
 
@@ -496,8 +462,7 @@ POST /api/v1/configs/batch
   "queries": [
     { "org": "myorg", "project": "ai-platform", "service": "litellm" },
     { "org": "myorg", "project": "ai-platform", "service": "gateway" }
-  ],
-  "resolve_secrets": false
+  ]
 }
 ```
 
@@ -662,7 +627,7 @@ POST /api/v1/admin/changes
 
 #### 동시 변경 처리
 
-동일 서비스에 대한 요청은 **서비스 경로별 mutex**(`sync.Map`, key: `"org/project/service"`)로 직렬화한다. 다른 서비스 간 요청은 서로 다른 파일을 수정하므로 **Git 충돌이 구조적으로 불가능**하다. Mutex는 Git 작업(파일 수정 → commit → push, ~1-2초)만 보호하며, 이후의 Config Agent polling → rolling restart는 완전 비동기이다.
+동일 서비스에 대한 요청은 **서비스 경로별 mutex**(`sync.Map`에 서비스 경로(`"org/project/service"`)를 key로 하여 mutex를 저장)로 직렬화한다. 다른 서비스 간 요청은 서로 다른 파일을 수정하므로 **Git 충돌이 구조적으로 불가능**하다. Mutex는 Git 작업(파일 수정 → commit → push, ~1-2초)만 보호하며, 이후의 Config Agent polling → rolling restart는 완전 비동기이다.
 
 다른 서비스 간 병렬 처리 시 `git push` rejected가 발생할 수 있으나, 파일이 다르므로 **pull-rebase로 항상 자동 해결**된다 (최대 3회 재시도 후 `503`).
 
@@ -809,9 +774,10 @@ litellm 등 대부분의 서비스는 로컬 파일(`--config /path/to/config.ya
 
 Config Agent는 대상 Deployment별로 **독립된 Deployment(replica=2)**로 배포되어 다음을 수행한다:
 
-1. **Config Server polling**: 설정 변경을 감지 (long polling / watch)
-2. **ConfigMap 업데이트**: 변경된 설정을 K8s ConfigMap에 반영 (K8s API 호출)
-3. **Rolling restart 트리거**: 변경 감지 시 항상 Deployment annotation 패치로 rolling restart 수행 (maxUnavailable: 25%, maxSurge: 25%)
+1. **Leader Election**: replica=2 중 하나만 active로 동작한다. K8s Lease 기반 leader election으로 이중 적용을 방지하며, leader 장애 시 나머지 replica가 자동으로 인계한다.
+2. **Config Server polling**: 설정 변경을 감지 (long polling / watch)
+3. **ConfigMap 업데이트**: 변경된 설정을 K8s ConfigMap에 반영 (K8s API 호출)
+4. **Rolling restart 트리거**: 변경 감지 시 항상 Deployment annotation 패치로 rolling restart 수행 (maxUnavailable: 25%, maxSurge: 25%)
 
 #### 데이터 흐름
 
@@ -826,6 +792,7 @@ Config Agent → Config Server API fetch
 #### Config Agent RBAC
 
 Config Agent에 필요한 최소 권한 (대상 리소스에만 `resourceNames`로 제한):
+- `leases` (coordination.k8s.io): get, create, update (leader election용)
 - `configmaps`: get, create, update, patch (대상 ConfigMap만)
 - `secrets`: get, create, update, patch (환경변수 Secret만)
 - `deployments`: get, patch (대상 Deployment만, annotation 패치용)

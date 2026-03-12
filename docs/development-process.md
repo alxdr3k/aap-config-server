@@ -264,7 +264,7 @@ fix: agent - rolling restart annotation 누락 수정
 go test ./...
 
 # 특정 테스트 함수 실행
-go test ./internal/parser/ -run TestParseConfigYAML
+go test ./... -run TestParseConfigYAML
 
 # 짧은 테스트만 실행 (CI 빠른 피드백)
 go test -short ./...
