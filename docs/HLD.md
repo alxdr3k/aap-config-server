@@ -374,76 +374,16 @@ Console              Config Server         aap-helm-charts      K8s Cluster
 
 ### 2.6 litellm Pod 내부 구조 `[FR-9]`
 
-litellm Pod는 ConfigMap(설정)과 Secret(환경변수)을 분리하여 마운트한다. config.yaml의 시크릿은 `os.environ/` 참조를 통해 환경변수에서 주입된다.
+litellm Pod는 ConfigMap과 Secret을 분리하여 마운트한다:
 
-```
-litellm Pod
-┌──────────────────────────────────────────────────────────────┐
-│                                                              │
-│  ConfigMap: litellm-config (Volume Mount /config/)             │
-│  └── config.yaml  ← Config Agent가 업데이트                    │
-│      (litellm proxy_config 형식)                               │
-│      - model_list, router_settings, ...                       │
-│      - api_key: os.environ/AZURE_API_KEY  ← 환경변수 참조     │
-│      - 시크릿 평문 없음                                        │
-│                                                               │
-│  Secret: litellm-env-secret (Volume Mount /env/)              │
-│  └── env.sh       ← Config Agent가 업데이트                    │
-│      - 평문 환경변수 (LITELLM_LOG_LEVEL, ...)                   │
-│      - 시크릿 환경변수 (AZURE_API_KEY, DATABASE_URL, ...)       │
-│      - Config Server가 resolve한 시크릿 평문 포함               │
-│                                                               │
-│  Entrypoint:                                                  │
-│  source /env/env.sh && litellm --config /config/config.yaml   │
-│  → litellm이 os.environ/KEY 읽으면 env.sh의 값이 사용됨        │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
-```
+| Volume | K8s 리소스 | 마운트 경로 | 내용 |
+|--------|-----------|-----------|------|
+| config | ConfigMap (`litellm-config`) | `/config/` | config.yaml (시크릿은 `os.environ/` 참조, 평문 없음) |
+| env | Secret (`litellm-env-secret`) | `/env/` | env.sh (평문 + 시크릿 환경변수 포함) |
 
-**Volume Mount 스펙:**
+Entrypoint: `source /env/env.sh && litellm --config /config/config.yaml`
 
-```yaml
-# litellm Deployment Pod spec 발췌
-volumes:
-  - name: config
-    configMap:
-      name: litellm-config              # config.yaml (시크릿 평문 없음)
-      defaultMode: 0444
-  - name: env
-    secret:
-      secretName: litellm-env-secret    # env.sh (시크릿 포함 → Secret 리소스)
-      defaultMode: 0400
-containers:
-  - name: litellm
-    volumeMounts:
-      - name: config
-        mountPath: /config              # 디렉토리 마운트 → kubelet 자동 갱신 가능
-        readOnly: true
-      - name: env
-        mountPath: /env
-        readOnly: true
-    command: ["/bin/sh", "-c"]
-    args: ["source /env/env.sh && litellm --config /config/config.yaml"]
-```
-
-**시크릿이 litellm에 도달하는 경로:**
-
-```
-SealedSecret Controller → K8s Secret 복호화
-        │
-        ▼
-Config Server Pod (Volume Mount로 시크릿 파일 읽기)
-        │
-        ▼ resolve_secrets
-Config Agent (polling) → K8s Secret (env.sh) 업데이트 → Rolling restart
-        │
-        ▼
-litellm Pod (source /env/env.sh → os.environ/ 참조 resolve)
-```
-
-- Config Server가 Volume Mount로 K8s Secret 파일을 읽어 resolve한다
-- Config Agent가 resolve된 값을 K8s Secret (env.sh)에 반영한다
-- litellm Pod는 재시작 시 env.sh를 source하여 환경변수로 주입받는다
+시크릿 경로: SealedSecret Controller → K8s Secret 복호화 → Config Server Pod Volume Mount → Config Agent polling (resolve_secrets) → K8s Secret (env.sh) 업데이트 → Rolling restart → litellm Pod (env.sh source → os.environ/ resolve)
 
 ---
 
@@ -451,31 +391,9 @@ litellm Pod (source /env/env.sh → os.environ/ 참조 resolve)
 
 ### 3.1 시크릿 라이프사이클 `[FR-7]`
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  시크릿 라이프사이클                                              │
-│                                                                 │
-│  생성        Console에서 시크릿 값 입력                            │
-│    │         POST /admin/changes (secrets 필드) → Config Server  │
-│    ▼                                                            │
-│  암호화      Config Server가 kubeseal로 SealedSecret 생성        │
-│    │         (SealedSecret Controller의 공개키 사용)              │
-│    ▼                                                            │
-│  저장        Git에 SealedSecret YAML commit & push              │
-│    │         (암호화된 상태 → Git 유출 시에도 안전)                 │
-│    ▼                                                            │
-│  적용        Config Server가 K8s API로 SealedSecret apply         │
-│    │                                                            │
-│    ▼                                                            │
-│  복호화      SealedSecret Controller가 → K8s Secret 생성         │
-│    │         (클러스터 내 비밀키로만 복호화 가능)                   │
-│    ▼                                                            │
-│  배포        kubelet Volume Mount sync → Config Server Pod에 반영 │
-│              Config Agent polling → ConfigMap/Secret 업데이트     │
-│              → Rolling restart → litellm Pod에 반영              │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+생성(Console POST) → 암호화(Config Server kubeseal) → 저장(Git SealedSecret YAML) → 적용(K8s API apply) → 복호화(SealedSecret Controller → K8s Secret) → 배포(kubelet Volume Mount sync → Config Agent polling → Rolling restart → litellm Pod)
+
+> 상세 흐름은 섹션 2.2 참조
 
 ### 3.2 Git 저장소 구조 (`aap-helm-charts`) `[FR-1]`
 
@@ -536,28 +454,10 @@ spec:
 
 ### 3.4 Config Server RBAC (시크릿 관리용) `[FR-7]` `[FR-17]`
 
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: config-server-secret-manager
-  namespace: ai-platform
-rules:
-  # SealedSecret 생성/업데이트
-  - apiGroups: ["bitnami.com"]
-    resources: ["sealedsecrets"]
-    verbs: ["get", "list", "create", "update", "patch"]
-  # Secret은 Volume Mount로 읽기 (resolve_secrets용)
-  # Secret RBAC는 Volume Mount 구성을 위한 최소 권한
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get"]
-  # kubeseal을 위한 SealedSecret Controller 공개키 조회
-  - apiGroups: [""]
-    resources: ["services/proxy"]
-    resourceNames: ["sealed-secrets-controller"]
-    verbs: ["get"]
-```
+Config Server에 필요한 최소 권한:
+- `sealedsecrets` (bitnami.com): get, list, create, update, patch
+- `secrets`: get (Volume Mount 구성용)
+- `services/proxy` (sealed-secrets-controller): get (kubeseal 공개키 조회)
 
 ---
 
@@ -615,32 +515,7 @@ Developer     aap-helm-charts    Config Server       Config Agent        litellm
 
 ### 4.2 환경변수 변경 (env_vars.yaml) `[FR-4]` `[FR-9]`
 
-Console이 `POST /api/v1/admin/changes`에 `env_vars` 필드를 포함하여 호출한다. (config, env_vars, secrets를 동시에 변경할 수 있다.)
-
-```
-Console            Config Server     aap-helm-charts    Config Agent        litellm Pods
-  │                      │                   │                   │                   │
-  ├─ POST /admin/changes▶│                   │                   │                   │
-  │  (env_vars 포함)      │                   │                   │                   │
-  │                      ├─ Git commit&push ▶│                   │                   │
-  │                      ├─ 메모리 갱신       │                   │                   │
-  │◀── {version: "..."}──┤                   │                   │                   │
-  │                      │                   │                   │                   │
-  │                      │◀──── poll (30초) ─────────────────────┤                   │
-  │                      ├──── {changed: true} ────────────────▶│                   │
-  │                      │                   │                   │                   │
-  │                      │◀──── GET /env_vars (resolve_secrets) ┤                   │
-  │                      ├──── 환경변수 응답 ───────────────────▶│                   │
-  │                      │                   │                   ├─ Secret 업데이트   │
-  │                      │                   │                   ├─ annotation 패치   │
-  │                      │                   │                   │   Rolling restart  │
-  │                      │                   │                   │   maxUnavail: 25%  │
-  │                      │                   │                   │   maxSurge: 25%    │
-  │                      │                   │                   │         └─────────▶│
-  │                      │                   │                   │     재시작          │
-```
-
-**반영 방식**: Secret 업데이트 + Deployment annotation 패치 → K8s rolling update (maxUnavailable/maxSurge: 25%)
+4.1과 동일한 흐름이되, Config Agent가 `GET /env_vars?resolve_secrets=true`로 조회하고 **Secret** (ConfigMap 대신)을 업데이트한다는 점만 다르다. config, env_vars, secrets를 동시에 변경할 수도 있다.
 
 ### 4.3 시크릿 변경 (Console에서 시작) `[FR-4]` `[FR-7]` `[FR-9]`
 
@@ -892,62 +767,25 @@ env_vars:
 
 ---
 
-## 7. 주요 설계 결정 (Design Decisions) `[FR-7]` `[FR-9]`
+## 7. 주요 설계 결정 (Design Decisions)
 
-### 7.1 왜 SealedSecret인가
+상세 분석과 선택지 비교는 ADR 문서를 참조한다:
 
-| 대안 | 장점 | 단점 | 결정 |
-|------|------|------|------|
-| **SealedSecret** | Git에 안전하게 저장, 감사 추적, GitOps 친화적 | 클러스터에 Controller 필요 | **채택** |
-| External Secrets Operator | 외부 Vault 연동 가능 | 외부 의존성(Vault) 추가, 복잡도 증가 | 미채택 |
-| kubectl create secret | 단순함 | Git 추적 불가, 수동 관리, 감사 어려움 | 미채택 |
-| SOPS | Git 암호화 가능 | KMS 의존성, K8s 네이티브가 아님 | 미채택 |
-
-### 7.2 왜 Config Agent는 폴링인가
-
-| 방식 | 장점 | 단점 | 결정 |
-|------|------|------|------|
-| **Long Polling** | 구현 간단, 방화벽 친화적, 디버깅 용이 | 변경 반영 지연 (최대 30초) | **채택** |
-| Webhook (push) | 즉시 반영 | Config Server → Agent 방향 연결 필요, Agent 장애 시 유실 | 미채택 |
-| gRPC streaming | 실시간 | 연결 유지 비용, 복잡도 | 미채택 |
-
-### 7.3 왜 중앙 집중형 Agent인가
-
-litellm처럼 동일 Deployment의 replica가 동일 config을 공유하는 경우:
-
-| 방식 | Polling 요청 수 | 재시작 제어 | 결정 |
-|------|----------------|------------|------|
-| **중앙 Agent (replica=2)** | 2 | Rolling update 보장, HA | **채택** |
-| 사이드카 (per Pod) | N (replica 수) | Thundering herd 위험 | 미채택 |
+| 결정 | 채택 | ADR |
+|------|------|-----|
+| Config Agent debounce 전략 | Leading-edge Debounce | [ADR-001](./adr/001-config-agent-leading-edge-debounce.md) |
+| Config Agent 배포 방식 | 중앙 집중형 (사이드카 대신) | [ADR-002](./adr/002-central-config-agent-vs-sidecar.md) |
+| 동시 변경 처리 | 서비스별 Mutex + Pull-rebase | [ADR-003](./adr/003-concurrent-change-per-service-mutex.md) |
+| 시크릿 저장 방식 | SealedSecret + Volume Mount | [ADR-004](./adr/004-secret-storage-sealedsecret-volume-mount.md) |
 
 ---
 
 ## 8. 의존성
 
-### 8.1 클러스터 사전 요구사항
-
-| 컴포넌트 | 용도 | 필수 여부 |
-|----------|------|----------|
-| **Bitnami SealedSecrets Controller** | SealedSecret → K8s Secret 복호화 | 필수 |
-| **K8s etcd encryption at rest** | Secret 저장 시 암호화 | 권장 |
-| **K8s Network Policy 지원** (Calico/Cilium) | Pod 간 네트워크 접근 제어 | 권장 |
-
-### 8.2 Config Server 의존성
-
-| 의존성 | 용도 |
-|--------|------|
-| `aap-helm-charts` Git Repository | 설정 파일 원본 저장소 (Source of Truth). `configs/` 하위만 접근 |
-| AAP Console API | App Registry 로드 (인증/인가) |
-| K8s API (client-go) | SealedSecret apply |
-| Volume Mount | Secret 값 읽기 (resolve_secrets) |
-| SealedSecret Controller 공개키 | kubeseal 암호화 |
-
-### 8.3 Config Agent 의존성
-
-| 의존성 | 용도 |
-|--------|------|
-| Config Server API | 설정/환경변수 조회, 변경 감지 |
-| K8s API | ConfigMap/Secret 업데이트, Deployment annotation 패치 |
+> PRD 섹션 6 "비기능 요구사항 — 의존성" 참조. 주요 의존성:
+> - **클러스터**: Bitnami SealedSecrets Controller (필수), K8s etcd encryption at rest (권장), Network Policy (권장)
+> - **Config Server**: `aap-helm-charts` Git repo, AAP Console API, K8s API (client-go), Volume Mount, kubeseal
+> - **Config Agent**: Config Server API, K8s API (ConfigMap/Secret/Deployment)
 
 ---
 

@@ -128,5 +128,5 @@ Config Server Pod
 
 ## 관련 문서
 
-- [PRD FR-7: 시크릿 관리](./PRD.md)
-- [PRD FR-17: 시크릿 보안](./PRD.md)
+- [PRD FR-7: 시크릿 관리](../PRD.md)
+- [PRD FR-17: 시크릿 보안](../PRD.md)
