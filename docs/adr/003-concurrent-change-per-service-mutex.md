@@ -107,4 +107,4 @@ API 응답 시간은 mutex 보유 시간(~1-2초)에만 영향받으며, rolling
 ## 관련 문서
 
 - [PRD FR-4: 설정/시크릿 일괄 변경 Admin API](../PRD.md)
-- [ADR-001: Config Agent Leading-edge Debounce](./adr-001-config-agent-leading-edge-debounce.md)
+- [ADR-001: Config Agent Leading-edge Debounce](./001-config-agent-leading-edge-debounce.md)

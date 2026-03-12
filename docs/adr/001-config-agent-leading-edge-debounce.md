@@ -88,4 +88,4 @@ K8s Deployment controller는 overlapping rollout을 네이티브로 처리하지
 ## 관련 문서
 
 - [PRD FR-9: Config Agent](../PRD.md)
-- [ADR-002: 중앙 집중형 Config Agent vs Sidecar](./adr-002-central-config-agent-vs-sidecar.md)
+- [ADR-002: 중앙 집중형 Config Agent vs Sidecar](./002-central-config-agent-vs-sidecar.md)

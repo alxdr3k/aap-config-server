@@ -20,7 +20,7 @@
 | **FR-2** | 설정 조회 API | 4.2 | 2 (API 목록) | 1 |
 | **FR-3** | 환경변수 조회 API | 4.3 | 2 (API 목록) | 1 |
 | **FR-4** | 설정/시크릿 일괄 변경 Admin API | 4.4 | 2.1, 4.1, 4.2, 4.3 | 1 |
-| **FR-5** | 설정/시크릿 일괄 삭제 Admin API | 4.5 | 2.1 | 1 |
+| **FR-5** | 설정/시크릿 일괄 삭제 Admin API | 4.5 | 2.1, 4.4 | 1 |
 | **FR-6** | 설정/환경변수 변경 감지 (Long Polling) | 4.6 | 2.4 | 5 |
 | **FR-7** | 시크릿 관리 (SealedSecret + Volume Mount) | 4.7 | 2.2, 3, 4.3 | 2 |
 | **FR-8** | App Registry 연동 | 4.8 | 2.3 | 2 |
@@ -641,7 +641,7 @@ Console              Config Server      aap-helm-charts     K8s Cluster         
 
 ### 6.1 개요
 
-PRD 3.5에 정의된 설정 상속을 Config Server 내부에서 구현한다. `_defaults/common.yaml` 파일들을 계층적으로 merge하여 서비스별 최종 설정을 생성한다.
+PRD 4.10에 정의된 설정 상속을 Config Server 내부에서 구현한다. `_defaults/common.yaml` 파일들을 계층적으로 merge하여 서비스별 최종 설정을 생성한다.
 
 ### 6.2 Merge 파이프라인
 
