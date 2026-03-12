@@ -703,6 +703,21 @@ func (h *AdminHandler) getServiceLock(org, project, service string) *sync.Mutex 
 }
 ```
 
+**Mutex 범위**: mutex는 **Git 작업(파일 수정 → commit → push)만** 보호한다. Git push 완료 후 즉시 해제되며, API는 호출자에게 즉시 응답한다. 이후의 Config Agent polling → ConfigMap 업데이트 → rolling restart는 **완전 비동기**로 진행되며 mutex와 무관하다.
+
+```
+mutex.Lock()
+  ├─ 파일 수정 (~ms)
+  ├─ git commit (~ms)
+  ├─ git push (~1-2초)
+  └─ 메모리 갱신 (~ms)
+mutex.Unlock()
+  ↓
+API 즉시 응답 (200 OK)        ← Console은 여기서 결과를 받음
+  ↓ (비동기, mutex 밖)
+Config Agent polling → ConfigMap 업데이트 → rolling restart (~2-3분)
+```
+
 | 상황 | 동작 |
 |------|------|
 | **같은 서비스** (A: litellm, B: litellm) | mutex로 직렬화 → 순차 처리, Git 충돌 불가 |
@@ -1393,41 +1408,88 @@ spec:
 
 이 방식으로 32개 replica 중 **최대 25%(8개)만 동시에 재시작**되므로, 나머지는 항상 서비스 가능 상태를 유지한다.
 
-#### 연속 변경 시 Rolling Restart 중첩 처리
+#### 연속 변경과 재시작 폭풍 방지 (Debounce)
 
-짧은 간격으로 여러 설정 변경이 발생하면, Config Agent의 polling 주기(30초)와 K8s Deployment controller의 네이티브 동작이 이를 자연스럽게 처리한다:
-
-**시나리오 1: 두 변경이 같은 polling 주기 안에 발생 (가장 빈번)**
+짧은 간격으로 여러 설정 변경이 발생하면, Config Agent가 즉시 반영하는 방식은 **재시작 폭풍(restart storm)** 문제를 일으킨다:
 
 ```
-T=0s   User A: POST /admin/changes → Git commit A (ver: aaa111)
-T=3s   User B: POST /admin/changes → Git commit B (ver: bbb222)
-T=30s  Config Agent poll → 최신 version: bbb222 (A+B 모두 반영된 상태)
-       → ConfigMap/Secret 1회 업데이트 (A+B 통합)
-       → Rolling restart 1회만 발생
+[문제: debounce 없이 즉시 반영하는 경우]
+
+T=0s    User A: config 변경 → git commit A
+T=30s   Config Agent: A 감지 → rolling restart 시작 (~2-3분 소요)
+T=45s   User B: config 변경 → git commit B
+T=60s   Config Agent: B 감지 → 진행 중 rollout 중단, 새 rollout 시작
+T=90s   User C: config 변경 → git commit C
+T=120s  Config Agent: C 감지 → 또 rollout 중단, 새 rollout 시작
+...
+결과: litellm이 안정 상태에 도달하지 못하고 계속 cycling
 ```
 
-30초 polling 주기가 자연스러운 **변경 배칭(batching)** 역할을 한다. 짧은 간격의 연속 변경은 하나의 업데이트로 합쳐진다.
+K8s Deployment controller는 overlapping rollout을 네이티브로 처리하지만(진행 중인 rollout을 중단하고 최신 template으로 전환, maxUnavailable/maxSurge 제약 유지), 연속 변경이 이어지면 litellm이 안정 상태에 도달하는 시점이 계속 밀린다.
 
-**시나리오 2: 두 변경이 polling 주기를 걸쳐 발생 (rolling restart 중첩)**
+**해결: Config Agent의 Debounce 전략**
+
+Config Agent는 변경을 감지해도 **즉시 적용하지 않고**, 설정 가능한 quiet period(기본 30초) 동안 추가 변경이 없을 때 한 번만 적용한다:
 
 ```
-T=0s   User A: POST /admin/changes → Git commit A
-T=2s   Config Agent poll → 변경 감지 → ConfigMap 업데이트 → rolling restart 시작
-       (32 replicas, maxUnavailable 25% → 8개씩 순차 재시작, ~2-3분 소요)
-T=60s  User B: POST /admin/changes → Git commit B
-T=62s  Config Agent poll → 또 변경 감지 → ConfigMap 업데이트 → annotation 재패치
-       → K8s Deployment controller: 진행 중인 rollout을 즉시 중단하고
-         새로운 pod template(B의 설정)으로 새 rollout 시작
+[Debounce 동작]
+
+T=0s    User A: config 변경 → git commit A
+T=30s   Config Agent: A 감지 → debounce timer 시작 (30초)
+T=45s   User B: config 변경 → git commit B
+T=60s   Config Agent: B 감지 → debounce timer 리셋 (30초 재시작)
+T=90s   (quiet period 30초 경과, 추가 변경 없음)
+        Config Agent: 최신 설정(A+B 통합) fetch → ConfigMap 업데이트 → rolling restart 1회
 ```
 
-K8s Deployment controller는 rolling update 중에 pod template이 다시 변경되면, **진행 중인 rollout을 중단하고 최신 template으로 새 rollout을 시작**한다. 이것은 K8s의 네이티브 동작이다:
+```go
+// Config Agent debounce 로직 (개념)
+type ConfigAgent struct {
+    debounceTimer  *time.Timer
+    quietPeriod    time.Duration   // default: 30s, 설정 가능
+    maxWait        time.Duration   // default: 5m, 최대 대기 시간
+    firstDetected  time.Time       // debounce 시작 시점
+}
 
-- 이미 새 template으로 시작된 Pod: 그대로 유지 (B의 설정으로 다시 교체됨)
-- 아직 이전 template인 Pod: B의 설정으로 직접 업데이트
-- **maxUnavailable/maxSurge 제약은 항상 유지**되므로 서비스 가용성은 보장
+func (a *ConfigAgent) onChangeDetected() {
+    if a.firstDetected.IsZero() {
+        a.firstDetected = time.Now()
+    }
 
-> **결론**: Config Agent가 "기다렸다가 적용"할 필요가 없다. K8s Deployment controller가 overlapping rollout을 네이티브로 처리하므로, Config Agent는 변경을 감지할 때마다 즉시 ConfigMap 업데이트 + annotation 패치만 하면 된다.
+    // maxWait 초과 시 더 이상 debounce하지 않고 즉시 적용
+    if time.Since(a.firstDetected) >= a.maxWait {
+        a.applyNow()
+        return
+    }
+
+    // debounce timer 리셋
+    a.debounceTimer.Reset(a.quietPeriod)
+}
+
+func (a *ConfigAgent) onTimerExpired() {
+    // quiet period 동안 추가 변경 없음 → 최신 설정 적용
+    a.applyNow()
+}
+```
+
+**Debounce 파라미터**:
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| `--debounce-quiet-period` | `30s` | 마지막 변경 감지 후 이 시간 동안 추가 변경이 없으면 적용 |
+| `--debounce-max-wait` | `5m` | debounce 시작 후 최대 대기 시간. 초과 시 추가 변경 여부와 무관하게 즉시 적용 |
+
+**maxWait가 필요한 이유**: quiet period만으로는 변경이 끊임없이 들어올 때 무한히 대기할 수 있다. maxWait는 "최악의 경우에도 5분 안에는 반드시 적용된다"는 상한을 보장한다.
+
+**시나리오별 동작**:
+
+| 시나리오 | 동작 |
+|----------|------|
+| **단일 변경** | 감지 후 30초(quiet period) 대기 → 적용. 최대 지연 ~60초(polling 30s + quiet 30s) |
+| **30초 이내 연속 변경** | 마지막 변경 후 30초 대기 → 모든 변경이 하나의 rolling restart로 통합 |
+| **5분 이상 연속 변경** | maxWait 도달 시 중간 시점에서 한 번 적용 → timer 리셋 → 이후 변경은 다음 배치로 |
+
+> **트레이드오프**: Debounce는 단일 변경의 반영 지연을 ~30초 늘리지만, 연속 변경 시 불필요한 재시작 횟수를 대폭 줄인다. 설정 변경은 초 단위 반영이 필요한 작업이 아니므로, 30초 추가 지연은 허용 가능하다.
 
 #### Config Agent API
 
@@ -1482,6 +1544,8 @@ spec:
             - --target-secret=litellm-env-secret
             - --target-deployment=litellm
             - --poll-interval=30s
+            - --debounce-quiet-period=30s
+            - --debounce-max-wait=5m
           env:
             - name: APP_ID
               valueFrom:
