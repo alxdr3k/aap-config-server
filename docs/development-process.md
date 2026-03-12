@@ -1,6 +1,7 @@
 # AAP Config Server — TDD 개발 프로세스 가이드
 
 > 이 문서는 AAP Config Server 개발 시 TDD(Test-Driven Development) 기반으로 작업하는 구체적인 프로세스를 정의한다.
+> 프로젝트 구조, 패키지 설계, 의존성 주입, 에러 처리 등 **Go 설계 원칙**은 [HLD 섹션 11](./HLD.md#11-go-설계-원칙)을 참조한다.
 
 ---
 
@@ -61,7 +62,7 @@
 | 의존성 | Mock 방식 |
 |--------|----------|
 | **K8s API** | `client-go/kubernetes/fake` 사용, 실제 클러스터 불필요 |
-| **Git** | 임시 디렉토리에 test fixture repo 생성 |
+| **Git** | `t.TempDir()`에 test fixture repo 생성 |
 | **HTTP** | `httptest.NewServer`로 실제 HTTP 통신 테스트 |
 | **kubeseal** | interface로 추상화, 테스트에서 mock 주입 |
 
@@ -78,17 +79,17 @@
 테스트 먼저                          구현
 ━━━━━━━━━━━━━━━━━━━━                ━━━━━━━━━━━━━━━━━━
 0. 프로젝트 구조 세팅                → go mod init, cmd/, internal/ 디렉토리
-   서버 설정 로딩 테스트             → internal/config (환경변수 + 플래그)
-   커스텀 에러 타입 테스트           → internal/apperror
-1. config.yaml 파싱 테스트           → internal/parser YAML 파서 구현
-2. env_vars.yaml 파싱 테스트         → internal/parser 환경변수 파서 구현
-3. secrets.yaml 파싱 테스트          → internal/parser 시크릿 메타데이터 파서 구현
-4. ConfigStore CRUD 테스트           → internal/store In-memory store 구현 (COW, DI)
-5. Git clone/pull 테스트             → internal/gitops Git sync 로직 구현
-6. REST API 핸들러 테스트            → internal/handler HTTP 핸들러 구현
+   서버 설정 로딩 테스트             → 환경변수 + 플래그 로딩
+   커스텀 에러 타입 테스트           → 에러 코드, Unwrap, errors.As 동작 확인
+1. config.yaml 파싱 테스트           → YAML 파서 구현
+2. env_vars.yaml 파싱 테스트         → 환경변수 파서 구현
+3. secrets.yaml 파싱 테스트          → 시크릿 메타데이터 파서 구현
+4. ConfigStore CRUD 테스트           → In-memory store 구현 (COW, DI)
+5. Git clone/pull 테스트             → Git sync 로직 구현
+6. REST API 핸들러 테스트            → HTTP 핸들러 구현
    - GET /config 응답 형식
    - 쿼리 파라미터 처리
-   - 에러 응답 (apperror → HTTP 상태코드)
+   - 에러 응답 (에러 코드 → HTTP 상태코드 변환)
    - context.Context 전파 확인
 7. Health check 테스트               → /healthz, /readyz 구현
 8. Graceful shutdown 테스트          → signal.NotifyContext + http.Server.Shutdown
@@ -96,7 +97,7 @@
 
 **테스트 예시 (Phase 1)**:
 ```go
-// internal/parser/config_parser_test.go — Red: 이 테스트를 먼저 작성
+// YAML 파싱 테스트 — Red: 이 테스트를 먼저 작성
 func TestParseConfigYAML(t *testing.T) {
     input := `
 version: "1"
@@ -119,7 +120,7 @@ config:
         cfg.Config.ModelList[0].LitellmParams.APIKeySecretRef)
 }
 
-// internal/store/store_test.go — context.Context + 에러 타입 검증 예시
+// Store 테스트 — context.Context + 에러 타입 검증 예시
 func TestGetConfig_NotFound(t *testing.T) {
     ctx := context.Background()
     repo := &fakeGitRepo{}  // interface mock
@@ -139,14 +140,14 @@ func TestGetConfig_NotFound(t *testing.T) {
 ```
 테스트 먼저                          구현
 ━━━━━━━━━━━━━━━━━━━━                ━━━━━━━━━━━━━━━━━━
-1. Volume Mount 파일 읽기 테스트     → internal/secret Secret loader 구현
-2. secret_ref resolve 테스트         → internal/secret resolve 로직 구현
+1. Volume Mount 파일 읽기 테스트     → Secret loader 구현
+2. secret_ref resolve 테스트         → resolve 로직 구현
    - config 내 *_secret_ref 치환
    - env_vars 내 secret_refs 치환
-3. SealedSecret 생성 테스트          → internal/seal kubeseal 연동 구현 (interface)
-4. SealedSecret Git push 테스트      → internal/gitops Git commit/push 구현
-5. resolve_secrets=true 응답 테스트  → internal/handler API 파라미터 처리
-6. Cache-Control 헤더 테스트         → internal/auth 보안 헤더 미들웨어
+3. SealedSecret 생성 테스트          → kubeseal 연동 구현 (interface)
+4. SealedSecret Git push 테스트      → Git commit/push 구현
+5. resolve_secrets=true 응답 테스트  → API 파라미터 처리
+6. Cache-Control 헤더 테스트         → 보안 헤더 미들웨어
 7. 감사 로깅 테스트                  → audit logger 구현
 ```
 
@@ -155,16 +156,16 @@ func TestGetConfig_NotFound(t *testing.T) {
 ```
 테스트 먼저                          구현
 ━━━━━━━━━━━━━━━━━━━━                ━━━━━━━━━━━━━━━━━━
-1. Config Server API 호출 테스트     → internal/agent/poller HTTP client 구현
+1. Config Server API 호출 테스트     → HTTP client 구현
    (httptest.Server 사용)
-2. 변경 감지 로직 테스트             → internal/agent/poller version 비교 로직
-3. litellm config.yaml 생성 테스트   → internal/agent/applier 설정 변환기 구현
-4. env.sh 생성 테스트                → internal/agent/applier 환경변수 파일 생성기
-5. ConfigMap CRUD 테스트             → internal/agent/applier K8s client-go (fake)
-6. Secret CRUD 테스트                → internal/agent/applier K8s client-go (fake)
-7. Rolling restart 트리거 테스트     → internal/agent/applier Deployment patch 로직
+2. 변경 감지 로직 테스트             → version 비교 로직
+3. litellm config.yaml 생성 테스트   → 설정 변환기 구현
+4. env.sh 생성 테스트                → 환경변수 파일 생성기
+5. ConfigMap CRUD 테스트             → K8s client-go (fake client)
+6. Secret CRUD 테스트                → K8s client-go (fake client)
+7. Rolling restart 트리거 테스트     → Deployment patch 로직
 8. 변경 유형 판별 테스트             → config vs env_vars 구분
-9. Debounce 로직 테스트              → internal/agent/debounce leading-edge 구현
+9. Debounce 로직 테스트              → leading-edge debounce 구현
 ```
 
 ---
@@ -203,14 +204,13 @@ func TestGetConfig_NotFound(t *testing.T) {
 |------|------|
 | **테스트 파일 위치** | 구현 파일과 동일 패키지 (`_test.go` 접미사) |
 | **테이블 드리븐 테스트** | 복수 케이스는 `[]struct{ name, input, expected }` 패턴 사용 |
-| **외부 의존성 격리** | interface로 추상화, 테스트에서 mock/fake 주입 ([HLD 11.2](./HLD.md#112-의존성-주입-dependency-injection) 참조) |
+| **외부 의존성 격리** | interface로 추상화, 테스트에서 mock/fake 주입 |
 | **context.Context** | 테스트에서도 `context.Background()` 또는 `context.WithTimeout`을 전달 |
 | **에러 검증** | `errors.Is` / `errors.As`로 에러 타입 확인, 문자열 비교 금지 |
-| **K8s 테스트** | `client-go/kubernetes/fake` 사용, 실제 클러스터 불필요 |
-| **Git 테스트** | `t.TempDir()`에 test fixture repo 생성 |
-| **HTTP 테스트** | `httptest.NewServer`로 실제 HTTP 통신 테스트 |
 | **Race 검출** | CI에서 `-race` 플래그 필수. 동시성 관련 코드는 로컬에서도 `-race`로 실행 |
 | **시크릿 테스트** | 테스트 데이터에 실제 시크릿 절대 포함 금지 |
+
+> 의존성 주입, 에러 타입, 프로젝트 구조 등 구체적인 Go 설계 패턴은 [HLD 섹션 11](./HLD.md#11-go-설계-원칙)을 참조한다.
 
 ---
 
@@ -262,13 +262,6 @@ fix: agent - rolling restart annotation 누락 수정
 ```bash
 # 전체 테스트 실행
 go test ./...
-
-# 특정 패키지 실행
-go test ./internal/parser/...
-go test ./internal/store/...
-go test ./internal/gitops/...
-go test ./internal/handler/...
-go test ./internal/agent/...
 
 # 특정 테스트 함수 실행
 go test ./internal/parser/ -run TestParseConfigYAML
