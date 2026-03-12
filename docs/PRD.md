@@ -688,41 +688,7 @@ POST /api/v1/admin/changes
 
 #### 동시 변경 처리 (Git Push Conflict)
 
-두 명의 Console 사용자가 거의 동시에 설정을 변경하면, 먼저 push한 요청은 성공하고 뒤따르는 요청은 `git push` rejected 에러를 받는다. Config Server는 **pull-rebase-retry** 전략으로 이를 처리한다:
-
-```
-User A 요청          User B 요청
-    │                    │
-    ▼                    ▼
- 파일 수정            파일 수정
- git commit           git commit
- git push ✓ (성공)    git push ✗ (rejected)
-                         │
-                         ▼
-                      git pull --rebase
-                         │
-                    ┌────▼────┐
-                    │충돌 여부?│
-                    └────┬────┘
-                    │         │
-                 충돌 없음   충돌 발생 (같은 파일의 같은 키)
-                    │         │
-                    ▼         ▼
-              git push ✓   rebase 중단
-              (자동 해결)   → 409 Conflict 응답
-                           → Console에 재시도 안내
-```
-
-**처리 규칙**:
-
-| 상황 | 동작 |
-|------|------|
-| **서로 다른 서비스** 변경 (A: litellm, B: gateway) | 충돌 없음 → pull-rebase → 자동 성공 |
-| **같은 서비스, 다른 파일** (A: config.yaml, B: env_vars.yaml) | 충돌 없음 → pull-rebase → 자동 성공 |
-| **같은 파일, 다른 키** (A: model_list, B: router_settings) | 대부분 충돌 없음 → pull-rebase → 자동 성공 |
-| **같은 파일, 같은 키** (A: model_list 변경, B: model_list 변경) | 충돌 → `409 Conflict` 응답, Console이 최신 설정 fetch 후 재시도 |
-
-**직렬화 보장**: 동일 서비스에 대한 `POST /admin/changes` 요청은 Config Server 내부에서 **서비스 경로별 mutex**로 직렬화한다. 이로써 같은 서비스에 대한 동시 요청은 순차 처리되어 Git 충돌 자체가 발생하지 않는다:
+동일 서비스에 대한 `POST /admin/changes` 요청은 Config Server 내부에서 **서비스 경로별 mutex**로 직렬화한다. 다른 서비스에 대한 요청은 서로 다른 파일을 수정하므로 Git 충돌이 발생하지 않는다. 결과적으로 **Git 충돌은 구조적으로 불가능**하다:
 
 ```go
 // 서비스 경로별 lock (fine-grained locking)
@@ -737,21 +703,31 @@ func (h *AdminHandler) getServiceLock(org, project, service string) *sync.Mutex 
 }
 ```
 
-- 같은 서비스: mutex로 직렬화 → Git 충돌 불가
-- 다른 서비스: 서로 다른 mutex → 병렬 처리 가능, Git 충돌 시 pull-rebase로 자동 해결
-- pull-rebase 최대 3회 재시도 후 실패 시 `503 Service Unavailable` 응답
+| 상황 | 동작 |
+|------|------|
+| **같은 서비스** (A: litellm, B: litellm) | mutex로 직렬화 → 순차 처리, Git 충돌 불가 |
+| **다른 서비스** (A: litellm, B: gateway) | 서로 다른 파일 수정 → 병렬 처리, Git 충돌 불가 |
 
-**`409 Conflict` 응답 형식**:
+다른 서비스 간 병렬 처리 시 `git push` rejected가 발생할 수 있으나, 수정하는 파일이 다르므로 **pull-rebase로 항상 자동 해결**된다:
 
-```json
-{
-  "error": "conflict",
-  "message": "Concurrent modification detected on the same config keys",
-  "current_version": "aaa111",
-  "conflicting_files": ["config.yaml"],
-  "retry": "Fetch latest config with GET /api/v1/.../config and resubmit"
-}
 ```
+User A (litellm)     User B (gateway)
+    │                    │
+    ▼                    ▼
+ config.yaml 수정    config.yaml 수정
+ (litellm 경로)      (gateway 경로)
+ git commit           git commit
+ git push ✓ (성공)    git push ✗ (rejected)
+                         │
+                         ▼
+                      git pull --rebase
+                      → 다른 파일이므로 충돌 없음
+                         │
+                         ▼
+                      git push ✓ (자동 성공)
+```
+
+- pull-rebase 최대 3회 재시도 후 실패 시 `503 Service Unavailable` 응답
 
 ### 4.5 FR-5: 설정/시크릿 일괄 삭제 Admin API `[FR-5]`
 
