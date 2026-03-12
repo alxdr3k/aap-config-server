@@ -1427,37 +1427,52 @@ T=120s  Config Agent: C 감지 → 또 rollout 중단, 새 rollout 시작
 
 K8s Deployment controller는 overlapping rollout을 네이티브로 처리하지만(진행 중인 rollout을 중단하고 최신 template으로 전환, maxUnavailable/maxSurge 제약 유지), 연속 변경이 이어지면 litellm이 안정 상태에 도달하는 시점이 계속 밀린다.
 
-**해결: Config Agent의 Debounce 전략**
+**해결: Leading-edge Debounce**
 
-Config Agent는 변경을 감지해도 **즉시 적용하지 않고**, 설정 가능한 quiet period(기본 30초) 동안 추가 변경이 없을 때 한 번만 적용한다:
+핵심 원칙: **첫 변경은 즉시 적용, 이후 연속 변경만 배칭**한다. Console 사용자가 설정을 저장했을 때 litellm 반영까지 불필요하게 기다리지 않도록 한다.
 
 ```
-[Debounce 동작]
+[Leading-edge Debounce 동작]
 
 T=0s    User A: config 변경 → git commit A
-T=30s   Config Agent: A 감지 → debounce timer 시작 (30초)
-T=45s   User B: config 변경 → git commit B
-T=60s   Config Agent: B 감지 → debounce timer 리셋 (30초 재시작)
-T=90s   (quiet period 30초 경과, 추가 변경 없음)
-        Config Agent: 최신 설정(A+B 통합) fetch → ConfigMap 업데이트 → rolling restart 1회
+T=30s   Config Agent: A 감지 → 첫 변경이므로 즉시 적용
+        ConfigMap 업데이트 → rolling restart 시작
+        cooldown(10초) 진입
+T=35s   User B: config 변경 → git commit B
+T=40s   Config Agent: B 감지 → cooldown 중이므로 debounce timer 시작
+T=42s   User C: config 변경 → git commit C
+T=60s   Config Agent: C 감지 → debounce timer 리셋
+T=70s   (quiet period 10초 경과, 추가 변경 없음)
+        Config Agent: 최신 설정(B+C 통합) fetch → ConfigMap 업데이트 → rolling restart 1회
 ```
 
+User A는 **즉시 반영**된다. B와 C는 연속 변경이므로 하나로 배칭된다.
+
 ```go
-// Config Agent debounce 로직 (개념)
+// Config Agent leading-edge debounce 로직 (개념)
 type ConfigAgent struct {
     debounceTimer  *time.Timer
-    quietPeriod    time.Duration   // default: 30s, 설정 가능
-    maxWait        time.Duration   // default: 5m, 최대 대기 시간
-    firstDetected  time.Time       // debounce 시작 시점
+    cooldown       time.Duration   // default: 10s, 적용 직후 재적용 방지 기간
+    quietPeriod    time.Duration   // default: 10s, 연속 변경 배칭 대기
+    maxWait        time.Duration   // default: 2m, 최대 대기 시간
+    lastApplied    time.Time       // 마지막 적용 시점
+    firstPending   time.Time       // debounce 시작 시점
 }
 
 func (a *ConfigAgent) onChangeDetected() {
-    if a.firstDetected.IsZero() {
-        a.firstDetected = time.Now()
+    // cooldown 이후 첫 변경 → 즉시 적용 (leading edge)
+    if time.Since(a.lastApplied) >= a.cooldown {
+        a.applyNow()
+        return
     }
 
-    // maxWait 초과 시 더 이상 debounce하지 않고 즉시 적용
-    if time.Since(a.firstDetected) >= a.maxWait {
+    // cooldown 중 → debounce 모드
+    if a.firstPending.IsZero() {
+        a.firstPending = time.Now()
+    }
+
+    // maxWait 초과 → 강제 적용
+    if time.Since(a.firstPending) >= a.maxWait {
         a.applyNow()
         return
     }
@@ -1466,9 +1481,10 @@ func (a *ConfigAgent) onChangeDetected() {
     a.debounceTimer.Reset(a.quietPeriod)
 }
 
-func (a *ConfigAgent) onTimerExpired() {
-    // quiet period 동안 추가 변경 없음 → 최신 설정 적용
-    a.applyNow()
+func (a *ConfigAgent) applyNow() {
+    // 최신 설정 fetch → ConfigMap/Secret 업데이트 → rolling restart
+    a.lastApplied = time.Now()
+    a.firstPending = time.Time{}  // 리셋
 }
 ```
 
@@ -1476,20 +1492,19 @@ func (a *ConfigAgent) onTimerExpired() {
 
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
-| `--debounce-quiet-period` | `30s` | 마지막 변경 감지 후 이 시간 동안 추가 변경이 없으면 적용 |
-| `--debounce-max-wait` | `5m` | debounce 시작 후 최대 대기 시간. 초과 시 추가 변경 여부와 무관하게 즉시 적용 |
-
-**maxWait가 필요한 이유**: quiet period만으로는 변경이 끊임없이 들어올 때 무한히 대기할 수 있다. maxWait는 "최악의 경우에도 5분 안에는 반드시 적용된다"는 상한을 보장한다.
+| `--debounce-cooldown` | `10s` | 적용 직후 재적용 방지 기간. 이 기간 내 변경은 배칭 |
+| `--debounce-quiet-period` | `10s` | 마지막 변경 감지 후 이 시간 동안 추가 변경이 없으면 적용 |
+| `--debounce-max-wait` | `2m` | debounce 시작 후 최대 대기 시간. 초과 시 추가 변경 여부와 무관하게 즉시 적용 |
 
 **시나리오별 동작**:
 
-| 시나리오 | 동작 |
-|----------|------|
-| **단일 변경** | 감지 후 30초(quiet period) 대기 → 적용. 최대 지연 ~60초(polling 30s + quiet 30s) |
-| **30초 이내 연속 변경** | 마지막 변경 후 30초 대기 → 모든 변경이 하나의 rolling restart로 통합 |
-| **5분 이상 연속 변경** | maxWait 도달 시 중간 시점에서 한 번 적용 → timer 리셋 → 이후 변경은 다음 배치로 |
+| 시나리오 | 동작 | litellm 반영 지연 |
+|----------|------|-------------------|
+| **단일 변경** | 즉시 적용 (leading edge) | polling 주기(~30초)만큼만 |
+| **10초 이내 연속 변경** | 첫 변경 즉시 적용, 나머지는 마지막 변경 후 10초 대기 → 통합 적용 | 첫 변경: ~30초, 이후: ~40초 |
+| **2분 이상 연속 변경** | 첫 변경 즉시, maxWait(2분)마다 중간 적용 | 최악: 2분 |
 
-> **트레이드오프**: Debounce는 단일 변경의 반영 지연을 ~30초 늘리지만, 연속 변경 시 불필요한 재시작 횟수를 대폭 줄인다. 설정 변경은 초 단위 반영이 필요한 작업이 아니므로, 30초 추가 지연은 허용 가능하다.
+> **사용자 체감 시간**: Console에서 "저장"을 누르면 API는 ~1-2초 안에 응답한다(Git commit 완료). litellm Pod 반영은 비동기이며, 단일 변경 시 polling 주기(~30초) 후 즉시 적용된다. 연속 변경 시에만 debounce가 작동하여 불필요한 재시작을 방지한다.
 
 #### Config Agent API
 
@@ -1544,8 +1559,9 @@ spec:
             - --target-secret=litellm-env-secret
             - --target-deployment=litellm
             - --poll-interval=30s
-            - --debounce-quiet-period=30s
-            - --debounce-max-wait=5m
+            - --debounce-cooldown=10s
+            - --debounce-quiet-period=10s
+            - --debounce-max-wait=2m
           env:
             - name: APP_ID
               valueFrom:
