@@ -1,7 +1,7 @@
 # AAP Config Server — Product Requirements Document
 
-> **Version**: 1.5
-> **Date**: 2026-03-11
+> **Version**: 2.0
+> **Date**: 2026-03-12
 > **Status**: Draft
 
 ---
@@ -35,35 +35,35 @@
 
 ### 1.4 기능 요구사항 요약 (FR Index)
 
-본 문서 전체에 걸쳐 정의된 기능 요구사항(FR)의 인덱스이다. 각 FR은 해당 섹션에서 `[FR-X]` 태그로 표기된다.
+본 문서 전체에 걸쳐 정의된 기능 요구사항(FR)의 인덱스이다. 각 FR은 섹션 4에서 `[FR-X]` 태그로 정의된다.
 
 | FR ID | 기능 요구사항 | 정의 섹션 | Phase |
 |-------|-------------|----------|-------|
-| **FR-1** | Git-backed In-memory Config Store | 2.1, 2.2, 7 | 1 |
-| **FR-2** | 설정 조회 API (`GET .../config`) | 6.1 | 1 |
-| **FR-3** | 환경변수 조회 API (`GET .../env_vars`) | 6.1 | 1 |
-| **FR-4** | 설정/시크릿 일괄 변경 Admin API (`POST /admin/changes`) | 6.4 | 1 |
-| **FR-5** | 설정/시크릿 일괄 삭제 Admin API (`DELETE /admin/changes`) | 6.4 | 1 |
-| **FR-6** | 설정/환경변수 변경 감지 API (Long Polling) | 6.2, 6.9 | 5 |
-| **FR-7** | 시크릿 관리 (SealedSecret + Volume Mount) | 3.4, 5 | 2 |
-| **FR-8** | App Registry 연동 (Console webhook) | 3.3 | 2 |
-| **FR-9** | Config Agent (중앙 집중형) | 4 | 3 |
-| **FR-10** | 설정 상속 (Config Inheritance) | 3.5 | 5 |
-| **FR-11** | 서비스 탐색 API (`GET /orgs`, `/projects`, `/services`) | 6.6 | 5 |
-| **FR-12** | 시크릿 메타데이터 API (`GET .../secrets`) | 6.5 | 5 |
-| **FR-13** | 변경 이력 API (`GET .../history`) | 6.7 | 5 |
-| **FR-14** | 설정 롤백 API (`POST /admin/changes/revert`) | 6.8 | 5 |
-| **FR-15** | 헬스체크 / 운영 API (`/healthz`, `/readyz`, `/status`) | 6.3 | 1 |
-| **FR-16** | 인증/인가 (App ID + App Registry RBAC) | 3.3, 8.1 | 4 |
-| **FR-17** | 시크릿 보안 (전송/저장/로그 보호) | 5, 8.2, 8.3 | 4 |
+| **FR-1** | Git-backed In-memory Config Store | 4.1 | 1 |
+| **FR-2** | 설정 조회 API (`GET .../config`) | 4.2 | 1 |
+| **FR-3** | 환경변수 조회 API (`GET .../env_vars`) | 4.3 | 1 |
+| **FR-4** | 설정/시크릿 일괄 변경 Admin API (`POST /admin/changes`) | 4.4 | 1 |
+| **FR-5** | 설정/시크릿 일괄 삭제 Admin API (`DELETE /admin/changes`) | 4.5 | 1 |
+| **FR-6** | 설정/환경변수 변경 감지 API (Long Polling) | 4.6 | 5 |
+| **FR-7** | 시크릿 관리 (SealedSecret + Volume Mount) | 4.7 | 2 |
+| **FR-8** | App Registry 연동 (Console webhook) | 4.8 | 2 |
+| **FR-9** | Config Agent (중앙 집중형) | 4.9 | 3 |
+| **FR-10** | 설정 상속 (Config Inheritance) | 4.10 | 5 |
+| **FR-11** | 서비스 탐색 API (`GET /orgs`, `/projects`, `/services`) | 4.11 | 5 |
+| **FR-12** | 시크릿 메타데이터 API (`GET .../secrets`) | 4.12 | 5 |
+| **FR-13** | 변경 이력 API (`GET .../history`) | 4.13 | 5 |
+| **FR-14** | 설정 롤백 API (`POST /admin/changes/revert`) | 4.14 | 5 |
+| **FR-15** | 헬스체크 / 운영 API (`/healthz`, `/readyz`, `/status`) | 4.15 | 1 |
+| **FR-16** | 인증/인가 (App ID + App Registry RBAC) | 4.16 | 4 |
+| **FR-17** | 시크릿 보안 (전송/저장/로그 보호) | 4.17 | 4 |
 
 > **Console PRD 연관**: Console PRD의 FR-3(Project 삭제), FR-5(Langfuse SK/PK), FR-6(LiteLLM Config), FR-8(버전 롤백)이 Config Server의 FR-4, FR-5, FR-7, FR-14를 호출한다.
 
 ---
 
-## 2. 아키텍처
+## 2. 아키텍처 개요
 
-### 2.1 Git-backed In-memory Config Server `[FR-1]`
+### 2.1 시스템 구조
 
 ```
                     ┌─────────────┐
@@ -138,7 +138,7 @@
 
 Kubernetes API Server가 etcd를 source of truth로 쓰되 메모리 캐시로 응답하는 것과 동일한 패턴이다.
 
-### 2.2 동작 흐름 `[FR-1]`
+### 2.2 동작 흐름
 
 1. **시작 시**: `aap-helm-charts` Git 저장소를 clone/pull → `configs/` 하위의 모든 설정 파일을 파싱 → 메모리에 적재
 2. **실행 중**: REST API 요청 → 메모리에서 즉시 응답 (I/O 없음)
@@ -297,6 +297,9 @@ env_vars:
 
   # 시크릿 환경변수 (secret_ref → secrets.yaml 참조)
   secret_refs:
+    AZURE_API_KEY: "azure-gpt4-api-key"          # → secrets.yaml의 id
+    ANTHROPIC_API_KEY: "anthropic-api-key"
+    GUARDRAIL_API_KEY: "guardrail-api-key"
     DATABASE_URL: "litellm-db-url"             # → secrets.yaml의 id
     LITELLM_MASTER_KEY: "litellm-master-key"
     UI_PASSWORD: "litellm-ui-password"
@@ -375,101 +378,374 @@ secrets:
       key: "api-key"
 ```
 
-### 3.3 앱 식별 및 권한: AAP Console 연동 `[FR-8]` `[FR-16]`
+---
 
-Config Server는 자체적으로 클라이언트 등록이나 scope 관리를 하지 않는다. **AAP Console**이 org/project/service/app의 계층 구조와 권한의 단일 소스(Single Source of Truth)이다.
+## 4. 핵심 기능 요구사항
 
-#### App ID 기반 식별
+> 이하 모든 FR은 이 섹션에서 정의된다.
 
-각 클라이언트 서비스(litellm 등)는 AAP Console에서 발급받은 **App ID**로 자신을 식별한다.
+### 4.1 FR-1: Git-backed In-memory Config Store `[FR-1]`
 
-```
-Admin (Browser)  AAP Console            Config Server           litellm
-  │                  │                        │                    │
-  ├─ App 등록 요청 ──▶│                        │                    │
-  │  (org/project/   │                        │                    │
-  │   service)       │                        │                    │
-  │                  ├─ App ID 발급 + DB 저장   │                    │
-  │◀── UI: Project  ─┤                        │                    │
-  │  정보(App ID     │                        │                    │
-  │  포함) 표시       │                        │                    │
-  │                  │                        │                    │
-  │                  ├── webhook push ───────▶│                    │
-  │                  │   (fire-and-forget,    │                    │
-  │                  │    App 등록/수정/삭제)   ├─ App Registry     │
-  │                  │                        │  캐시 갱신          │
-  │                  │                        │                    │
-  │                  │                        │◀── GET /config ────┤
-  │                  │                        │   X-App-ID 헤더     │
-  │                  │                        ├─ 캐시에서 검증       │
-  │                  │                        ├─ scope 확인         │
-  │                  │                        ├── 설정 응답 ───────▶│
-  │                  │                        │                    │
-```
+`aap-helm-charts` Git 저장소의 `configs/` 하위 설정 파일을 메모리에 적재하고, REST API 요청 시 메모리에서 즉시 응답하는 핵심 저장소 엔진.
 
-- **Admin**이 AAP Console에서 App을 등록하면 App ID가 발급되고, UI에 Project 정보(App ID 포함)가 표시된다
-- **AAP Console**이 App Registry 변경 시 Config Server로 webhook push (**fire-and-forget + async retry** — Console DB 저장 후 비동기 전송, Config Server 다운 시에도 CRUD 완료)
-- **Config Server**는 push받은 정보로 인증/인가 캐시를 갱신할 뿐, 직접 관리하지 않음
+#### 메모리 구조
 
-#### AAP Console App Registry 데이터 모델
-
-Config Server는 AAP Console로부터 다음 정보를 수신/캐시한다:
-
-```json
-{
-  "app_id": "app-abc123",
-  "app_name": "litellm-prod",
-  "org": "myorg",
-  "project": "ai-platform",
-  "service": "litellm",
-  "permissions": {
-    "config_read": true,
-    "env_vars_read": true,
-    "resolve_secrets": true
-  },
-  "created_at": "2026-03-01T00:00:00Z"
+```go
+// 핵심 자료구조
+type ConfigStore struct {
+    mu       sync.RWMutex
+    configs  map[string]*ResolvedConfig  // key: "org/project/service"
+    version  string                       // current git commit hash
 }
 ```
 
-#### 왜 Config Server가 직접 관리하지 않는가
+- 모든 읽기는 `RLock` → 동시 읽기 무제한
+- 쓰기(설정 갱신)는 `Lock` → COW(Copy-on-Write) 패턴으로 읽기 차단 최소화
 
-- org/project/service 계층은 AAP Console이 이미 관리하고 있으므로 이중 관리가 됨
-- 앱 등록/폐기, scope 변경 같은 lifecycle은 Console의 책임
-- Config Server는 **설정 저장 + 서빙**에만 집중, 권한은 Console에 위임
-
-#### AAP Console 연동 방식
-
-**시작 시 전체 로드:**
+#### Copy-on-Write 갱신
 
 ```
-Config Server 시작
-    │
-    ├─ 1. Console API 호출: 전체 App Registry 로드
-    │     GET /api/v1/apps?all=true
-    │     → 메모리에 캐시
-    │     → 실패 시 exponential backoff retry (최대 5회)
-    │     → 최종 실패 시 빈 캐시로 기동 (설정 서빙은 정상, App 인증만 불가)
-    │
-    └─ 2. Readiness: Git sync + App Registry 로드 모두 완료 시 readyz=true
-          (App Registry 로드 실패 시에도 readyz=true, 단 인증 기능 제한)
+1. 새 Git 변경 감지
+2. 변경된 설정만 파싱 (diff 기반)
+3. 새 map 생성 (기존 map 복사 + 변경분 적용)
+4. atomic pointer swap (sync.RWMutex Lock 최소 구간)
+5. 기존 map은 진행 중인 요청 완료 후 GC
 ```
 
-**런타임 캐시 갱신:**
+갱신 중에도 읽기 요청은 거의 차단되지 않는다.
 
-Console이 App을 등록/수정/삭제하면 `POST /admin/app-registry/webhook`으로 Config Server에 통지한다 (fire-and-forget + async retry). Config Server는 수신한 데이터로 인메모리 캐시를 갱신한다.
+#### HTTP 최적화
+
+- **HTTP/2 지원**: 다중 요청 멀티플렉싱
+- **ETag / If-None-Match**: 변경 없으면 `304` 응답 (body 전송 생략, 시크릿 미포함 응답에만 적용)
+- **gzip 응답 압축**: 대용량 설정 응답 시 대역폭 절약
+- **Connection pooling**: Keep-Alive로 연결 재사용
+
+#### 성능 목표
+
+| 지표 | 목표 |
+|------|------|
+| Throughput | 100,000+ req/s (단일 인스턴스) |
+| Latency (p99) | < 5ms |
+| Memory | 설정 1,000개 기준 < 100MB |
+| 시작 시간 | < 5초 (cold start) |
+
+### 4.2 FR-2: 설정 조회 API `[FR-2]`
+
+#### 단일 서비스 설정 조회
 
 ```
-Console                          Config Server
-  │                                    │
-  ├─ POST /admin/app-registry/webhook ▶│
-  │  (fire-and-forget + async retry)   ├─ 캐시 갱신
-  │◀── {status: "ok"} ────────────────┤
+GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config
 ```
 
-- webhook 유실 시: Console의 async retry queue가 재시도
-- Config Server 재시작 시: 시작 시 전체 로드(1번)로 캐시 복구
+**Request Headers**:
 
-### 3.4 시크릿 관리: Volume Mount + Reference 패턴 `[FR-7]`
+| 헤더 | 필수 | 설명 |
+|------|------|------|
+| `X-App-ID` | Y | AAP Console에서 발급받은 App ID |
+
+**Query Parameters**:
+
+| 파라미터 | 타입 | 설명 |
+|----------|------|------|
+| `resolve_secrets` | bool | `true`면 시크릿 값을 resolve하여 평문으로 포함 (default: `false`) |
+| `keys` | string | 쉼표 구분, 특정 키만 반환 (예: `model_list,router_settings`) |
+| `format` | string | `yaml` 또는 `json` (default: `json`) |
+| `inherit` | bool | `true`면 상위 레벨 기본값 merge (default: `true`) |
+| `version` | string | 특정 Git commit hash의 설정을 반환 (default: 최신) |
+
+**Response** (`resolve_secrets=false`):
+
+```json
+{
+  "metadata": {
+    "org": "myorg",
+    "project": "ai-platform",
+    "service": "litellm",
+    "version": "a3f2b1c",
+    "updated_at": "2026-03-09T10:00:00Z"
+  },
+  "config": {
+    "general_settings": {
+      "master_key_secret_ref": "litellm-master-key"
+    },
+    "model_list": [ ... ],
+    "router_settings": { ... }
+  }
+}
+```
+
+**Response** (`resolve_secrets=true`):
+
+```json
+{
+  "metadata": {
+    "org": "myorg",
+    "project": "ai-platform",
+    "service": "litellm",
+    "version": "a3f2b1c",
+    "updated_at": "2026-03-09T10:00:00Z"
+  },
+  "config": {
+    "general_settings": {
+      "master_key": "EXAMPLE-master-key-replace-me"
+    },
+    "model_list": [
+      {
+        "model_name": "gpt-4",
+        "litellm_params": {
+          "model": "azure/gpt-4",
+          "api_base": "https://my-azure.openai.azure.com",
+          "api_key": "EXAMPLE-azure-key-replace-me"
+        }
+      }
+    ],
+    "router_settings": {
+      "routing_strategy": "least-busy",
+      "num_retries": 3
+    }
+  }
+}
+```
+
+- 일반 설정(`model`, `api_base`, `router_settings`)과 시크릿(`master_key`, `api_key`) 모두 평문
+- `Cache-Control: no-store` 헤더로 캐싱 방지
+
+#### 다중 서비스 설정 일괄 조회
+
+```
+POST /api/v1/configs/batch
+```
+
+```json
+{
+  "queries": [
+    { "org": "myorg", "project": "ai-platform", "service": "litellm" },
+    { "org": "myorg", "project": "ai-platform", "service": "gateway" }
+  ],
+  "resolve_secrets": false
+}
+```
+
+### 4.3 FR-3: 환경변수 조회 API `[FR-3]`
+
+```
+GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars
+```
+
+**Query Parameters**: 설정 조회 API와 동일 (`resolve_secrets`, `format`, `inherit`)
+
+**Response** (`resolve_secrets=false`):
+
+```json
+{
+  "metadata": {
+    "org": "myorg",
+    "project": "ai-platform",
+    "service": "litellm",
+    "version": "a3f2b1c"
+  },
+  "env_vars": {
+    "plain": {
+      "LITELLM_LOG_LEVEL": "INFO",
+      "LITELLM_NUM_WORKERS": "4",
+      "LITELLM_PORT": "4000"
+    },
+    "secret_refs": {
+      "DATABASE_URL": "litellm-db-url",
+      "LITELLM_MASTER_KEY": "litellm-master-key"
+    }
+  }
+}
+```
+
+**Response** (`resolve_secrets=true`): `secret_refs`의 각 값이 실제 시크릿 평문으로 치환되어 응답
+
+```json
+{
+  "metadata": {
+    "org": "myorg",
+    "project": "ai-platform",
+    "service": "litellm",
+    "version": "a3f2b1c"
+  },
+  "env_vars": {
+    "plain": {
+      "LITELLM_LOG_LEVEL": "INFO",
+      "LITELLM_NUM_WORKERS": "4",
+      "LITELLM_PORT": "4000"
+    },
+    "secrets": {
+      "DATABASE_URL": "postgresql://user:EXAMPLE@host:5432/db",
+      "LITELLM_MASTER_KEY": "EXAMPLE-master-key-replace-me"
+    }
+  }
+}
+```
+
+> `resolve_secrets=false`에서는 `secret_refs` (시크릿 ID 참조), `resolve_secrets=true`에서는 `secrets` (실제 평문 값)로 키 이름이 달라진다.
+
+### 4.4 FR-4: 설정/시크릿 일괄 변경 Admin API `[FR-4]`
+
+> **`aap-console` PRD 참조**: Console → Config Server 인터페이스는 Console PRD Section 3 "시스템 아키텍처 개요"에 정의된 Admin API 계약을 따른다.
+
+Console이 설정과 시크릿을 **한 번에** 전달하면, Config Server가 설정 파일 갱신 + 시크릿 암호화(kubeseal) + SealedSecret apply를 **단일 atomic Git 커밋**으로 처리한다. Console은 Git/kubeseal/kubectl 의존성 없이 이 API만 호출한다.
+
+```
+POST /api/v1/admin/changes
+```
+
+**Request Headers**:
+
+| 헤더 | 필수 | 설명 |
+|------|------|------|
+| `X-App-ID` | Y | AAP Console에서 발급받은 App ID |
+
+**Request Body**:
+
+```json
+{
+  "org": "myorg",
+  "project": "ai-platform",
+  "service": "litellm",
+  "config": {
+    "model_list": [
+      {
+        "model_name": "azure-gpt4",
+        "litellm_params": {
+          "model": "azure/gpt-4",
+          "api_base": "https://my-azure.openai.azure.com",
+          "api_key_secret_ref": "azure-gpt4-api-key",
+          "api_version": "2024-06-01"
+        }
+      }
+    ],
+    "general_settings": {
+      "master_key_secret_ref": "litellm-master-key",
+      "database_url_secret_ref": "litellm-db-url"
+    },
+    "router_settings": {
+      "routing_strategy": "least-busy",
+      "num_retries": 3,
+      "timeout": 60
+    }
+  },
+  "env_vars": {
+    "plain": {
+      "LITELLM_LOG_LEVEL": "INFO",
+      "LITELLM_NUM_WORKERS": "4",
+      "LITELLM_PORT": "4000"
+    },
+    "secret_refs": {
+      "DATABASE_URL": "litellm-db-url",
+      "LITELLM_MASTER_KEY": "litellm-master-key"
+    }
+  },
+  "secrets": {
+    "litellm-secrets": {
+      "namespace": "ai-platform",
+      "data": {
+        "master-key": "actual-secret-value",
+        "database-url": "postgresql://..."
+      }
+    }
+  },
+  "message": "Add azure-gpt4 model with API keys"
+}
+```
+
+- `org`, `project`, `service`: 대상 서비스 경로
+- `config`: config.yaml 블록 (optional — 생략 시 config.yaml 미변경)
+- `env_vars`: env_vars.yaml 블록 (optional — 생략 시 env_vars.yaml 미변경)
+- `secrets`: 시크릿 평문 (optional — 생략 시 시크릿 미변경). key는 K8s Secret 이름, data는 key-value 쌍
+- `message`: Git commit 메시지 (optional, 없으면 자동 생성)
+
+> 각 필드는 모두 optional이므로, 설정만 변경·시크릿만 변경·둘 다 변경 모두 이 단일 API로 처리한다.
+
+**Response** (`200 OK`):
+
+```json
+{
+  "status": "committed",
+  "version": "b4c5d6e",
+  "updated_at": "2026-03-10T10:00:00Z"
+}
+```
+
+- `version`: Git commit hash — Console이 이 값을 DB에 저장하여 이력 추적 및 롤백에 사용
+
+**처리 흐름**:
+1. Config Server가 요청 body를 스키마 검증
+2. `secret_ref` 값이 secrets 필드 또는 기존 secrets.yaml에 존재하는지 확인
+3. `secrets` 필드가 있으면: kubeseal 암호화 → SealedSecret YAML 생성
+4. config.yaml / env_vars.yaml / SealedSecret YAML 파일 생성/업데이트
+5. 모든 변경을 **단일 Git commit** & push
+6. SealedSecret이 변경되었으면 K8s API apply
+7. In-memory config store 갱신
+8. 다음 Config Agent polling 시 변경 감지 → ConfigMap/Secret 업데이트 → rolling restart
+
+> **Atomic Commit 원칙**: 하나의 API 호출로 발생하는 모든 파일 변경(config.yaml, env_vars.yaml, SealedSecret YAML)은 **반드시 단일 Git commit**으로 처리한다. 이 commit hash가 해당 변경의 유일한 버전 식별자가 되며, Console은 이 값을 DB에 저장하여 이력 추적 및 롤백에 사용한다.
+
+### 4.5 FR-5: 설정/시크릿 일괄 삭제 Admin API `[FR-5]`
+
+Project 삭제 시 해당 서비스의 설정 + 시크릿 전체를 제거한다. Console이 Project 삭제 워크플로우에서 호출한다.
+
+```
+DELETE /api/v1/admin/changes
+```
+
+**Request Body**:
+
+```json
+{
+  "org": "myorg",
+  "project": "ai-platform",
+  "service": "litellm"
+}
+```
+
+**Response** (`200 OK`):
+
+```json
+{
+  "status": "deleted",
+  "version": "c5d6e7f",
+  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml", "sealed-secrets/litellm-secrets.yaml"]
+}
+```
+
+**처리 흐름**:
+1. 해당 서비스 디렉토리의 config.yaml, env_vars.yaml, secrets.yaml, sealed-secrets/ 삭제
+2. 단일 Git commit & push
+3. In-memory store에서 해당 서비스 설정 제거
+4. Config Agent가 다음 polling 시 변경 감지 → ConfigMap/Secret 정리
+
+### 4.6 FR-6: 설정/환경변수 변경 감지 API `[FR-6]`
+
+#### 설정 변경 감지
+
+```
+GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch?version={current_version}
+```
+
+- 현재 클라이언트가 가진 `version`(git commit hash)과 서버의 최신 버전이 다르면 즉시 응답
+- 같으면 변경이 생길 때까지 hold (최대 30초 후 `304 Not Modified`)
+- 클라이언트는 응답 받은 후 다시 요청 (long polling loop)
+
+#### 환경변수 변경 감지
+
+```
+GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch?version={current_version}
+```
+
+설정 변경 감지 API와 동일한 동작. Config Agent는 config/watch와 env_vars/watch를 **병렬로** 호출하여 각각의 변경을 독립적으로 감지한다.
+
+- `version`이 서버 최신과 다르면 즉시 응답
+- 같으면 변경 시까지 hold (최대 30초 후 `304 Not Modified`)
+
+### 4.7 FR-7: 시크릿 관리 `[FR-7]`
+
+SealedSecret + Volume Mount 기반의 시크릿 관리. 시크릿 평문은 Git에 저장하지 않으며, K8s Secret(etcd)에만 존재한다.
 
 #### 전체 구조
 
@@ -630,7 +906,511 @@ Console → Config Server → kubeseal 암호화 → Git commit → K8s API appl
 - 갱신 지연은 kubelet sync period에 의존 (기본 ~60초, 최대 `sync-frequency + watch cache propagation delay`)
 - 설정 서버 특성상 시크릿의 1분 이내 갱신 지연은 허용 가능하다
 
-### 3.5 설정 상속 (Config Inheritance) `[FR-10]`
+#### 시크릿 값 Resolve 흐름
+
+`resolve_secrets`는 **환경변수 API에서만 사용**한다. config API는 `os.environ/` 참조를 유지하여 반환한다.
+
+```
+1. Config Agent가 환경변수 요청
+   GET /api/v1/.../env_vars?resolve_secrets=true
+   Header: X-App-ID: app-abc123
+
+2. Config Server: 인증/인가 검증
+   - App ID 유효성 확인 (AAP Console App Registry 캐시 참조)
+   - App의 scope이 요청한 org/project/service와 일치하는지 확인
+   - resolve_secrets 권한 확인
+
+3. Config Server: 환경변수 조립
+   - env_vars.yaml에서 secret_refs 필드 탐지
+   - secrets.yaml에서 해당 ID의 K8s Secret 경로 확인
+   - Volume Mount 경로에서 실제 시크릿 값 읽기 (/secrets/{namespace}/{name}/{key})
+   - 평문 환경변수 + 시크릿 환경변수 합산
+
+4. Config Server: 응답 전송
+   - 시크릿이 resolve된 환경변수 응답
+   - Cache-Control: no-store
+
+5. Config Agent: K8s Secret 리소스에 env.sh로 저장
+   - litellm Pod이 재시작 시 source /env/env.sh로 환경변수 로드
+   - config.yaml의 os.environ/ 참조가 이 환경변수에서 resolve됨
+```
+
+#### Config Server RBAC (시크릿 관리용)
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: config-server-secret-manager
+  namespace: ai-platform
+rules:
+  # SealedSecret 생성/업데이트
+  - apiGroups: ["bitnami.com"]
+    resources: ["sealedsecrets"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  # Secret은 Volume Mount로 읽기 (resolve_secrets용)
+  # Secret RBAC는 Volume Mount 구성을 위한 최소 권한
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+  # kubeseal을 위한 SealedSecret Controller 공개키 조회
+  - apiGroups: [""]
+    resources: ["services/proxy"]
+    resourceNames: ["sealed-secrets-controller"]
+    verbs: ["get"]
+```
+
+### 4.8 FR-8: App Registry 연동 `[FR-8]`
+
+Config Server는 자체적으로 클라이언트 등록이나 scope 관리를 하지 않는다. **AAP Console**이 org/project/service/app의 계층 구조와 권한의 단일 소스(Single Source of Truth)이다.
+
+#### App ID 기반 식별
+
+각 클라이언트 서비스(litellm 등)는 AAP Console에서 발급받은 **App ID**로 자신을 식별한다.
+
+```
+Admin (Browser)  AAP Console            Config Server           litellm
+  │                  │                        │                    │
+  ├─ App 등록 요청 ──▶│                        │                    │
+  │  (org/project/   │                        │                    │
+  │   service)       │                        │                    │
+  │                  ├─ App ID 발급 + DB 저장   │                    │
+  │◀── UI: Project  ─┤                        │                    │
+  │  정보(App ID     │                        │                    │
+  │  포함) 표시       │                        │                    │
+  │                  │                        │                    │
+  │                  ├── webhook push ───────▶│                    │
+  │                  │   (fire-and-forget,    │                    │
+  │                  │    App 등록/수정/삭제)   ├─ App Registry     │
+  │                  │                        │  캐시 갱신          │
+  │                  │                        │                    │
+  │                  │                        │◀── GET /config ────┤
+  │                  │                        │   X-App-ID 헤더     │
+  │                  │                        ├─ 캐시에서 검증       │
+  │                  │                        ├─ scope 확인         │
+  │                  │                        ├── 설정 응답 ───────▶│
+  │                  │                        │                    │
+```
+
+- **Admin**이 AAP Console에서 App을 등록하면 App ID가 발급되고, UI에 Project 정보(App ID 포함)가 표시된다
+- **AAP Console**이 App Registry 변경 시 Config Server로 webhook push (**fire-and-forget + async retry** — Console DB 저장 후 비동기 전송, Config Server 다운 시에도 CRUD 완료)
+- **Config Server**는 push받은 정보로 인증/인가 캐시를 갱신할 뿐, 직접 관리하지 않음
+
+#### AAP Console App Registry 데이터 모델
+
+Config Server는 AAP Console로부터 다음 정보를 수신/캐시한다:
+
+```json
+{
+  "app_id": "app-abc123",
+  "app_name": "litellm-prod",
+  "org": "myorg",
+  "project": "ai-platform",
+  "service": "litellm",
+  "permissions": {
+    "config_read": true,
+    "env_vars_read": true,
+    "resolve_secrets": true
+  },
+  "created_at": "2026-03-01T00:00:00Z"
+}
+```
+
+#### 왜 Config Server가 직접 관리하지 않는가
+
+- org/project/service 계층은 AAP Console이 이미 관리하고 있으므로 이중 관리가 됨
+- 앱 등록/폐기, scope 변경 같은 lifecycle은 Console의 책임
+- Config Server는 **설정 저장 + 서빙**에만 집중, 권한은 Console에 위임
+
+#### AAP Console 연동 방식
+
+**시작 시 전체 로드:**
+
+```
+Config Server 시작
+    │
+    ├─ 1. Console API 호출: 전체 App Registry 로드
+    │     GET /api/v1/apps?all=true
+    │     → 메모리에 캐시
+    │     → 실패 시 exponential backoff retry (최대 5회)
+    │     → 최종 실패 시 빈 캐시로 기동 (설정 서빙은 정상, App 인증만 불가)
+    │
+    └─ 2. Readiness: Git sync + App Registry 로드 모두 완료 시 readyz=true
+          (App Registry 로드 실패 시에도 readyz=true, 단 인증 기능 제한)
+```
+
+**런타임 캐시 갱신:**
+
+Console이 App을 등록/수정/삭제하면 `POST /admin/app-registry/webhook`으로 Config Server에 통지한다 (fire-and-forget + async retry). Config Server는 수신한 데이터로 인메모리 캐시를 갱신한다.
+
+```
+Console                          Config Server
+  │                                    │
+  ├─ POST /admin/app-registry/webhook ▶│
+  │  (fire-and-forget + async retry)   ├─ 캐시 갱신
+  │◀── {status: "ok"} ────────────────┤
+```
+
+- webhook 유실 시: Console의 async retry queue가 재시도
+- Config Server 재시작 시: 시작 시 전체 로드(1번)로 캐시 복구
+
+### 4.9 FR-9: Config Agent `[FR-9]`
+
+#### 문제
+
+litellm 등 대부분의 서비스는 임의 HTTP URL에서 설정을 로드하는 기능이 없다. litellm은 `--config /path/to/config.yaml` 또는 `CONFIG_FILE_PATH` 환경변수로 **로컬 파일만** 읽는다.
+환경변수 역시 프로세스 시작 시점에 이미 설정되어 있어야 한다.
+
+따라서 Config Server의 REST API와 클라이언트 서비스 사이를 연결하는 **Config Agent**가 필요하다.
+
+#### 왜 사이드카가 아닌 중앙 집중형인가
+
+litellm처럼 동일 Deployment의 replica가 동일 config을 공유하는 경우, 사이드카 패턴에는 두 가지 구조적 문제가 있다:
+
+| 문제 | 사이드카 (기존) | 중앙 집중형 (현재) |
+|------|---------------|------------------|
+| **Thundering Herd** | Config 변경 시 N개 pod 동시 재시작 → 순간 서비스 불가 | ConfigMap 업데이트 → K8s rolling update로 점진적 반영 |
+| **Redundant Polling** | N개 sidecar가 각각 polling → 요청 N배 증폭 | Agent 1개만 polling → 요청 1/N |
+
+예: litellm이 클러스터당 32 replica인 경우, 사이드카 방식은 32배의 불필요한 polling과 동시 재시작 위험이 있다.
+
+#### Config Agent 역할
+
+Config Agent는 대상 Deployment별로 **독립된 Deployment(replica=2)**로 배포되어 다음을 수행한다:
+
+1. **Config Server polling**: 설정 변경을 감지 (long polling / watch)
+2. **ConfigMap 업데이트**: 변경된 설정을 K8s ConfigMap에 반영 (K8s API 호출)
+3. **Rolling restart 트리거**: 변경 감지 시 항상 Deployment annotation 패치로 rolling restart 수행 (maxUnavailable: 25%, maxSurge: 25%)
+
+#### 아키텍처
+
+```
+┌─ Config Agent Deployment (replica=2) ────────────────────────┐
+│                                                               │
+│  1. Config Server API 호출                                     │
+│     - GET /config (resolve_secrets=false)                       │
+│     - GET /env_vars (resolve_secrets=true)                      │
+│  2. K8s ConfigMap 업데이트 (config.yaml: os.environ/ 참조 유지) │
+│  3. K8s Secret 업데이트 (환경변수 시크릿 평문값)                 │
+│  4. Deployment annotation 패치 → rolling restart (항상 수행)    │
+│                                                               │
+│  필요 권한 (RBAC):                                             │
+│  - configmaps: get, create, update, patch                     │
+│  - secrets: get, create, update, patch                        │
+│  - deployments: get, patch (annotation 패치용)                 │
+│                                                               │
+└───────────────────┬───────────────────────────────────────────┘
+                    │ K8s API
+                    ▼
+┌─ K8s ConfigMap: litellm-config ──────────────────────────────┐
+│  data:                                                        │
+│    config.yaml: |        ← litellm proxy_config 형식          │
+│      model_list:                                              │
+│        - model_name: "azure-gpt4"                             │
+│          api_key: os.environ/AZURE_API_KEY  ← 환경변수 참조   │
+│      ...                                                      │
+└───────────────────┬───────────────────────────────────────────┘
+                    │
+┌─ K8s Secret: litellm-env-secret ────────────────────────────┐
+│  data:                                                        │
+│    env.sh: |             ← export KEY=VALUE 형식              │
+│      export AZURE_API_KEY="실제값"                             │
+│      export DATABASE_URL="실제값"                              │
+│      ...                                                      │
+└───────────────────┬───────────────────────────────────────────┘
+                    │ volume mount (kubelet 자동 전파)
+                    ▼
+┌─ litellm Deployment (replicas: 32) ──────────────────────────┐
+│                                                               │
+│  Pod 1..32 (모두 동일 구조):                                   │
+│                                                               │
+│  ┌─ Init Container: config-init ───────────────────────────┐  │
+│  │  /bin/sh -c "source /env/env.sh && exec env > ..."      │  │
+│  │  → Secret의 env.sh를 프로세스 환경변수로 주입              │  │
+│  └─────────────────────────────────────────────────────────┘  │
+│       │                                                       │
+│       ▼                                                       │
+│  ┌─ Main Container: litellm ───────────────────────────────┐  │
+│  │  entrypoint: source /env/env.sh &&                      │  │
+│  │              litellm --config /config/config.yaml       │  │
+│  │                                                         │  │
+│  │  /config/config.yaml ← ConfigMap volume mount           │  │
+│  │  /env/env.sh         ← Secret volume mount              │  │
+│  └─────────────────────────────────────────────────────────┘  │
+│                                                               │
+│  Volumes:                                                     │
+│  - /config/ (ConfigMap: litellm-config)                      │
+│  - /env/   (Secret: litellm-env-secret)                      │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
+
+#### Config Agent RBAC
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: config-agent
+  namespace: ai-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: config-agent-role
+  namespace: ai-platform
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "patch"]
+    resourceNames: ["litellm-config"]          # 대상 ConfigMap만 접근 허용
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]                          # 최초 생성 시 resourceNames 제약 불가
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch"]
+    resourceNames: ["litellm-env-secret"]      # 시크릿 포함 환경변수 Secret
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]                          # 최초 생성 시 resourceNames 제약 불가
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+    resourceNames: ["litellm"]                 # 대상 Deployment만 패치 허용
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: config-agent-binding
+  namespace: ai-platform
+subjects:
+  - kind: ServiceAccount
+    name: config-agent
+roleRef:
+  kind: Role
+  name: config-agent-role
+  apiGroup: rbac.authorization.k8s.io
+```
+
+#### 설정 파일 생성
+
+Config Agent는 Config Server 응답을 클라이언트 서비스의 네이티브 설정 형식으로 변환하여 K8s ConfigMap에 기록한다.
+
+**litellm용 config.yaml 생성:**
+
+Config Server의 응답에서 `config` 블록을 추출하고, litellm이 읽을 수 있는 `proxy_config` 형식으로 ConfigMap의 `data.config.yaml`에 기록한다. **시크릿 값은 `os.environ/` 참조로 유지**하여 ConfigMap에 평문이 들어가지 않도록 한다:
+
+```yaml
+# ConfigMap litellm-config의 data.config.yaml (Config Agent가 생성)
+# 시크릿은 os.environ/ 참조 → Pod 환경변수에서 주입됨
+model_list:
+  - model_name: "azure-gpt4"
+    litellm_params:
+      model: "azure/gpt-4"
+      api_base: "https://my-azure.openai.azure.com"
+      api_key: os.environ/AZURE_API_KEY               # 환경변수 참조 (평문 아님)
+      api_version: "2024-06-01"
+    model_info:
+      id: "azure-gpt4-eastus"
+      description: "Azure GPT-4 East US"
+  - model_name: "claude-sonnet"
+    litellm_params:
+      model: "anthropic/claude-sonnet-4-20250514"
+      api_key: os.environ/ANTHROPIC_API_KEY            # 환경변수 참조 (평문 아님)
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY            # 환경변수 참조 (평문 아님)
+  database_url: os.environ/DATABASE_URL                # 환경변수 참조 (평문 아님)
+  alert_types:
+    - "llm_exceptions"
+    - "llm_requests_hanging"
+
+router_settings:
+  routing_strategy: "least-busy"
+  num_retries: 3
+  timeout: 60
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  max_budget: 1000.0
+  budget_duration: "30d"
+
+guardrails:
+  - guardrail_name: "content-filter"
+    litellm_params:
+      guardrail: "aporia"
+      mode: "pre_call"
+      api_base: "https://guardrail.internal"
+      api_key: os.environ/GUARDRAIL_API_KEY            # 환경변수 참조 (평문 아님)
+
+application:
+  - application_name: "chatbot-prod"
+    application_id: "app-001"
+    allowed_models:
+      - "azure-gpt4"
+      - "claude-sonnet"
+```
+
+**핵심 원칙**: config.yaml에는 시크릿 평문이 절대 포함되지 않는다. litellm의 `os.environ/` 구문을 활용하여 환경변수에서 시크릿을 읽도록 한다.
+
+#### 환경변수 주입
+
+Config Agent는 `env_vars.yaml`의 내용을 `resolve_secrets=true`로 fetch하여 **K8s Secret**에 환경변수를 기록한다. 시크릿이 포함되므로 ConfigMap이 아닌 Secret 리소스를 사용한다.
+
+**env.sh 생성:**
+
+```bash
+# K8s Secret litellm-env-secret의 data.env.sh (Config Agent가 생성)
+# 평문 환경변수
+export LITELLM_LOG_LEVEL="INFO"
+export LITELLM_NUM_WORKERS="4"
+export LITELLM_PORT="4000"
+export UI_USERNAME="admin"
+export PROXY_BASE_URL="https://litellm.internal.example.com"
+export STORE_MODEL_IN_DB="false"
+export LITELLM_TELEMETRY="false"
+# 시크릿 환경변수 (Config Server에서 resolve됨)
+export AZURE_API_KEY="실제-azure-key"
+export ANTHROPIC_API_KEY="실제-anthropic-key"
+export GUARDRAIL_API_KEY="실제-guardrail-key"
+export DATABASE_URL="postgresql://user:pass@host:5432/db"
+export LITELLM_MASTER_KEY="실제-master-key"
+export UI_PASSWORD="실제-password"
+export REDIS_HOST="redis.ai-platform.svc.cluster.local"
+export REDIS_PASSWORD="실제-redis-pass"
+```
+
+**시크릿 분리 원칙:**
+
+| 데이터 | K8s 리소스 | 내용 |
+|--------|-----------|------|
+| config.yaml | **ConfigMap** (`litellm-config`) | `os.environ/` 참조만 포함 (시크릿 평문 없음) |
+| env.sh | **Secret** (`litellm-env-secret`) | 시크릿 포함 환경변수 (etcd encryption at rest 적용) |
+
+이 분리로 ConfigMap에는 시크릿 평문이 절대 포함되지 않는다.
+
+litellm Pod의 entrypoint:
+```bash
+source /env/env.sh && litellm --config /config/config.yaml
+```
+
+litellm이 config.yaml의 `os.environ/AZURE_API_KEY`를 읽으면, env.sh에서 export된 환경변수 값이 사용된다.
+
+#### 설정 변경 유형별 반영 전략
+
+변경 감지 시 Config Agent는 항상 ConfigMap/Secret 업데이트 후 rolling restart를 수행한다:
+
+| 설정 유형 | 업데이트 대상 | 동작 |
+|-----------|-------------|------|
+| config.yaml (proxy_config) | **ConfigMap** | ConfigMap 업데이트 → rolling restart |
+| env_vars (plain/secret) | **Secret** | Secret 업데이트 → rolling restart |
+
+**Rolling Restart 메커니즘:**
+
+Config Agent가 ConfigMap/Secret 업데이트 후 대상 Deployment의 annotation을 패치한다:
+
+```go
+// Config Agent가 K8s API로 Deployment annotation 패치
+patch := fmt.Sprintf(`{
+  "spec": {
+    "template": {
+      "metadata": {
+        "annotations": {
+          "config-agent/config-hash": "%s",
+          "config-agent/restart-at": "%s"
+        }
+      }
+    }
+  }
+}`, newConfigHash, time.Now().Format(time.RFC3339))
+
+clientset.AppsV1().Deployments(namespace).Patch(
+    ctx, deploymentName, types.StrategicMergePatchType, []byte(patch), ...)
+```
+
+K8s는 Pod template annotation이 변경되면 Deployment의 `strategy`에 따라 rolling update를 수행한다:
+
+```yaml
+# litellm Deployment의 rolling update 전략
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%   # K8s 기본값
+      maxSurge: 25%          # K8s 기본값
+  template:
+    metadata:
+      annotations:
+        config-agent/config-hash: ""     # Config Agent가 업데이트
+        config-agent/restart-at: ""      # Config Agent가 업데이트
+```
+
+이 방식으로 32개 replica 중 **최대 25%(8개)만 동시에 재시작**되므로, 나머지는 항상 서비스 가능 상태를 유지한다.
+
+#### Config Agent API
+
+Config Agent는 Config Server에 두 가지 API를 호출한다:
+
+```
+# 1. 설정 조회 (시작 시 + 변경 감지 후)
+GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config
+# → config.yaml용 (os.environ/ 참조 유지, 시크릿 미포함)
+
+# 2. 환경변수 조회 (시크릿 resolve 포함)
+GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars?resolve_secrets=true
+# → env.sh용 (시크릿 평문 포함 → K8s Secret에 저장)
+
+# 3. 변경 감지 (long polling loop)
+GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch?version={ver}
+GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch?version={ver}
+```
+
+Config Agent는 **Deployment당 1개**이므로, 동일 서비스의 replica 수와 무관하게 Config Server에 대한 polling 요청은 항상 1개뿐이다.
+
+#### Config Agent 배포 구성
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: config-agent-litellm
+  namespace: ai-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: config-agent
+      target: litellm
+  template:
+    metadata:
+      labels:
+        app: config-agent
+        target: litellm
+    spec:
+      serviceAccountName: config-agent
+      containers:
+        - name: config-agent
+          image: aap/config-agent:latest
+          args:
+            - --config-server=https://config-server.config-system.svc:8443
+            - --org=myorg
+            - --project=ai-platform
+            - --service=litellm
+            - --target-configmap=litellm-config
+            - --target-secret=litellm-env-secret
+            - --target-deployment=litellm
+            - --poll-interval=30s
+          env:
+            - name: APP_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: config-agent-settings
+                  key: app-id
+```
+
+### 4.10 FR-10: 설정 상속 `[FR-10]`
 
 설정 중복을 줄이기 위한 계층적 상속 구조. 같은 조직/프로젝트 내 여러 서비스가 공통 설정(라우터 전략, 타임아웃, guardrail 등)을 공유할 때 각 서비스마다 반복 정의하지 않도록 한다.
 
@@ -703,793 +1483,7 @@ env_vars:
 - `_defaults` 변경은 Git 직접 수정 (PR merge) 또는 별도 Admin API(Phase 5+)로 처리한다.
 - Console은 항상 `inherit=true` 응답을 사용자에게 보여주되, 저장 시에는 서비스 레벨 설정만 전송한다.
 
----
-
-## 4. 클라이언트 통합: Config Agent (중앙 집중형) `[FR-9]`
-
-### 4.1 문제
-
-litellm 등 대부분의 서비스는 임의 HTTP URL에서 설정을 로드하는 기능이 없다. litellm은 `--config /path/to/config.yaml` 또는 `CONFIG_FILE_PATH` 환경변수로 **로컬 파일만** 읽는다.
-환경변수 역시 프로세스 시작 시점에 이미 설정되어 있어야 한다.
-
-따라서 Config Server의 REST API와 클라이언트 서비스 사이를 연결하는 **Config Agent**가 필요하다.
-
-#### 왜 사이드카가 아닌 중앙 집중형인가
-
-litellm처럼 동일 Deployment의 replica가 동일 config을 공유하는 경우, 사이드카 패턴에는 두 가지 구조적 문제가 있다:
-
-| 문제 | 사이드카 (기존) | 중앙 집중형 (현재) |
-|------|---------------|------------------|
-| **Thundering Herd** | Config 변경 시 N개 pod 동시 재시작 → 순간 서비스 불가 | ConfigMap 업데이트 → K8s rolling update로 점진적 반영 |
-| **Redundant Polling** | N개 sidecar가 각각 polling → 요청 N배 증폭 | Agent 1개만 polling → 요청 1/N |
-
-예: litellm이 클러스터당 32 replica인 경우, 사이드카 방식은 32배의 불필요한 polling과 동시 재시작 위험이 있다.
-
-### 4.2 Config Agent 역할
-
-Config Agent는 대상 Deployment별로 **독립된 Deployment(replica=2)**로 배포되어 다음을 수행한다:
-
-1. **Config Server polling**: 설정 변경을 감지 (long polling / watch)
-2. **ConfigMap 업데이트**: 변경된 설정을 K8s ConfigMap에 반영 (K8s API 호출)
-3. **Rolling restart 트리거**: 변경 감지 시 항상 Deployment annotation 패치로 rolling restart 수행 (maxUnavailable: 25%, maxSurge: 25%)
-
-### 4.3 아키텍처
-
-```
-┌─ Config Agent Deployment (replica=2) ────────────────────────┐
-│                                                               │
-│  1. Config Server API 호출                                     │
-│     - GET /config (resolve_secrets=false)                       │
-│     - GET /env_vars (resolve_secrets=true)                      │
-│  2. K8s ConfigMap 업데이트 (config.yaml: os.environ/ 참조 유지) │
-│  3. K8s Secret 업데이트 (환경변수 시크릿 평문값)                 │
-│  4. Deployment annotation 패치 → rolling restart (항상 수행)    │
-│                                                               │
-│  필요 권한 (RBAC):                                             │
-│  - configmaps: get, create, update, patch                     │
-│  - secrets: get, create, update, patch                        │
-│  - deployments: get, patch (annotation 패치용)                 │
-│                                                               │
-└───────────────────┬───────────────────────────────────────────┘
-                    │ K8s API
-                    ▼
-┌─ K8s ConfigMap: litellm-config ──────────────────────────────┐
-│  data:                                                        │
-│    config.yaml: |        ← litellm proxy_config 형식          │
-│      model_list:                                              │
-│        - model_name: "azure-gpt4"                             │
-│          api_key: os.environ/AZURE_API_KEY  ← 환경변수 참조   │
-│      ...                                                      │
-└───────────────────┬───────────────────────────────────────────┘
-                    │
-┌─ K8s Secret: litellm-env-secret ────────────────────────────┐
-│  data:                                                        │
-│    env.sh: |             ← export KEY=VALUE 형식              │
-│      export AZURE_API_KEY="실제값"                             │
-│      export DATABASE_URL="실제값"                              │
-│      ...                                                      │
-└───────────────────┬───────────────────────────────────────────┘
-                    │ volume mount (kubelet 자동 전파)
-                    ▼
-┌─ litellm Deployment (replicas: 32) ──────────────────────────┐
-│                                                               │
-│  Pod 1..32 (모두 동일 구조):                                   │
-│                                                               │
-│  ┌─ Init Container: config-init ───────────────────────────┐  │
-│  │  /bin/sh -c "source /env/env.sh && exec env > ..."      │  │
-│  │  → Secret의 env.sh를 프로세스 환경변수로 주입              │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│       │                                                       │
-│       ▼                                                       │
-│  ┌─ Main Container: litellm ───────────────────────────────┐  │
-│  │  entrypoint: source /env/env.sh &&                      │  │
-│  │              litellm --config /config/config.yaml       │  │
-│  │                                                         │  │
-│  │  /config/config.yaml ← ConfigMap volume mount           │  │
-│  │  /env/env.sh         ← Secret volume mount              │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│                                                               │
-│  Volumes:                                                     │
-│  - /config/ (ConfigMap: litellm-config)                      │
-│  - /env/   (Secret: litellm-env-secret)                      │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
-```
-
-### 4.4 Config Agent RBAC
-
-Config Agent가 K8s API를 호출하려면 전용 ServiceAccount와 최소 권한 RBAC이 필요하다:
-
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: config-agent
-  namespace: ai-platform
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: config-agent-role
-  namespace: ai-platform
-rules:
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["get", "create", "update", "patch"]
-    resourceNames: ["litellm-config"]          # 대상 ConfigMap만 접근 허용
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["create"]                          # 최초 생성 시 resourceNames 제약 불가
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "create", "update", "patch"]
-    resourceNames: ["litellm-env-secret"]      # 시크릿 포함 환경변수 Secret
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["create"]                          # 최초 생성 시 resourceNames 제약 불가
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["get", "patch"]
-    resourceNames: ["litellm"]                 # 대상 Deployment만 패치 허용
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: config-agent-binding
-  namespace: ai-platform
-subjects:
-  - kind: ServiceAccount
-    name: config-agent
-roleRef:
-  kind: Role
-  name: config-agent-role
-  apiGroup: rbac.authorization.k8s.io
-```
-
-### 4.5 설정 파일 생성
-
-Config Agent는 Config Server 응답을 클라이언트 서비스의 네이티브 설정 형식으로 변환하여 K8s ConfigMap에 기록한다.
-
-#### litellm용 config.yaml 생성
-
-Config Server의 응답에서 `config` 블록을 추출하고, litellm이 읽을 수 있는 `proxy_config` 형식으로 ConfigMap의 `data.config.yaml`에 기록한다. **시크릿 값은 `os.environ/` 참조로 유지**하여 ConfigMap에 평문이 들어가지 않도록 한다:
-
-```yaml
-# ConfigMap litellm-config의 data.config.yaml (Config Agent가 생성)
-# 시크릿은 os.environ/ 참조 → Pod 환경변수에서 주입됨
-model_list:
-  - model_name: "azure-gpt4"
-    litellm_params:
-      model: "azure/gpt-4"
-      api_base: "https://my-azure.openai.azure.com"
-      api_key: os.environ/AZURE_API_KEY               # 환경변수 참조 (평문 아님)
-      api_version: "2024-06-01"
-    model_info:
-      id: "azure-gpt4-eastus"
-      description: "Azure GPT-4 East US"
-  - model_name: "claude-sonnet"
-    litellm_params:
-      model: "anthropic/claude-sonnet-4-20250514"
-      api_key: os.environ/ANTHROPIC_API_KEY            # 환경변수 참조 (평문 아님)
-
-general_settings:
-  master_key: os.environ/LITELLM_MASTER_KEY            # 환경변수 참조 (평문 아님)
-  database_url: os.environ/DATABASE_URL                # 환경변수 참조 (평문 아님)
-  alert_types:
-    - "llm_exceptions"
-    - "llm_requests_hanging"
-
-router_settings:
-  routing_strategy: "least-busy"
-  num_retries: 3
-  timeout: 60
-
-litellm_settings:
-  drop_params: true
-  set_verbose: false
-  max_budget: 1000.0
-  budget_duration: "30d"
-
-guardrails:
-  - guardrail_name: "content-filter"
-    litellm_params:
-      guardrail: "aporia"
-      mode: "pre_call"
-      api_base: "https://guardrail.internal"
-      api_key: os.environ/GUARDRAIL_API_KEY            # 환경변수 참조 (평문 아님)
-
-application:
-  - application_name: "chatbot-prod"
-    application_id: "app-001"
-    allowed_models:
-      - "azure-gpt4"
-      - "claude-sonnet"
-```
-
-**핵심 원칙**: config.yaml에는 시크릿 평문이 절대 포함되지 않는다. litellm의 `os.environ/` 구문을 활용하여 환경변수에서 시크릿을 읽도록 한다.
-
-### 4.6 환경변수 주입
-
-Config Agent는 `env_vars.yaml`의 내용을 `resolve_secrets=true`로 fetch하여 **K8s Secret**에 환경변수를 기록한다. 시크릿이 포함되므로 ConfigMap이 아닌 Secret 리소스를 사용한다.
-
-#### env.sh 생성
-
-```bash
-# K8s Secret litellm-env-secret의 data.env.sh (Config Agent가 생성)
-# 평문 환경변수
-export LITELLM_LOG_LEVEL="INFO"
-export LITELLM_NUM_WORKERS="4"
-export LITELLM_PORT="4000"
-export UI_USERNAME="admin"
-export PROXY_BASE_URL="https://litellm.internal.example.com"
-export STORE_MODEL_IN_DB="false"
-export LITELLM_TELEMETRY="false"
-# 시크릿 환경변수 (Config Server에서 resolve됨)
-export AZURE_API_KEY="실제-azure-key"
-export ANTHROPIC_API_KEY="실제-anthropic-key"
-export GUARDRAIL_API_KEY="실제-guardrail-key"
-export DATABASE_URL="postgresql://user:pass@host:5432/db"
-export LITELLM_MASTER_KEY="실제-master-key"
-export UI_PASSWORD="실제-password"
-export REDIS_HOST="redis.ai-platform.svc.cluster.local"
-export REDIS_PASSWORD="실제-redis-pass"
-```
-
-#### 시크릿 분리 원칙
-
-Config Agent는 데이터 성격에 따라 K8s 리소스를 분리한다:
-
-| 데이터 | K8s 리소스 | 내용 |
-|--------|-----------|------|
-| config.yaml | **ConfigMap** (`litellm-config`) | `os.environ/` 참조만 포함 (시크릿 평문 없음) |
-| env.sh | **Secret** (`litellm-env-secret`) | 시크릿 포함 환경변수 (etcd encryption at rest 적용) |
-
-이 분리로 ConfigMap에는 시크릿 평문이 절대 포함되지 않는다.
-
-litellm Pod의 entrypoint:
-```bash
-source /env/env.sh && litellm --config /config/config.yaml
-```
-
-litellm이 config.yaml의 `os.environ/AZURE_API_KEY`를 읽으면, env.sh에서 export된 환경변수 값이 사용된다.
-
-### 4.7 설정 변경 유형별 반영 전략
-
-변경 감지 시 Config Agent는 항상 ConfigMap/Secret 업데이트 후 rolling restart를 수행한다:
-
-| 설정 유형 | 업데이트 대상 | 동작 |
-|-----------|-------------|------|
-| config.yaml (proxy_config) | **ConfigMap** | ConfigMap 업데이트 → rolling restart |
-| env_vars (plain/secret) | **Secret** | Secret 업데이트 → rolling restart |
-
-#### Rolling Restart 메커니즘
-
-Config Agent가 ConfigMap/Secret 업데이트 후 대상 Deployment의 annotation을 패치한다:
-
-```go
-// Config Agent가 K8s API로 Deployment annotation 패치
-patch := fmt.Sprintf(`{
-  "spec": {
-    "template": {
-      "metadata": {
-        "annotations": {
-          "config-agent/config-hash": "%s",
-          "config-agent/restart-at": "%s"
-        }
-      }
-    }
-  }
-}`, newConfigHash, time.Now().Format(time.RFC3339))
-
-clientset.AppsV1().Deployments(namespace).Patch(
-    ctx, deploymentName, types.StrategicMergePatchType, []byte(patch), ...)
-```
-
-K8s는 Pod template annotation이 변경되면 Deployment의 `strategy`에 따라 rolling update를 수행한다:
-
-```yaml
-# litellm Deployment의 rolling update 전략
-spec:
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 25%   # K8s 기본값
-      maxSurge: 25%          # K8s 기본값
-  template:
-    metadata:
-      annotations:
-        config-agent/config-hash: ""     # Config Agent가 업데이트
-        config-agent/restart-at: ""      # Config Agent가 업데이트
-```
-
-이 방식으로 32개 replica 중 **최대 25%(8개)만 동시에 재시작**되므로, 나머지는 항상 서비스 가능 상태를 유지한다.
-
-### 4.8 Config Agent API
-
-Config Agent는 Config Server에 두 가지 API를 호출한다:
-
-```
-# 1. 설정 조회 (시작 시 + 변경 감지 후)
-GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config
-# → config.yaml용 (os.environ/ 참조 유지, 시크릿 미포함)
-
-# 2. 환경변수 조회 (시크릿 resolve 포함)
-GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars?resolve_secrets=true
-# → env.sh용 (시크릿 평문 포함 → K8s Secret에 저장)
-
-# 3. 변경 감지 (long polling loop)
-GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch?version={ver}
-GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch?version={ver}
-```
-
-Config Agent는 **Deployment당 1개**이므로, 동일 서비스의 replica 수와 무관하게 Config Server에 대한 polling 요청은 항상 1개뿐이다.
-
-### 4.9 Config Agent 배포 구성
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: config-agent-litellm
-  namespace: ai-platform
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: config-agent
-      target: litellm
-  template:
-    metadata:
-      labels:
-        app: config-agent
-        target: litellm
-    spec:
-      serviceAccountName: config-agent
-      containers:
-        - name: config-agent
-          image: aap/config-agent:latest
-          args:
-            - --config-server=https://config-server.config-system.svc:8443
-            - --org=myorg
-            - --project=ai-platform
-            - --service=litellm
-            - --target-configmap=litellm-config
-            - --target-secret=litellm-env-secret
-            - --target-deployment=litellm
-            - --poll-interval=30s
-          env:
-            - name: APP_ID
-              valueFrom:
-                configMapKeyRef:
-                  name: config-agent-settings
-                  key: app-id
-```
-
----
-
-## 5. 시크릿 보안 `[FR-17]`
-
-시크릿 값의 보호는 K8s 네이티브 보안 메커니즘에 위임한다.
-
-### 5.1 보안 전략: 클러스터 내부 통신 + K8s Secret `[FR-17]`
-
-Config Server와 Config Agent는 동일 K8s 클러스터 내에서 동작하므로, 종단 간 암호화(mTLS 등)는 불필요하다. 클러스터 내부 네트워크(Pod-to-Pod)의 보안은 K8s Network Policy로 제어한다.
-
-```
-┌─ 저장 (at rest) ─────────────────────────────────────────────────┐
-│                                                                  │
-│  Git: SealedSecret YAML (암호화본) — 클러스터 비밀키 없이 복호화 불가│
-│  K8s etcd: Secret (encryption at rest 활성화)                     │
-│  Config Server Pod: Volume Mount (kubelet이 자동 sync)            │
-│  Config Server 메모리: 평문 (요청 시만 존재, 처리 후 제로화)         │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-
-┌─ 전송 (in transit) ──────────────────────────────────────────────┐
-│                                                                  │
-│  Config Server ←──(클러스터 내부)──→ Config Agent                  │
-│  → 동일 클러스터 내 Pod-to-Pod 통신                                │
-│  → K8s Network Policy로 접근 제어                                 │
-│  → 시크릿 포함 응답에 Cache-Control: no-store 헤더                 │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### 5.2 응답 형식
-
-`resolve_secrets=true`로 요청 시 시크릿이 **평문으로 resolve되어** 응답에 포함된다:
-
-```json
-{
-  "metadata": {
-    "org": "myorg",
-    "project": "ai-platform",
-    "service": "litellm",
-    "version": "a3f2b1c",
-    "updated_at": "2026-03-09T10:00:00Z"
-  },
-  "config": {
-    "general_settings": {
-      "master_key": "EXAMPLE-master-key-replace-me"
-    },
-    "model_list": [
-      {
-        "model_name": "gpt-4",
-        "litellm_params": {
-          "model": "azure/gpt-4",
-          "api_base": "https://my-azure.openai.azure.com",
-          "api_key": "EXAMPLE-azure-key-replace-me"
-        }
-      }
-    ],
-    "router_settings": {
-      "routing_strategy": "least-busy",
-      "num_retries": 3
-    }
-  }
-}
-```
-
-- 일반 설정(`model`, `api_base`, `router_settings`)과 시크릿(`master_key`, `api_key`) 모두 평문
-- `Cache-Control: no-store` 헤더로 캐싱 방지
-
-### 5.3 시크릿 값 Resolve 전체 흐름 `[FR-7]`
-
-`resolve_secrets`는 **환경변수 API에서만 사용**한다. config API는 `os.environ/` 참조를 유지하여 반환한다.
-
-```
-1. Config Agent가 환경변수 요청
-   GET /api/v1/.../env_vars?resolve_secrets=true
-   Header: X-App-ID: app-abc123
-
-2. Config Server: 인증/인가 검증
-   - App ID 유효성 확인 (AAP Console App Registry 캐시 참조)
-   - App의 scope이 요청한 org/project/service와 일치하는지 확인
-   - resolve_secrets 권한 확인
-
-3. Config Server: 환경변수 조립
-   - env_vars.yaml에서 secret_refs 필드 탐지
-   - secrets.yaml에서 해당 ID의 K8s Secret 경로 확인
-   - Volume Mount 경로에서 실제 시크릿 값 읽기 (/secrets/{namespace}/{name}/{key})
-   - 평문 환경변수 + 시크릿 환경변수 합산
-
-4. Config Server: 응답 전송
-   - 시크릿이 resolve된 환경변수 응답
-   - Cache-Control: no-store
-
-5. Config Agent: K8s Secret 리소스에 env.sh로 저장
-   - litellm Pod이 재시작 시 source /env/env.sh로 환경변수 로드
-   - config.yaml의 os.environ/ 참조가 이 환경변수에서 resolve됨
-```
-
----
-
-## 6. API 설계
-
-### 6.1 설정 조회 API `[FR-2]` `[FR-3]`
-
-#### 단일 서비스 설정 조회
-
-```
-GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config
-```
-
-**Request Headers**:
-
-| 헤더 | 필수 | 설명 |
-|------|------|------|
-| `X-App-ID` | Y | AAP Console에서 발급받은 App ID |
-
-**Query Parameters**:
-
-| 파라미터 | 타입 | 설명 |
-|----------|------|------|
-| `resolve_secrets` | bool | `true`면 시크릿 값을 resolve하여 평문으로 포함 (default: `false`) |
-| `keys` | string | 쉼표 구분, 특정 키만 반환 (예: `model_list,router_settings`) |
-| `format` | string | `yaml` 또는 `json` (default: `json`) |
-| `inherit` | bool | `true`면 상위 레벨 기본값 merge (default: `true`) |
-| `version` | string | 특정 Git commit hash의 설정을 반환 (default: 최신) |
-
-**Response** (`resolve_secrets=false`):
-
-```json
-{
-  "metadata": {
-    "org": "myorg",
-    "project": "ai-platform",
-    "service": "litellm",
-    "version": "a3f2b1c",
-    "updated_at": "2026-03-09T10:00:00Z"
-  },
-  "config": {
-    "general_settings": {
-      "master_key_secret_ref": "litellm-master-key"
-    },
-    "model_list": [ ... ],
-    "router_settings": { ... }
-  }
-}
-```
-
-**Response** (`resolve_secrets=true`): 5.2절 참조
-
-#### 환경변수 조회
-
-```
-GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars
-```
-
-**Query Parameters**: 설정 조회 API와 동일 (`resolve_secrets`, `format`, `inherit`)
-
-**Response** (`resolve_secrets=false`):
-
-```json
-{
-  "metadata": {
-    "org": "myorg",
-    "project": "ai-platform",
-    "service": "litellm",
-    "version": "a3f2b1c"
-  },
-  "env_vars": {
-    "plain": {
-      "LITELLM_LOG_LEVEL": "INFO",
-      "LITELLM_NUM_WORKERS": "4",
-      "LITELLM_PORT": "4000"
-    },
-    "secret_refs": {
-      "DATABASE_URL": "litellm-db-url",
-      "LITELLM_MASTER_KEY": "litellm-master-key"
-    }
-  }
-}
-```
-
-**Response** (`resolve_secrets=true`): `secret_refs`의 각 값이 실제 시크릿 평문으로 치환되어 응답
-
-```json
-{
-  "metadata": {
-    "org": "myorg",
-    "project": "ai-platform",
-    "service": "litellm",
-    "version": "a3f2b1c"
-  },
-  "env_vars": {
-    "plain": {
-      "LITELLM_LOG_LEVEL": "INFO",
-      "LITELLM_NUM_WORKERS": "4",
-      "LITELLM_PORT": "4000"
-    },
-    "secrets": {
-      "DATABASE_URL": "postgresql://user:EXAMPLE@host:5432/db",
-      "LITELLM_MASTER_KEY": "EXAMPLE-master-key-replace-me"
-    }
-  }
-}
-```
-
-> `resolve_secrets=false`에서는 `secret_refs` (시크릿 ID 참조), `resolve_secrets=true`에서는 `secrets` (실제 평문 값)로 키 이름이 달라진다.
-
-#### 다중 서비스 설정 일괄 조회
-
-```
-POST /api/v1/configs/batch
-```
-
-```json
-{
-  "queries": [
-    { "org": "myorg", "project": "ai-platform", "service": "litellm" },
-    { "org": "myorg", "project": "ai-platform", "service": "gateway" }
-  ],
-  "resolve_secrets": false
-}
-```
-
-### 6.2 설정 변경 감지 API (Long Polling) `[FR-6]`
-
-```
-GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch?version={current_version}
-```
-
-- 현재 클라이언트가 가진 `version`(git commit hash)과 서버의 최신 버전이 다르면 즉시 응답
-- 같으면 변경이 생길 때까지 hold (최대 30초 후 `304 Not Modified`)
-- 클라이언트는 응답 받은 후 다시 요청 (long polling loop)
-
-### 6.3 헬스체크 / 운영 API `[FR-15]`
-
-```
-GET  /healthz                                    # Liveness
-GET  /readyz                                     # Readiness (git sync + App Registry 로드 완료 여부)
-GET  /api/v1/status                              # 서버 상태 (마지막 sync 시각, 로드된 설정 수 등)
-POST /api/v1/admin/reload                        # 수동 설정 리로드 트리거
-POST /api/v1/admin/app-registry/webhook          # AAP Console App Registry 변경 수신
-```
-
-### 6.4 설정/시크릿 일괄 변경 API (Console → Config Server Admin API) `[FR-4]` `[FR-5]`
-
-> **`aap-console` PRD 참조**: Console → Config Server 인터페이스는 Console PRD Section 3 "시스템 아키텍처 개요"에 정의된 Admin API 계약을 따른다.
-
-Console이 설정과 시크릿을 **한 번에** 전달하면, Config Server가 설정 파일 갱신 + 시크릿 암호화(kubeseal) + SealedSecret apply를 **단일 atomic Git 커밋**으로 처리한다. Console은 Git/kubeseal/kubectl 의존성 없이 이 API만 호출한다.
-
-#### 설정/시크릿 일괄 생성·변경
-
-```
-POST /api/v1/admin/changes
-```
-
-**Request Headers**:
-
-| 헤더 | 필수 | 설명 |
-|------|------|------|
-| `X-App-ID` | Y | AAP Console에서 발급받은 App ID |
-
-**Request Body**:
-
-```json
-{
-  "org": "myorg",
-  "project": "ai-platform",
-  "service": "litellm",
-  "config": {
-    "model_list": [
-      {
-        "model_name": "azure-gpt4",
-        "litellm_params": {
-          "model": "azure/gpt-4",
-          "api_base": "https://my-azure.openai.azure.com",
-          "api_key_secret_ref": "azure-gpt4-api-key",
-          "api_version": "2024-06-01"
-        }
-      }
-    ],
-    "general_settings": {
-      "master_key_secret_ref": "litellm-master-key",
-      "database_url_secret_ref": "litellm-db-url"
-    },
-    "router_settings": {
-      "routing_strategy": "least-busy",
-      "num_retries": 3,
-      "timeout": 60
-    }
-  },
-  "env_vars": {
-    "plain": {
-      "LITELLM_LOG_LEVEL": "INFO",
-      "LITELLM_NUM_WORKERS": "4",
-      "LITELLM_PORT": "4000"
-    },
-    "secret_refs": {
-      "DATABASE_URL": "litellm-db-url",
-      "LITELLM_MASTER_KEY": "litellm-master-key"
-    }
-  },
-  "secrets": {
-    "litellm-secrets": {
-      "namespace": "ai-platform",
-      "data": {
-        "master-key": "actual-secret-value",
-        "database-url": "postgresql://..."
-      }
-    }
-  },
-  "message": "Add azure-gpt4 model with API keys"
-}
-```
-
-- `org`, `project`, `service`: 대상 서비스 경로
-- `config`: config.yaml 블록 (optional — 생략 시 config.yaml 미변경)
-- `env_vars`: env_vars.yaml 블록 (optional — 생략 시 env_vars.yaml 미변경)
-- `secrets`: 시크릿 평문 (optional — 생략 시 시크릿 미변경). key는 K8s Secret 이름, data는 key-value 쌍
-- `message`: Git commit 메시지 (optional, 없으면 자동 생성)
-
-> 각 필드는 모두 optional이므로, 설정만 변경·시크릿만 변경·둘 다 변경 모두 이 단일 API로 처리한다.
-
-**Response** (`200 OK`):
-
-```json
-{
-  "status": "committed",
-  "version": "b4c5d6e",
-  "updated_at": "2026-03-10T10:00:00Z"
-}
-```
-
-- `version`: Git commit hash — Console이 이 값을 DB에 저장하여 이력 추적 및 롤백에 사용
-
-**처리 흐름**:
-1. Config Server가 요청 body를 스키마 검증
-2. `secret_ref` 값이 secrets 필드 또는 기존 secrets.yaml에 존재하는지 확인
-3. `secrets` 필드가 있으면: kubeseal 암호화 → SealedSecret YAML 생성
-4. config.yaml / env_vars.yaml / SealedSecret YAML 파일 생성/업데이트
-5. 모든 변경을 **단일 Git commit** & push
-6. SealedSecret이 변경되었으면 K8s API apply
-7. In-memory config store 갱신
-8. 다음 Config Agent polling 시 변경 감지 → ConfigMap/Secret 업데이트 → rolling restart
-
-> **Atomic Commit 원칙**: 하나의 API 호출로 발생하는 모든 파일 변경(config.yaml, env_vars.yaml, SealedSecret YAML)은 **반드시 단일 Git commit**으로 처리한다. 이 commit hash가 해당 변경의 유일한 버전 식별자가 되며, Console은 이 값을 DB에 저장하여 이력 추적 및 롤백에 사용한다.
-
-#### 설정/시크릿 일괄 삭제
-
-```
-DELETE /api/v1/admin/changes
-```
-
-Project 삭제 시 해당 서비스의 설정 + 시크릿 전체를 제거한다. Console이 Project 삭제 워크플로우에서 호출한다.
-
-**Request Body**:
-
-```json
-{
-  "org": "myorg",
-  "project": "ai-platform",
-  "service": "litellm"
-}
-```
-
-**Response** (`200 OK`):
-
-```json
-{
-  "status": "deleted",
-  "version": "c5d6e7f",
-  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml", "sealed-secrets/litellm-secrets.yaml"]
-}
-```
-
-**처리 흐름**:
-1. 해당 서비스 디렉토리의 config.yaml, env_vars.yaml, secrets.yaml, sealed-secrets/ 삭제
-2. 단일 Git commit & push
-3. In-memory store에서 해당 서비스 설정 제거
-4. Config Agent가 다음 polling 시 변경 감지 → ConfigMap/Secret 정리
-
-### 6.5 시크릿 메타데이터 API `[FR-12]`
-
-secrets.yaml의 메타데이터를 조회/관리하는 API. 시크릿 **평문 값은 포함되지 않으며**, K8s Secret 위치 정보(name, namespace, key)만 반환한다.
-
-#### 시크릿 메타데이터 목록 조회
-
-```
-GET /api/v1/orgs/{org}/projects/{project}/services/{service}/secrets
-```
-
-**Response** (`200 OK`):
-
-```json
-{
-  "metadata": {
-    "org": "myorg",
-    "project": "ai-platform",
-    "service": "litellm",
-    "version": "a3f2b1c"
-  },
-  "secrets": [
-    {
-      "id": "litellm-master-key",
-      "description": "LiteLLM master API key",
-      "k8s_secret": {
-        "name": "litellm-secrets",
-        "namespace": "ai-platform",
-        "key": "master-key"
-      }
-    },
-    {
-      "id": "azure-gpt4-api-key",
-      "description": "Azure OpenAI GPT-4 API Key",
-      "k8s_secret": {
-        "name": "llm-provider-keys",
-        "namespace": "ai-platform",
-        "key": "azure-gpt4"
-      }
-    }
-  ]
-}
-```
-
-> 평문 값은 절대 포함하지 않는다. 시크릿 값 자체는 `POST /api/v1/admin/changes`의 `secrets` 필드로만 관리한다.
-
-### 6.6 서비스 탐색 API `[FR-11]`
+### 4.11 FR-11: 서비스 탐색 API `[FR-11]`
 
 Console이 설정 가능한 서비스 목록을 탐색하기 위한 API. `aap-helm-charts` 저장소의 `configs/` 디렉토리 구조를 기반으로 응답한다.
 
@@ -1546,7 +1540,50 @@ GET /api/v1/orgs/{org}/projects/{project}/services
 }
 ```
 
-### 6.7 설정 변경 이력 API `[FR-13]`
+### 4.12 FR-12: 시크릿 메타데이터 API `[FR-12]`
+
+secrets.yaml의 메타데이터를 조회하는 API. 시크릿 **평문 값은 포함되지 않으며**, K8s Secret 위치 정보(name, namespace, key)만 반환한다.
+
+```
+GET /api/v1/orgs/{org}/projects/{project}/services/{service}/secrets
+```
+
+**Response** (`200 OK`):
+
+```json
+{
+  "metadata": {
+    "org": "myorg",
+    "project": "ai-platform",
+    "service": "litellm",
+    "version": "a3f2b1c"
+  },
+  "secrets": [
+    {
+      "id": "litellm-master-key",
+      "description": "LiteLLM master API key",
+      "k8s_secret": {
+        "name": "litellm-secrets",
+        "namespace": "ai-platform",
+        "key": "master-key"
+      }
+    },
+    {
+      "id": "azure-gpt4-api-key",
+      "description": "Azure OpenAI GPT-4 API Key",
+      "k8s_secret": {
+        "name": "llm-provider-keys",
+        "namespace": "ai-platform",
+        "key": "azure-gpt4"
+      }
+    }
+  ]
+}
+```
+
+> 평문 값은 절대 포함하지 않는다. 시크릿 값 자체는 `POST /api/v1/admin/changes`의 `secrets` 필드로만 관리한다.
+
+### 4.13 FR-13: 변경 이력 API `[FR-13]`
 
 Git 커밋 이력을 기반으로 설정 변경 이력을 조회한다. PRD 1.2의 "설정 변경 이력의 자동 추적 (Git 기반)" 요건을 충족한다.
 
@@ -1598,13 +1635,11 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/history
 GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config?version={commit_hash}
 ```
 
-기존 설정 조회 API에 `version` 파라미터를 추가하여, 특정 시점의 설정을 조회할 수 있다. 변경 이력과 함께 사용하여 diff/rollback에 활용한다.
+기존 설정 조회 API(FR-2)에 `version` 파라미터를 추가하여, 특정 시점의 설정을 조회할 수 있다. 변경 이력과 함께 사용하여 diff/rollback에 활용한다.
 
-### 6.8 설정 롤백 API `[FR-14]`
+### 4.14 FR-14: 설정 롤백 API `[FR-14]`
 
 Console이 특정 버전으로 서비스 설정을 롤백할 때 사용한다. Console은 이전에 저장해둔 version(Git commit hash)을 지정하여 해당 시점의 설정/환경변수/시크릿을 모두 복원한다.
-
-#### 롤백 요청
 
 ```
 POST /api/v1/admin/changes/revert
@@ -1661,18 +1696,75 @@ POST /api/v1/admin/changes/revert
 | `target_version`에 해당 서비스 파일 없음 | `404` | 해당 시점에 서비스가 존재하지 않았음 |
 | 현재 설정과 동일 | `200` (no-op) | 변경 없음, 새 commit 생성하지 않음 |
 
-### 6.9 환경변수 변경 감지 API (Long Polling) `[FR-6]`
+### 4.15 FR-15: 헬스체크 / 운영 API `[FR-15]`
 
 ```
-GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch?version={current_version}
+GET  /healthz                                    # Liveness
+GET  /readyz                                     # Readiness (git sync + App Registry 로드 완료 여부)
+GET  /api/v1/status                              # 서버 상태 (마지막 sync 시각, 로드된 설정 수 등)
+POST /api/v1/admin/reload                        # 수동 설정 리로드 트리거
+POST /api/v1/admin/app-registry/webhook          # AAP Console App Registry 변경 수신
 ```
 
-설정 변경 감지 API(6.2절)와 동일한 동작. Config Agent는 config/watch와 env_vars/watch를 **병렬로** 호출하여 각각의 변경을 독립적으로 감지한다.
+### 4.16 FR-16: 인증/인가 `[FR-16]`
 
-- `version`이 서버 최신과 다르면 즉시 응답
-- 같으면 변경 시까지 hold (최대 30초 후 `304 Not Modified`)
+| 계층 | 방식 |
+|------|------|
+| 서비스 간 통신 | 클러스터 내부 통신 (K8s Network Policy로 접근 제어) |
+| API 인증 | App ID (AAP Console에서 발급) |
+| 접근 제어 | AAP Console App Registry의 scope 및 permissions로 검증 |
+| 시크릿 접근 제어 | App의 `resolve_secrets` 권한 확인 |
 
-### 6.10 API 요약
+### 4.17 FR-17: 시크릿 보안 `[FR-17]`
+
+시크릿 값의 보호는 K8s 네이티브 보안 메커니즘에 위임한다.
+
+#### 보안 전략: 클러스터 내부 통신 + K8s Secret
+
+Config Server와 Config Agent는 동일 K8s 클러스터 내에서 동작하므로, 종단 간 암호화(mTLS 등)는 불필요하다. 클러스터 내부 네트워크(Pod-to-Pod)의 보안은 K8s Network Policy로 제어한다.
+
+```
+┌─ 저장 (at rest) ─────────────────────────────────────────────────┐
+│                                                                  │
+│  Git: SealedSecret YAML (암호화본) — 클러스터 비밀키 없이 복호화 불가│
+│  K8s etcd: Secret (encryption at rest 활성화)                     │
+│  Config Server Pod: Volume Mount (kubelet이 자동 sync)            │
+│  Config Server 메모리: 평문 (요청 시만 존재, 처리 후 제로화)         │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+
+┌─ 전송 (in transit) ──────────────────────────────────────────────┐
+│                                                                  │
+│  Config Server ←──(클러스터 내부)──→ Config Agent                  │
+│  → 동일 클러스터 내 Pod-to-Pod 통신                                │
+│  → K8s Network Policy로 접근 제어                                 │
+│  → 시크릿 포함 응답에 Cache-Control: no-store 헤더                 │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+#### 시크릿 보호 원칙
+
+| 원칙 | 구현 |
+|------|------|
+| **저장 시 분리** | Git에는 메타데이터 + SealedSecret(암호화본)만 저장. 시크릿 평문은 K8s Secret(etcd encryption at rest)에만 존재 |
+| **전송 시 보호** | 클러스터 내부 통신, K8s Network Policy로 접근 제어 |
+| **로그 금지** | 시크릿 값은 절대 로그에 출력하지 않음, 로그에는 secret_ref ID만 기록 |
+| **캐시 금지** | 시크릿 포함 응답에 `Cache-Control: no-store` 헤더, ETag 미적용 |
+| **감사 로깅** | 시크릿 접근 시 App ID, 시간, 요청 scope을 감사 로그에 기록 |
+| **메모리 내 시크릿** | 사용 후 메모리에서 즉시 제로화 |
+
+#### 위협 시나리오별 방어
+
+| 위협 | 방어 |
+|------|------|
+| 네트워크 스니핑 | 클러스터 내부 통신 + K8s Network Policy로 접근 제어 |
+| 서버 메모리 덤프 | 시크릿은 요청 처리 중에만 메모리에 존재, 처리 후 제로화 |
+| `aap-helm-charts` 저장소 유출 | Git에는 SealedSecret(암호화본)만 존재. 클러스터의 SealedSecret Controller 비밀키 없이 복호화 불가능하므로 영향 최소 |
+
+---
+
+## 5. API 요약
 
 #### Console → Config Server (Admin API)
 
@@ -1720,87 +1812,38 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 
 ---
 
-## 7. 고성능 설계 `[FR-1]`
+## 6. 비기능 요구사항
 
-### 7.1 성능 목표
+### 6.1 의존성
 
-| 지표 | 목표 |
-|------|------|
-| Throughput | 100,000+ req/s (단일 인스턴스) |
-| Latency (p99) | < 5ms |
-| Memory | 설정 1,000개 기준 < 100MB |
-| 시작 시간 | < 5초 (cold start) |
+#### 클러스터 사전 요구사항
 
-### 7.2 성능 전략
+| 컴포넌트 | 용도 | 필수 여부 |
+|----------|------|----------|
+| **Bitnami SealedSecrets Controller** | SealedSecret → K8s Secret 복호화 | 필수 |
+| **K8s etcd encryption at rest** | Secret 저장 시 암호화 | 권장 |
+| **K8s Network Policy 지원** (Calico/Cilium) | Pod 간 네트워크 접근 제어 | 권장 |
 
-#### (1) In-Memory Store
+#### Config Server 의존성
 
-```go
-// 핵심 자료구조
-type ConfigStore struct {
-    mu       sync.RWMutex
-    configs  map[string]*ResolvedConfig  // key: "org/project/service"
-    version  string                       // current git commit hash
-}
-```
+| 의존성 | 용도 |
+|--------|------|
+| `aap-helm-charts` Git Repository | 설정 파일 원본 저장소 (Source of Truth). `configs/` 하위만 접근 |
+| AAP Console API | App Registry 로드 (인증/인가) |
+| K8s API (client-go) | SealedSecret apply |
+| Volume Mount | Secret 값 읽기 (resolve_secrets) |
+| SealedSecret Controller 공개키 | kubeseal 암호화 |
 
-- 모든 읽기는 `RLock` → 동시 읽기 무제한
-- 쓰기(설정 갱신)는 `Lock` → COW(Copy-on-Write) 패턴으로 읽기 차단 최소화
+#### Config Agent 의존성
 
-#### (2) Copy-on-Write 갱신
-
-```
-1. 새 Git 변경 감지
-2. 변경된 설정만 파싱 (diff 기반)
-3. 새 map 생성 (기존 map 복사 + 변경분 적용)
-4. atomic pointer swap (sync.RWMutex Lock 최소 구간)
-5. 기존 map은 진행 중인 요청 완료 후 GC
-```
-
-갱신 중에도 읽기 요청은 거의 차단되지 않는다.
-
-#### (3) HTTP 최적화
-
-- **HTTP/2 지원**: 다중 요청 멀티플렉싱
-- **ETag / If-None-Match**: 변경 없으면 `304` 응답 (body 전송 생략, 시크릿 미포함 응답에만 적용)
-- **gzip 응답 압축**: 대용량 설정 응답 시 대역폭 절약
-- **Connection pooling**: Keep-Alive로 연결 재사용
+| 의존성 | 용도 |
+|--------|------|
+| Config Server API | 설정/환경변수 조회, 변경 감지 |
+| K8s API | ConfigMap/Secret 업데이트, Deployment annotation 패치 |
 
 ---
 
-## 8. 보안
-
-### 8.1 인증/인가 `[FR-16]`
-
-| 계층 | 방식 |
-|------|------|
-| 서비스 간 통신 | 클러스터 내부 통신 (K8s Network Policy로 접근 제어) |
-| API 인증 | App ID (AAP Console에서 발급) |
-| 접근 제어 | AAP Console App Registry의 scope 및 permissions로 검증 |
-| 시크릿 접근 제어 | App의 `resolve_secrets` 권한 확인 |
-
-### 8.2 시크릿 보호 원칙 `[FR-17]`
-
-| 원칙 | 구현 |
-|------|------|
-| **저장 시 분리** | Git에는 메타데이터 + SealedSecret(암호화본)만 저장. 시크릿 평문은 K8s Secret(etcd encryption at rest)에만 존재 |
-| **전송 시 보호** | 클러스터 내부 통신, K8s Network Policy로 접근 제어 |
-| **로그 금지** | 시크릿 값은 절대 로그에 출력하지 않음, 로그에는 secret_ref ID만 기록 |
-| **캐시 금지** | 시크릿 포함 응답에 `Cache-Control: no-store` 헤더, ETag 미적용 |
-| **감사 로깅** | 시크릿 접근 시 App ID, 시간, 요청 scope을 감사 로그에 기록 |
-| **메모리 내 시크릿** | 사용 후 메모리에서 즉시 제로화 |
-
-### 8.3 위협 시나리오별 방어 `[FR-17]`
-
-| 위협 | 방어 |
-|------|------|
-| 네트워크 스니핑 | 클러스터 내부 통신 + K8s Network Policy로 접근 제어 |
-| 서버 메모리 덤프 | 시크릿은 요청 처리 중에만 메모리에 존재, 처리 후 제로화 |
-| `aap-helm-charts` 저장소 유출 | Git에는 SealedSecret(암호화본)만 존재. 클러스터의 SealedSecret Controller 비밀키 없이 복호화 불가능하므로 영향 최소 |
-
----
-
-## 9. 기술 스택
+## 7. 기술 스택
 
 | 구성 요소 | 기술 | 선택 이유 |
 |-----------|------|-----------|
@@ -1818,13 +1861,13 @@ type ConfigStore struct {
 
 ---
 
-## 10. 개발 프로세스: TDD
+## 8. 개발 프로세스: TDD
 
 > 상세 내용은 [development-process.md](./development-process.md) 참조
 
 ---
 
-## 11. 마일스톤
+## 9. 마일스톤
 
 ### Phase 1: Core (MVP) — `[FR-1]` `[FR-2]` `[FR-3]` `[FR-4]` `[FR-5]` `[FR-15]`
 
