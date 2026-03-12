@@ -223,7 +223,7 @@ POST /admin/changes 수신 (secrets 필드 포함)
 
 Console이 org/project/service를 생성·수정·삭제하면, webhook으로 Config Server에 통지한다. Config Server는 인메모리 App Registry 캐시를 갱신한다.
 
-Console → Config Server 통신은 **API Key Bearer 인증**으로 보호된다. Console은 Config Server가 발급한 API Key를 `Authorization: Bearer <API_KEY>` 헤더로 전송한다.
+Console → Config Server 통신은 **환경변수 기반 API Key Bearer 인증**으로 보호된다. 운영자가 양쪽에 동일한 API Key를 환경변수로 설정한다.
 
 #### API Key 인증 흐름
 
@@ -234,17 +234,16 @@ Console                       Config Server
   │  Authorization: Bearer <key>  │
   ├───────────────────────────────▶│
   │                                ├─ 1. Bearer 토큰 추출
-  │                                ├─ 2. SHA-256 해시 계산
-  │                                ├─ 3. 인메모리 캐시에서 해시 조회
-  │                                ├─ 4. scope/permissions 검증
-  │                                ├─ 5. 통과 → 요청 처리
+  │                                ├─ 2. 환경변수 API_KEY와 비교
+  │                                ├─ 3. 불일치 → 401
+  │                                ├─ 4. 일치 → 요청 처리
   │  응답: {version: "..."}        │
   │◀───────────────────────────────┤
 ```
 
-- API Key는 Config Server가 발급하며, **해시(SHA-256)**로만 저장 (Git: `configs/_api-keys/keys.yaml`)
-- Console은 발급받은 평문 키를 환경변수(`CONFIG_SERVER_API_KEY`) 또는 K8s Secret으로 보관
-- 초기 설치 시 `BOOTSTRAP_API_KEY` 환경변수로 첫 키를 설정, 이후 정식 키 발급 후 비활성화
+- Config Server: 환경변수 `API_KEY` (K8s Secret으로 주입 권장)
+- Console: 환경변수 `CONFIG_SERVER_API_KEY`
+- 키 교체: 양쪽 환경변수 변경 → Pod 재시작
 
 #### App Registry webhook
 
@@ -840,5 +839,5 @@ env_vars:
 | **FR-13** | 변경 이력 API | `git` | `GET /history` | Git | — |
 | **FR-14** | 설정 롤백 API | `store`, `git`, `seal` | `POST /admin/changes/revert` | Git, kubeseal, K8s API | — |
 | **FR-15** | 헬스체크 / 운영 API | `server` | `/healthz`, `/readyz`, `/status` | — | — |
-| **FR-16** | 인증/인가 | `auth` | 미들웨어 (`Authorization: Bearer`) | Git (`configs/_api-keys/keys.yaml`) | — |
+| **FR-16** | 인증/인가 | `auth` | 미들웨어 (`Authorization: Bearer`) | 환경변수 `API_KEY` | — |
 | **FR-17** | 시크릿 보안 | `secret`, `auth` | 미들웨어 | K8s Network Policy | — |
