@@ -359,8 +359,8 @@ secrets:
 #### 메모리 구조
 
 ```go
-// 핵심 자료구조 (상세: HLD 섹션 11.2 참조)
-type ConfigStore struct {
+// 핵심 자료구조 (상세: HLD 섹션 6.3, 11.2 참조)
+type Store struct {
     mu       sync.RWMutex
     configs  map[string]*ResolvedConfig  // key: "org/project/service"
     version  string                       // current git commit hash

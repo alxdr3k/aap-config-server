@@ -675,7 +675,7 @@ API 요청 시 (inherit=true):
 ### 6.3 메모리 구조 `[FR-1]`
 
 ```go
-type ConfigStore struct {
+type Store struct {
     mu       sync.RWMutex
 
     // 서비스별 원본 설정 (상속 미적용)
@@ -690,6 +690,7 @@ type ConfigStore struct {
     mergedCache map[string]*ResolvedConfig  // key: "org/project/service"
 
     version  string
+    repo     GitRepo                      // interface 주입 (DI)
 }
 ```
 
@@ -863,6 +864,7 @@ aap-config-server/
 │   ├── server/               # HTTP 서버 설정, 라우터, graceful shutdown
 │   ├── handler/              # HTTP 핸들러 (요청 파싱 → 서비스 호출 → 응답)
 │   ├── store/                # In-memory Config Store (COW, RWMutex)
+│   ├── apperror/             # 커스텀 에러 타입 (Code, Error, HTTP 매핑)
 │   ├── parser/               # YAML 파서 (config.yaml, env_vars.yaml, secrets.yaml)
 │   ├── gitops/               # Git clone/pull/commit/push (go-git 래핑)
 │   ├── seal/                 # kubeseal 암호화 (interface 추상화)
