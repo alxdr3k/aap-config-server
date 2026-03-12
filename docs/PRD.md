@@ -73,7 +73,7 @@
 | **FR-16** | 인증/인가 (API Key Bearer 인증) | 4.16 | 4 |
 | **FR-17** | 시크릿 보안 (전송/저장/로그 보호) | 4.17 | 4 |
 
-> **Console PRD 연관**: Console PRD의 FR-3(Project 삭제), FR-5(Langfuse SK/PK), FR-6(LiteLLM Config), FR-8(버전 롤백)이 Config Server의 FR-4, FR-5, FR-7, FR-14를 호출한다.
+> **Console PRD 연관**: Console PRD의 FR-3(Project 삭제), FR-5(Langfuse SK/PK), FR-6(LiteLLM Config), FR-7(프로비저닝 파이프라인), FR-8(버전 롤백)이 Config Server의 FR-4, FR-5, FR-7, FR-8, FR-14를 호출한다.
 
 ---
 
@@ -472,7 +472,14 @@ POST /api/v1/configs/batch
 GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars
 ```
 
-**Query Parameters**: 설정 조회 API와 동일 (`resolve_secrets`, `format`, `inherit`)
+**Query Parameters**:
+
+| 파라미터 | 타입 | 설명 |
+|----------|------|------|
+| `resolve_secrets` | bool | `true`면 `secret_refs`의 시크릿 값을 resolve하여 평문으로 포함 (default: `false`) |
+| `format` | string | `yaml` 또는 `json` (default: `json`) |
+| `inherit` | bool | `true`면 상위 레벨 기본값 merge (default: `true`) |
+| `version` | string | 특정 Git commit hash의 설정을 반환 (default: 최신) |
 
 **Response** (`resolve_secrets=false`):
 
@@ -855,7 +862,7 @@ Config Agent가 ConfigMap/Secret 업데이트 후 Deployment의 Pod template ann
 
 #### Config Agent API
 
-Config Agent는 Config Server에 두 가지 API를 호출한다:
+Config Agent는 Config Server에 다음 API를 호출한다:
 
 ```
 # 1. 설정 조회 (시작 시 + 변경 감지 후)
@@ -1348,7 +1355,7 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 - [ ] `[FR-1]` In-memory config store 구현 (COW 패턴, interface 기반 DI)
 - [ ] `[FR-2]` REST API: 설정 조회 (`GET /api/v1/.../config`)
 - [ ] `[FR-3]` REST API: 환경변수 조회 (`GET /api/v1/.../env_vars`)
-- [ ] `[FR-4]` Admin API: 설정/시크릿 일괄 변경 (`POST /api/v1/admin/changes`) — 스키마 검증 + kubeseal + 단일 Git commit & push
+- [ ] `[FR-4]` Admin API: 설정/시크릿 일괄 변경 (`POST /api/v1/admin/changes`) — 스키마 검증 + 단일 Git commit & push (시크릿 처리는 Phase 2)
 - [ ] `[FR-5]` Admin API: 설정/시크릿 일괄 삭제 (`DELETE /api/v1/admin/changes`) — Git에서 파일 삭제 + commit & push
 
 - [ ] `[FR-1]` 주기적 Git poll 기반 설정 갱신
@@ -1359,7 +1366,7 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 ### Phase 2: Secrets — `[FR-7]` `[FR-8]`
 
 - [ ] `[FR-7]` Volume Mount 기반 시크릿 로딩
-- [ ] `[FR-7]` `secrets.yaml` 파싱 및 시크릿 참조 resolve (config + env_vars 모두)
+- [ ] `[FR-7]` `secrets.yaml` 파싱 및 시크릿 참조 resolve (env_vars API의 `resolve_secrets=true`)
 - [ ] `[FR-7]` SealedSecret 생성 (kubeseal 암호화)
 - [ ] `[FR-7]` SealedSecret YAML Git commit & push
 - [ ] `[FR-7]` SealedSecret K8s API apply (client-go)
@@ -1372,6 +1379,7 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 ### Phase 3: Config Agent (중앙 집중형) — `[FR-9]`
 
 - [ ] `[FR-9]` Config Agent Deployment 구현 (long polling loop)
+- [ ] `[FR-9]` K8s Lease 기반 leader election 구현 (replica=2, 이중 적용 방지)
 - [ ] `[FR-9]` Config Server API fetch 로직 (resolve_secrets=true)
 - [ ] `[FR-9]` 서비스별 네이티브 설정 파일 생성 (litellm proxy_config 형식 등)
 - [ ] `[FR-9]` K8s client-go 연동: ConfigMap 생성/업데이트

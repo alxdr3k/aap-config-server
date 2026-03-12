@@ -122,7 +122,7 @@ apply │   │git │  │   │ polling
 | **AAP Console** | 시크릿 생성, 설정 변경 요청, App 등록/관리 | 시크릿 저장/관리 |
 | **Config Server** | 시크릿 암호화(kubeseal), Git 저장, SealedSecret apply, 설정 서빙(REST API), resolve_secrets | litellm Pod 직접 제어 |
 | **SealedSecret Controller** | SealedSecret → K8s Secret 복호화 (K8s CRD) | 설정 관리 |
-| **Config Agent** | Config Server 폴링, 변경 감지, ConfigMap/Secret 업데이트, Rolling restart 트리거 | 시크릿 관리/암호화/복호화 |
+| **Config Agent** | Leader election (Lease), Config Server 폴링, 변경 감지, ConfigMap/Secret 업데이트, Rolling restart 트리거 | 시크릿 관리/암호화/복호화 |
 | **kubelet** | Secret/ConfigMap Volume Mount 자동 sync | - |
 | **litellm Pod** | 마운트된 config/secret 파일 읽기 | - |
 
@@ -157,6 +157,7 @@ apply │   │git │  │   │ polling
 | API | 용도 |
 |-----|------|
 | `GET /api/v1/.../config` | 설정 조회 |
+| `GET /api/v1/.../env_vars` | 환경변수 조회 |
 | `GET /api/v1/.../secrets` | 시크릿 메타데이터 조회 (평문 없음) |
 | `GET /api/v1/orgs` / `projects` / `services` | 서비스 탐색 |
 | `GET /api/v1/.../history` | 변경 이력 조회 (Git 기반) |
@@ -460,6 +461,14 @@ Config Server에 필요한 최소 권한:
 - `sealedsecrets` (bitnami.com): get, list, create, update, patch
 - `secrets`: get (Volume Mount 구성용)
 - `services/proxy` (sealed-secrets-controller): get (kubeseal 공개키 조회)
+
+### 3.5 Config Agent RBAC `[FR-9]`
+
+Config Agent에 필요한 최소 권한 (대상 리소스에만 `resourceNames`로 제한):
+- `leases` (coordination.k8s.io): get, create, update (leader election용)
+- `configmaps`: get, create, update, patch (대상 ConfigMap만)
+- `secrets`: get, create, update, patch (환경변수 Secret만)
+- `deployments`: get, patch (대상 Deployment만, annotation 패치용)
 
 ---
 
@@ -829,17 +838,17 @@ env_vars:
 | **FR-1** | In-memory Config Store | `store`, `parser`, `gitops` | — | Git (`go-git`) | — |
 | **FR-2** | 설정 조회 API | `store`, `handler` | `GET /config` | — | — |
 | **FR-3** | 환경변수 조회 API | `store`, `handler` | `GET /env_vars` | — | — |
-| **FR-4** | 설정/시크릿 일괄 변경 | `store`, `gitops`, `seal` | `POST /admin/changes` | Git, kubeseal, K8s API | — |
-| **FR-5** | 설정/시크릿 일괄 삭제 | `store`, `gitops` | `DELETE /admin/changes` | Git | — |
+| **FR-4** | 설정/시크릿 일괄 변경 | `store`, `gitops`, `seal`, `handler` | `POST /admin/changes` | Git, kubeseal, K8s API | — |
+| **FR-5** | 설정/시크릿 일괄 삭제 | `store`, `gitops`, `handler` | `DELETE /admin/changes` | Git | — |
 | **FR-6** | 변경 감지 API (watch) | `store`, `handler` | `GET /config/watch`, `GET /env_vars/watch` | — | watch client |
 | **FR-7** | 시크릿 관리 | `seal`, `secret` | — | kubeseal, K8s API, Volume Mount | — |
-| **FR-8** | App Registry 연동 | `registry` | `POST /admin/app-registry/webhook` | AAP Console API | — |
+| **FR-8** | App Registry 연동 | `registry`, `handler` | `POST /admin/app-registry/webhook` | AAP Console API | — |
 | **FR-9** | Config Agent | — | — | Config Server API, K8s API, Lease (leader election) | `agent` 전체 |
 | **FR-10** | 설정 상속 | `store`, `merge` | — | — | — |
 | **FR-11** | 서비스 탐색 API | `store`, `handler` | `GET /orgs`, `/projects`, `/services` | — | — |
 | **FR-12** | 시크릿 메타데이터 API | `store`, `handler` | `GET /secrets` | — | — |
-| **FR-13** | 변경 이력 API | `gitops` | `GET /history` | Git | — |
-| **FR-14** | 설정 롤백 API | `store`, `gitops`, `seal` | `POST /admin/changes/revert` | Git, kubeseal, K8s API | — |
+| **FR-13** | 변경 이력 API | `gitops`, `handler` | `GET /history` | Git | — |
+| **FR-14** | 설정 롤백 API | `store`, `gitops`, `seal`, `handler` | `POST /admin/changes/revert` | Git, kubeseal, K8s API | — |
 | **FR-15** | 헬스체크 / 운영 API | `server` | `/healthz`, `/readyz`, `/status` | — | — |
 | **FR-16** | 인증/인가 | `auth` | 미들웨어 (`Authorization: Bearer`) | 환경변수 `API_KEY` | — |
 | **FR-17** | 시크릿 보안 | `secret`, `auth` | 미들웨어 | K8s Network Policy | — |

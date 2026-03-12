@@ -156,16 +156,17 @@ func TestGetConfig_NotFound(t *testing.T) {
 ```
 테스트 먼저                          구현
 ━━━━━━━━━━━━━━━━━━━━                ━━━━━━━━━━━━━━━━━━
-1. Config Server API 호출 테스트     → HTTP client 구현
+1. Leader election 테스트             → K8s Lease 기반 leader election 구현
+2. Config Server API 호출 테스트     → HTTP client 구현
    (httptest.Server 사용)
-2. 변경 감지 로직 테스트             → version 비교 로직
-3. litellm config.yaml 생성 테스트   → 설정 변환기 구현
-4. env.sh 생성 테스트                → 환경변수 파일 생성기
-5. ConfigMap CRUD 테스트             → K8s client-go (fake client)
-6. Secret CRUD 테스트                → K8s client-go (fake client)
-7. Rolling restart 트리거 테스트     → Deployment patch 로직
-8. 변경 유형 판별 테스트             → config vs env_vars 구분
-9. Debounce 로직 테스트              → leading-edge debounce 구현
+3. 변경 감지 로직 테스트             → version 비교 로직
+4. litellm config.yaml 생성 테스트   → 설정 변환기 구현
+5. env.sh 생성 테스트                → 환경변수 파일 생성기
+6. ConfigMap CRUD 테스트             → K8s client-go (fake client)
+7. Secret CRUD 테스트                → K8s client-go (fake client)
+8. Rolling restart 트리거 테스트     → Deployment patch 로직
+9. 변경 유형 판별 테스트             → config vs env_vars 구분
+10. Debounce 로직 테스트             → leading-edge debounce 구현
 ```
 
 ---
