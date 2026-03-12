@@ -1041,12 +1041,13 @@ Config Server 시작
 
 **런타임 캐시 갱신:**
 
-Console이 App을 등록/수정/삭제하면 `POST /admin/app-registry/webhook`으로 Config Server에 통지한다 (fire-and-forget + async retry). Config Server는 수신한 데이터로 인메모리 캐시를 갱신한다.
+Console이 App을 등록/수정/삭제하면 `POST /api/v1/admin/app-registry/webhook`으로 Config Server에 통지한다 (fire-and-forget + async retry). Config Server는 수신한 데이터로 인메모리 캐시를 갱신한다.
 
 ```
 Console                          Config Server
   │                                    │
-  ├─ POST /admin/app-registry/webhook ▶│
+  ├─ POST /api/v1/admin/app-registry/  ▶│
+  │  webhook                            │
   │  (fire-and-forget + async retry)   ├─ 캐시 갱신
   │◀── {status: "ok"} ────────────────┤
 ```
@@ -1703,7 +1704,6 @@ GET  /healthz                                    # Liveness
 GET  /readyz                                     # Readiness (git sync + App Registry 로드 완료 여부)
 GET  /api/v1/status                              # 서버 상태 (마지막 sync 시각, 로드된 설정 수 등)
 POST /api/v1/admin/reload                        # 수동 설정 리로드 트리거
-POST /api/v1/admin/app-registry/webhook          # AAP Console App Registry 변경 수신
 ```
 
 ### 4.16 FR-16: 인증/인가 `[FR-16]`
