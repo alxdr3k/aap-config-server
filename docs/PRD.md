@@ -1,8 +1,24 @@
 # AAP Config Server — Product Requirements Document
 
-> **Version**: 2.0
-> **Date**: 2026-03-12
-> **Status**: Draft
+> **버전**: 2.0
+> **작성일**: 2026-03-12
+> **최종 수정일**: 2026-03-12
+> **상태**: Draft
+> **참조**: [HLD](./HLD.md) · [development-process.md](./development-process.md)
+
+---
+
+## 목차
+
+1. 개요
+2. 아키텍처 개요
+3. 저장소 설계
+4. 핵심 기능 요구사항
+5. API 요약
+6. 비기능 요구사항
+7. 기술 스택
+8. 개발 프로세스: TDD
+9. 마일스톤
 
 ---
 
