@@ -359,16 +359,22 @@ secrets:
 #### 메모리 구조
 
 ```go
-// 핵심 자료구조
+// 핵심 자료구조 (상세: HLD 섹션 11.2 참조)
 type ConfigStore struct {
     mu       sync.RWMutex
     configs  map[string]*ResolvedConfig  // key: "org/project/service"
     version  string                       // current git commit hash
+    repo     GitRepo                      // interface 주입 (DI)
 }
+
+// 모든 public 메서드는 context.Context를 첫 번째 파라미터로 받는다
+func (s *Store) GetConfig(ctx context.Context, org, project, service string) (*ResolvedConfig, error)
+func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeResult, error)
 ```
 
 - 모든 읽기는 `RLock` → 동시 읽기 무제한
 - 쓰기(설정 갱신)는 `Lock` → COW(Copy-on-Write) 패턴으로 읽기 차단 최소화
+- 외부 의존성(Git 등)은 interface로 추상화하여 테스트에서 mock 교체 가능
 
 #### Copy-on-Write 갱신
 
@@ -1338,11 +1344,13 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 
 ## 7. 기술 스택
 
+**Go Module**: `github.com/aap/config-server` (Go 1.22+)
+
 | 구성 요소 | 기술 | 선택 이유 |
 |-----------|------|-----------|
-| 언어 | **Go** | 고성능 HTTP 서버, 단일 바이너리, 낮은 메모리, K8s 생태계 친화 |
+| 언어 | **Go 1.22+** | 고성능 HTTP 서버, 단일 바이너리, 낮은 메모리, K8s 생태계 친화 |
 | HTTP 서버 | `net/http` (stdlib) | 외부 의존성 최소화, HTTP/2 기본 지원 |
-| Router | `go-chi/chi` 또는 stdlib `mux` (Go 1.22+) | 경량, 미들웨어 체이닝 |
+| Router | stdlib `mux` (Go 1.22+ `http.NewServeMux` enhanced routing) | 외부 의존성 zero, 메서드+패턴 라우팅 지원 |
 | Git 연동 | `go-git` 또는 shell exec `git` | in-process git 조작 |
 | YAML 파싱 | `gopkg.in/yaml.v3` | 표준 YAML 라이브러리 |
 | 파일 감시 | `fsnotify` | Volume Mount 변경 감지 |
@@ -1351,6 +1359,8 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 | K8s 클라이언트 | `client-go` | Config Agent: ConfigMap/Secret/Deployment 조작, Config Server: SealedSecret apply + Secret 조회 |
 | SealedSecret | `kubeseal` (CLI 또는 Go 라이브러리) | 시크릿 암호화 → SealedSecret YAML 생성 |
 | 컨테이너 | Distroless 기반 | 최소 이미지, 불필요한 바이너리 없음 |
+
+> **Go 설계 원칙**: 프로젝트 구조, 의존성 주입, context.Context 전파, 에러 처리 전략, graceful shutdown, 서버 자체 설정 로딩 등 Go 관용적 설계 원칙은 [HLD 섹션 11](./HLD.md#11-go-설계-원칙)에서 상세히 정의한다.
 
 ---
 
@@ -1364,9 +1374,11 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 
 ### Phase 1: Core (MVP) — `[FR-1]` `[FR-2]` `[FR-3]` `[FR-4]` `[FR-5]` `[FR-15]`
 
-- [ ] Go 프로젝트 구조 세팅
+- [ ] Go 프로젝트 구조 세팅 (`go mod init`, `cmd/`, `internal/` 디렉토리 — [HLD 섹션 11.1](./HLD.md#111-프로젝트-구조) 참조)
+- [ ] 서버 자체 설정 로딩 (`internal/config` — 환경변수 + 플래그)
+- [ ] 커스텀 에러 타입 정의 (`internal/apperror` — [HLD 섹션 11.4](./HLD.md#114-에러-처리) 참조)
 - [ ] `[FR-1]` `aap-helm-charts` 저장소 clone/pull 및 `configs/` 하위 설정 파일 파싱 (`config.yaml`, `env_vars.yaml`, `secrets.yaml`)
-- [ ] `[FR-1]` In-memory config store 구현 (COW 패턴)
+- [ ] `[FR-1]` In-memory config store 구현 (COW 패턴, interface 기반 DI)
 - [ ] `[FR-2]` REST API: 설정 조회 (`GET /api/v1/.../config`)
 - [ ] `[FR-3]` REST API: 환경변수 조회 (`GET /api/v1/.../env_vars`)
 - [ ] `[FR-4]` Admin API: 설정/시크릿 일괄 변경 (`POST /api/v1/admin/changes`) — 스키마 검증 + kubeseal + 단일 Git commit & push
@@ -1374,6 +1386,7 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 
 - [ ] `[FR-1]` 주기적 Git poll 기반 설정 갱신
 - [ ] `[FR-15]` Health check 엔드포인트 (`/healthz`, `/readyz`)
+- [ ] Graceful shutdown (`signal.NotifyContext` + `http.Server.Shutdown`)
 - [ ] Dockerfile 및 기본 K8s manifests
 
 ### Phase 2: Secrets — `[FR-7]` `[FR-8]`
@@ -1425,7 +1438,6 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 
 ### Phase 6: Hardening
 
-- [ ] Graceful shutdown
 - [ ] 설정 파일 스키마 검증
 - [ ] Rate limiting
 - [ ] 통합 테스트 / 부하 테스트
