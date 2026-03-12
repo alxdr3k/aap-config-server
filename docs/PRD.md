@@ -70,7 +70,7 @@
 | **FR-13** | 변경 이력 API (`GET .../history`) | 4.13 | 5 |
 | **FR-14** | 설정 롤백 API (`POST /admin/changes/revert`) | 4.14 | 5 |
 | **FR-15** | 헬스체크 / 운영 API (`/healthz`, `/readyz`, `/status`) | 4.15 | 1 |
-| **FR-16** | 인증/인가 (API Key Bearer + Scope 기반 RBAC) | 4.16 | 4 |
+| **FR-16** | 인증/인가 (API Key Bearer 인증) | 4.16 | 4 |
 | **FR-17** | 시크릿 보안 (전송/저장/로그 보호) | 4.17 | 4 |
 
 > **Console PRD 연관**: Console PRD의 FR-3(Project 삭제), FR-5(Langfuse SK/PK), FR-6(LiteLLM Config), FR-8(버전 롤백)이 Config Server의 FR-4, FR-5, FR-7, FR-14를 호출한다.
@@ -410,7 +410,7 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config
 
 | 헤더 | 필수 | 설명 |
 |------|------|------|
-| `Authorization` | Y | `Bearer <API_KEY>` — Config Server가 발급한 API Key |
+| `Authorization` | Y | `Bearer <API_KEY>` — 환경변수로 설정된 API Key |
 
 **Query Parameters**:
 
@@ -567,7 +567,7 @@ POST /api/v1/admin/changes
 
 | 헤더 | 필수 | 설명 |
 |------|------|------|
-| `Authorization` | Y | `Bearer <API_KEY>` — Config Server가 발급한 API Key |
+| `Authorization` | Y | `Bearer <API_KEY>` — 환경변수로 설정된 API Key |
 
 **Request Body**:
 
@@ -785,7 +785,7 @@ Config Server는 자체적으로 클라이언트 등록을 하지 않는다. **A
 
 #### API Key 기반 인증
 
-Console → Config Server 통신은 Config Server가 발급한 **API Key**로 인증한다. Console은 `Authorization: Bearer <API_KEY>` 헤더로 API Key를 전송하고, Config Server는 해시 비교로 검증한다. API Key의 scope/permissions 설정으로 접근 범위를 제한한다. 상세 내용은 **FR-16** 참조.
+Console → Config Server 통신은 **환경변수 기반 API Key**로 인증한다. 운영자가 양쪽에 동일한 API Key를 환경변수로 설정하고, Console은 `Authorization: Bearer <API_KEY>` 헤더로 전송한다. 상세 내용은 **FR-16** 참조.
 
 #### AAP Console 연동 방식
 
