@@ -31,7 +31,7 @@
 | **FR-13** | 변경 이력 API | 4.13 | 2.1 | 5 |
 | **FR-14** | 설정 롤백 API | 4.14 | 2.6 | 5 |
 | **FR-15** | 헬스체크 / 운영 API | 4.15 | 2.1 | 1 |
-| **FR-16** | 인증/인가 (App ID + RBAC) | 4.16 | 2.4, 9 | 4 |
+| **FR-16** | 인증/인가 (API Key Bearer + Scope 기반 RBAC) | 4.16 | 2.4, 9 | 4 |
 | **FR-17** | 시크릿 보안 | 4.17 | 3.4, 9 | 4 |
 
 ### 0.2 Console PRD 연관
@@ -219,45 +219,46 @@ POST /admin/changes 수신 (secrets 필드 포함)
 
 **SealedSecret이란**: Bitnami SealedSecrets는 K8s Secret을 공개키로 암호화하여 Git에 안전하게 저장할 수 있게 하는 CRD이다. 클러스터 내 SealedSecret Controller만이 비밀키로 복호화할 수 있다.
 
-### 2.4 App Registry (Project/App CRUD) 흐름 `[FR-8]` `[FR-16]`
+### 2.4 App Registry 연동 및 API Key 인증 흐름 `[FR-8]` `[FR-16]`
 
-Console이 org/project/service/app을 생성·수정·삭제하면, webhook으로 Config Server에 통지한다. Config Server는 인메모리 App Registry 캐시를 갱신하여 이후 API 인증/인가에 활용한다.
+Console이 org/project/service를 생성·수정·삭제하면, webhook으로 Config Server에 통지한다. Config Server는 인메모리 App Registry 캐시를 갱신한다.
 
-#### App 등록
+Console → Config Server 통신은 **API Key Bearer 인증**으로 보호된다. Console은 Config Server가 발급한 API Key를 `Authorization: Bearer <API_KEY>` 헤더로 전송한다.
+
+#### API Key 인증 흐름
 
 ```
-Admin (Browser)        Console                    Config Server
-  │                       │                             │
-  ├─ App 등록 요청 ────────▶│                             │
-  │  (org/project/        │                             │
-  │   service 지정)        │                             │
-  │                       ├─ 1. App ID 발급 + DB 저장    │
-  │                       │                             │
-  │◀── UI: Project 정보   ─┤                             │
-  │    (App ID 포함) 표시   │                             │
-  │                       │                             │
-  │                       ├─ 2. POST /admin/            │
-  │                       │  app-registry/webhook       │
-  │                       │  (fire-and-forget,          │
-  │                       │   실패 시 async retry)       │
-  │                       │────────────────────────────▶│
-  │                       │                             ├─ App Registry 캐시에 추가
-  │                       │◀────────────────────────────┤  {status: "ok"}
+Console                       Config Server
+  │                                │
+  │  POST /api/v1/admin/changes   │
+  │  Authorization: Bearer <key>  │
+  ├───────────────────────────────▶│
+  │                                ├─ 1. Bearer 토큰 추출
+  │                                ├─ 2. SHA-256 해시 계산
+  │                                ├─ 3. 인메모리 캐시에서 해시 조회
+  │                                ├─ 4. scope/permissions 검증
+  │                                ├─ 5. 통과 → 요청 처리
+  │  응답: {version: "..."}        │
+  │◀───────────────────────────────┤
 ```
 
-> webhook 전송은 DB 저장 이후 **비동기**로 수행된다. Config Server가 응답하지 않아도 Console의 App CRUD는 완료된다. 실패한 webhook은 async retry queue에서 재시도하며, 최종적으로는 Config Server의 주기적 전체 동기화가 정합성을 보장한다.
+- API Key는 Config Server가 발급하며, **해시(SHA-256)**로만 저장 (Git: `configs/_api-keys/keys.yaml`)
+- Console은 발급받은 평문 키를 환경변수(`CONFIG_SERVER_API_KEY`) 또는 K8s Secret으로 보관
+- 초기 설치 시 `BOOTSTRAP_API_KEY` 환경변수로 첫 키를 설정, 이후 정식 키 발급 후 비활성화
 
-#### App 수정 / 삭제
+#### App Registry webhook
+
+Console이 App CRUD 시 Config Server로 webhook push(**fire-and-forget + async retry**)하여 인메모리 캐시를 갱신한다.
 
 ```
 Console              Config Server
   │                       │
   ├─ POST /admin/         │
   │  app-registry/webhook │
-  │  {action: "update"    │   권한 변경, scope 수정 등
-  │   또는 "delete"}      │
+  │  Authorization:       │
+  │  Bearer <key>         │
   │──────────────────────▶│
-  │                       ├─ 캐시 갱신 (update) 또는 캐시 제거 (delete)
+  │                       ├─ 캐시 갱신
   │◀──────────────────────┤  {status: "ok"}
 ```
 
@@ -270,7 +271,7 @@ Config Server                Console API
       │                          │
       │  ┌─ 성공 ─────────────────┤
       │  │                       ├─ 전체 App Registry 반환
-      │◀─┤ [{app_id, org, ...}]  │
+      │◀─┤ [{org, project, ...}] │
       │  │ → 메모리에 캐시 로드   │
       │  │                       │
       │  └─ 실패 ────────────────┤
@@ -278,7 +279,8 @@ Config Server                Console API
       │      retry (최대 5회)     │
       │    → 최종 실패 시 빈 캐시  │
       │      로 기동 (설정 서빙은  │
-      │      정상, App 인증 불가)  │
+      │      정상, API Key 인증은 │
+      │      Git 기반으로 독립 동작)│
       │                          │
       ├─ readyz=true             │
 ```
@@ -289,9 +291,9 @@ Config Server                Console API
 
 Console과 Config Server는 **부팅 시 상호 의존하지 않도록** 설계한다:
 - **Console**: 독립적으로 부팅 가능. App CRUD 시 Config Server webhook은 **fire-and-forget + async retry** 방식으로 처리하여, Config Server가 다운이어도 Console DB에는 정상 저장된다. 단, Config Server가 복구될 때까지 아래 기능은 제한된다:
-  - App Registry webhook 전달 실패 → Config Server 캐시 불일치 (해당 App의 API 인증 불가)
+  - App Registry webhook 전달 실패 → Config Server 캐시 불일치
   - 설정 조회/히스토리 등 Config Server 읽기 API 의존 화면 → 에러 상태
-- **Config Server**: Console API에서 App Registry를 로드한다. Console이 아직 준비되지 않은 경우 **exponential backoff retry** (최대 5회)로 재시도하고, 실패 시에도 빈 캐시 상태로 기동하여 설정 서빙은 정상 수행한다 (App 인증만 불가). Console이 복구되면 webhook 수신 또는 주기적 전체 동기화로 캐시를 채운다.
+- **Config Server**: API Key 인증은 Git 저장소 기반이므로 Console 없이도 동작한다. App Registry 캐시는 Console API에서 로드하며, Console이 아직 준비되지 않은 경우 **exponential backoff retry** (최대 5회)로 재시도하고, 실패 시에도 빈 캐시 상태로 기동하여 설정 서빙은 정상 수행한다.
 
 **캐시 정합성 보정**: webhook 유실은 Console의 async retry queue가 재시도한다. Config Server 재시작 시에는 시작 시 전체 로드로 캐시가 복구된다. 별도 주기적 동기화는 불필요하다.
 
@@ -838,5 +840,5 @@ env_vars:
 | **FR-13** | 변경 이력 API | `git` | `GET /history` | Git | — |
 | **FR-14** | 설정 롤백 API | `store`, `git`, `seal` | `POST /admin/changes/revert` | Git, kubeseal, K8s API | — |
 | **FR-15** | 헬스체크 / 운영 API | `server` | `/healthz`, `/readyz`, `/status` | — | — |
-| **FR-16** | 인증/인가 | `auth`, `registry` | 미들웨어 | AAP Console App Registry | — |
+| **FR-16** | 인증/인가 | `auth` | 미들웨어 (`Authorization: Bearer`) | Git (`configs/_api-keys/keys.yaml`) | — |
 | **FR-17** | 시크릿 보안 | `secret`, `auth` | 미들웨어 | K8s Network Policy | — |
