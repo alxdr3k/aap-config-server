@@ -1,0 +1,416 @@
+package gitops
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	"golang.org/x/crypto/ssh"
+
+	"github.com/aap/config-server/internal/apperror"
+)
+
+const (
+	maxPushRetries  = 3
+	committerName   = "aap-config-server"
+	committerEmail  = "config-server@aap.internal"
+)
+
+// GitRepo is the interface the store uses to interact with the git repository.
+// All path arguments are relative to the repository root.
+type GitRepo interface {
+	// CloneOrOpen initializes the local clone (clones if not present, opens otherwise).
+	CloneOrOpen(ctx context.Context) error
+
+	// Pull fetches and merges remote changes. Returns the new HEAD hash and
+	// whether the HEAD changed.
+	Pull(ctx context.Context) (hash string, updated bool, err error)
+
+	// CommitAndPush writes the given files, commits, and pushes.
+	// Retries up to 3 times on non-fast-forward push rejection.
+	// Returns the new HEAD commit hash.
+	CommitAndPush(ctx context.Context, msg string, files map[string][]byte) (string, error)
+
+	// DeleteAndPush removes the listed paths, commits, and pushes.
+	// Returns the new HEAD commit hash.
+	DeleteAndPush(ctx context.Context, msg string, paths []string) (string, error)
+
+	// ReadFile reads a file from the current working tree.
+	ReadFile(path string) ([]byte, error)
+
+	// WalkConfigs calls fn for every regular file under the configs/ subtree.
+	// The path argument to fn is relative to the repo root.
+	WalkConfigs(fn func(path string, data []byte) error) error
+
+	// HeadHash returns the current HEAD commit hash.
+	HeadHash() (string, error)
+
+	// ReadFileAtCommit reads a file as it existed at commitHash.
+	ReadFileAtCommit(commitHash, path string) ([]byte, error)
+
+	// LocalPath returns the absolute path of the local clone.
+	LocalPath() string
+}
+
+// Repo is a go-git backed GitRepo implementation.
+// A global mutex serialises all git operations to prevent concurrent push
+// conflicts (Phase-1 simplification; see ADR-003 for the full design).
+type Repo struct {
+	mu        sync.Mutex
+	repo      *gogit.Repository
+	localPath string
+	remoteURL string
+	branch    string
+	auth      transport.AuthMethod
+}
+
+// Options configures a Repo.
+type Options struct {
+	// LocalPath is the filesystem path where the repo is (or will be) cloned.
+	LocalPath string
+	// RemoteURL is the git remote URL (https or ssh).
+	RemoteURL string
+	// Branch is the target branch (default "main").
+	Branch string
+	// SSHKeyPath is the path to an SSH private key file (optional).
+	SSHKeyPath string
+	// Username / Password for HTTP basic auth (optional).
+	Username string
+	Password string
+}
+
+// New creates a Repo from the given options.
+func New(opts Options) (*Repo, error) {
+	if opts.Branch == "" {
+		opts.Branch = "main"
+	}
+
+	auth, err := buildAuth(opts)
+	if err != nil {
+		return nil, fmt.Errorf("build git auth: %w", err)
+	}
+
+	return &Repo{
+		localPath: opts.LocalPath,
+		remoteURL: opts.RemoteURL,
+		branch:    opts.Branch,
+		auth:      auth,
+	}, nil
+}
+
+func buildAuth(opts Options) (transport.AuthMethod, error) {
+	if opts.SSHKeyPath != "" {
+		keyBytes, err := os.ReadFile(opts.SSHKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("read SSH key %s: %w", opts.SSHKeyPath, err)
+		}
+		signer, err := ssh.ParsePrivateKey(keyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse SSH key: %w", err)
+		}
+		return &gitssh.PublicKeys{User: "git", Signer: signer}, nil
+	}
+	if opts.Username != "" || opts.Password != "" {
+		return &githttp.BasicAuth{Username: opts.Username, Password: opts.Password}, nil
+	}
+	return nil, nil
+}
+
+// CloneOrOpen clones the repository if the local path is empty, or opens it.
+func (r *Repo) CloneOrOpen(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, err := os.Stat(filepath.Join(r.localPath, ".git")); err == nil {
+		repo, err := gogit.PlainOpen(r.localPath)
+		if err != nil {
+			return fmt.Errorf("open repo at %s: %w", r.localPath, err)
+		}
+		r.repo = repo
+		slog.Info("opened existing git repo", "path", r.localPath)
+		return nil
+	}
+
+	if err := os.MkdirAll(r.localPath, 0o755); err != nil {
+		return fmt.Errorf("create local path %s: %w", r.localPath, err)
+	}
+
+	repo, err := gogit.PlainCloneContext(ctx, r.localPath, false, &gogit.CloneOptions{
+		URL:           r.remoteURL,
+		ReferenceName: plumbing.NewBranchReferenceName(r.branch),
+		SingleBranch:  true,
+		Auth:          r.auth,
+	})
+	if err != nil {
+		return fmt.Errorf("clone %s: %w", r.remoteURL, err)
+	}
+	r.repo = repo
+	slog.Info("cloned git repo", "url", r.remoteURL, "path", r.localPath)
+	return nil
+}
+
+// Pull fetches and merges remote changes.
+func (r *Repo) Pull(ctx context.Context) (string, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	before, err := r.headHash()
+	if err != nil {
+		return "", false, err
+	}
+
+	if err := r.pull(ctx); err != nil && !errors.Is(err, gogit.NoErrAlreadyUpToDate) {
+		return "", false, fmt.Errorf("pull: %w", err)
+	}
+
+	after, err := r.headHash()
+	if err != nil {
+		return "", false, err
+	}
+	return after, before != after, nil
+}
+
+func (r *Repo) pull(ctx context.Context) error {
+	w, err := r.repo.Worktree()
+	if err != nil {
+		return err
+	}
+	return w.PullContext(ctx, &gogit.PullOptions{
+		RemoteName:    "origin",
+		ReferenceName: plumbing.NewBranchReferenceName(r.branch),
+		Auth:          r.auth,
+	})
+}
+
+// CommitAndPush writes files, commits, and pushes with retry on rejection.
+func (r *Repo) CommitAndPush(ctx context.Context, msg string, files map[string][]byte) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for attempt := 0; attempt < maxPushRetries; attempt++ {
+		// Sync with remote before writing.
+		if err := r.pull(ctx); err != nil && !errors.Is(err, gogit.NoErrAlreadyUpToDate) {
+			return "", fmt.Errorf("pre-commit pull: %w", err)
+		}
+
+		w, err := r.repo.Worktree()
+		if err != nil {
+			return "", err
+		}
+
+		// Write files to working tree and stage them.
+		for path, data := range files {
+			fullPath := filepath.Join(r.localPath, path)
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+				return "", fmt.Errorf("mkdir %s: %w", filepath.Dir(fullPath), err)
+			}
+			if err := os.WriteFile(fullPath, data, 0o644); err != nil {
+				return "", fmt.Errorf("write %s: %w", path, err)
+			}
+			if _, err := w.Add(path); err != nil {
+				return "", fmt.Errorf("git add %s: %w", path, err)
+			}
+		}
+
+		hash, err := w.Commit(msg, &gogit.CommitOptions{
+			Author: signature(),
+		})
+		if err != nil {
+			if errors.Is(err, gogit.ErrEmptyCommit) {
+				h, _ := r.headHash()
+				return h, nil
+			}
+			return "", fmt.Errorf("git commit: %w", err)
+		}
+
+		pushErr := r.repo.PushContext(ctx, &gogit.PushOptions{
+			RemoteName: "origin",
+			Auth:       r.auth,
+		})
+		if pushErr == nil {
+			return hash.String(), nil
+		}
+		if !errors.Is(pushErr, gogit.ErrNonFastForwardUpdate) {
+			return "", apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
+		}
+
+		// Push rejected by remote: undo the local commit so the next loop
+		// iteration starts clean from a pull.
+		slog.Warn("git push rejected, will retry after pull", "attempt", attempt+1)
+		if err := resetToParent(r.repo, w); err != nil {
+			return "", fmt.Errorf("reset after push rejection: %w", err)
+		}
+	}
+
+	return "", apperror.New(apperror.CodeGitPush, fmt.Sprintf("push failed after %d retries", maxPushRetries))
+}
+
+// DeleteAndPush removes the listed paths, commits, and pushes.
+func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for attempt := 0; attempt < maxPushRetries; attempt++ {
+		if err := r.pull(ctx); err != nil && !errors.Is(err, gogit.NoErrAlreadyUpToDate) {
+			return "", fmt.Errorf("pre-delete pull: %w", err)
+		}
+
+		w, err := r.repo.Worktree()
+		if err != nil {
+			return "", err
+		}
+
+		for _, path := range paths {
+			fullPath := filepath.Join(r.localPath, path)
+			if err := os.RemoveAll(fullPath); err != nil && !os.IsNotExist(err) {
+				return "", fmt.Errorf("remove %s: %w", path, err)
+			}
+			// go-git: Remove stages the deletion regardless of whether the file
+			// existed on disk.
+			if _, err := w.Remove(path); err != nil && !errors.Is(err, object.ErrEntryNotFound) {
+				slog.Debug("git remove warning (non-fatal)", "path", path, "err", err)
+			}
+		}
+
+		hash, err := w.Commit(msg, &gogit.CommitOptions{
+			Author:            signature(),
+			AllowEmptyCommits: false,
+		})
+		if err != nil {
+			if errors.Is(err, gogit.ErrEmptyCommit) {
+				// Nothing was actually deleted — treat as no-op success.
+				h, _ := r.headHash()
+				return h, nil
+			}
+			return "", fmt.Errorf("git commit delete: %w", err)
+		}
+
+		pushErr := r.repo.PushContext(ctx, &gogit.PushOptions{
+			RemoteName: "origin",
+			Auth:       r.auth,
+		})
+		if pushErr == nil {
+			return hash.String(), nil
+		}
+		if !errors.Is(pushErr, gogit.ErrNonFastForwardUpdate) {
+			return "", apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
+		}
+
+		slog.Warn("git push (delete) rejected, will retry", "attempt", attempt+1)
+		if err := resetToParent(r.repo, w); err != nil {
+			return "", fmt.Errorf("reset after push rejection: %w", err)
+		}
+	}
+
+	return "", apperror.New(apperror.CodeGitPush, fmt.Sprintf("push (delete) failed after %d retries", maxPushRetries))
+}
+
+// ReadFile reads a file from the current working tree.
+func (r *Repo) ReadFile(path string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(r.localPath, path))
+}
+
+// WalkConfigs iterates over all regular files under configs/.
+func (r *Repo) WalkConfigs(fn func(path string, data []byte) error) error {
+	configsRoot := filepath.Join(r.localPath, "configs")
+	if _, err := os.Stat(configsRoot); os.IsNotExist(err) {
+		return nil
+	}
+	return filepath.WalkDir(configsRoot, func(absPath string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(r.localPath, absPath)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(absPath)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", rel, err)
+		}
+		return fn(rel, data)
+	})
+}
+
+// HeadHash returns the current HEAD commit hash.
+func (r *Repo) HeadHash() (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.headHash()
+}
+
+func (r *Repo) headHash() (string, error) {
+	ref, err := r.repo.Head()
+	if err != nil {
+		return "", fmt.Errorf("git head: %w", err)
+	}
+	return ref.Hash().String(), nil
+}
+
+// ReadFileAtCommit reads a file as it existed at the given commit hash.
+func (r *Repo) ReadFileAtCommit(commitHash, path string) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	h := plumbing.NewHash(commitHash)
+	commit, err := r.repo.CommitObject(h)
+	if err != nil {
+		return nil, fmt.Errorf("commit %s not found: %w", commitHash, err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, err
+	}
+	file, err := tree.File(path)
+	if err != nil {
+		return nil, fmt.Errorf("file %s at %s: %w", path, commitHash, err)
+	}
+	content, err := file.Contents()
+	if err != nil {
+		return nil, err
+	}
+	return []byte(content), nil
+}
+
+// LocalPath returns the absolute filesystem path of the local clone.
+func (r *Repo) LocalPath() string { return r.localPath }
+
+// resetToParent does a mixed reset to HEAD~1 (undoes last commit, keeps working tree).
+func resetToParent(repo *gogit.Repository, w *gogit.Worktree) error {
+	head, err := repo.Head()
+	if err != nil {
+		return err
+	}
+	commit, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		return err
+	}
+	parents := commit.Parents()
+	parent, err := parents.Next()
+	if err != nil {
+		return fmt.Errorf("get parent commit: %w", err)
+	}
+	return w.Reset(&gogit.ResetOptions{
+		Commit: parent.Hash,
+		Mode:   gogit.MixedReset,
+	})
+}
+
+func signature() *object.Signature {
+	return &object.Signature{
+		Name:  committerName,
+		Email: committerEmail,
+		When:  time.Now(),
+	}
+}
