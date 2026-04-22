@@ -1,9 +1,9 @@
 # AAP Config Server — Product Requirements Document
 
-> **버전**: 2.0
+> **버전**: 2.1
 > **작성일**: 2026-03-12
-> **최종 수정일**: 2026-03-12
-> **상태**: Draft
+> **최종 수정일**: 2026-04-22
+> **상태**: Approved
 > **참조**: [HLD](./HLD.md) · [development-process.md](./development-process.md)
 
 ---
