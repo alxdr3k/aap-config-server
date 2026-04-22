@@ -335,6 +335,17 @@ Config Agent               Config Server                K8s Cluster
   │                              │                 재시작 + 새 설정
 ```
 
+#### resolve_secrets API의 보안 격리
+
+`GET /env_vars?resolve_secrets=true`는 **Config Agent 내부 전용** API이다. 시크릿 평문을 반환하므로 다음 보안 조치가 필수:
+
+1. **K8s Network Policy**: Config Server는 Config Agent Pod에서의 요청만 수락. 외부 Pod 또는 클러스터 외부는 차단
+2. **감사 로깅**: resolve_secrets=true 요청은 모두 감사 로그에 기록 (요청 시각, 요청 주체, API 경로, 요청 결과)
+3. **메모리 제로화**: 응답 생성 후 시크릿 평문 메모리는 즉시 제로화
+4. **캐시 금지**: 응답에 `Cache-Control: no-store` 헤더 적용
+
+Console과 같은 외부 클라이언트는 이 API를 호출할 수 없으며, `GET /env_vars` (resolve_secrets=false)만 사용하여 secret_ref ID 참조를 조회한다.
+
 ### 2.6 설정 롤백 흐름 `[FR-14]`
 
 Console이 특정 버전(Git commit hash)으로 롤백을 요청하면, Config Server가 해당 시점의 모든 파일(config, env_vars, SealedSecret)을 복원한다. 롤백도 새 Git commit으로 생성되어 이력이 forward-only로 유지된다.
@@ -374,6 +385,8 @@ Console              Config Server         aap-helm-charts      K8s Cluster
 ```
 
 > **Atomic Commit 원칙**: 모든 변경(설정 생성/수정/삭제/롤백)은 단일 Git commit으로 처리한다. Console은 응답의 `version` (commit hash)을 DB에 저장하여 이력 추적과 롤백에 사용한다.
+>
+> **원자성의 범위 명확화**: "atomic"은 **Git commit 단계에서만** 보장된다. Git commit 이후 K8s SealedSecret apply, SealedSecret Controller 복호화, Volume Mount sync, Config Agent polling, rolling restart 등 여러 단계는 비동기적으로 진행되므로, 모든 클라이언트가 새 설정을 동시에 수신할 수 없다. **이후 단계는 eventual consistency**로 처리된다.
 
 ### 2.7 litellm Pod 내부 구조 `[FR-9]`
 
@@ -609,6 +622,28 @@ Console              Config Server      aap-helm-charts     K8s Cluster         
 ```
 
 > Console은 `DELETE /admin/changes`로 설정 삭제 후, `POST /admin/app-registry/webhook` (action: delete)로 App 등록 해제를 별도 호출한다. 두 호출은 Console의 프로비저닝 파이프라인(Console FR-7)에서 순차 실행된다.
+
+#### 삭제 흐름 단계별 처리
+
+| 단계 | 수행자 | 작업 | 실패 시 | 재시도 책임 |
+|------|--------|------|--------|----------|
+| 1 | Config Server | Git에서 서비스 디렉토리 전체 삭제 → commit & push | push 재시도 3회 (exponential backoff) | Config Server |
+| 2 | Config Server | In-memory store에서 서비스 제거 | 메모리 갱신 실패 → 다음 Git pull 시 자동 복구 | Config Server |
+| 3 | Config Server (선택) | SealedSecret K8s 리소스 삭제 | 경고 로그 기록, 수동 정리 필요 | 운영팀 |
+| 4 | Config Agent | 다음 polling에서 Git 변경 감지 (최대 30초 지연) | 감지 불가 → polling 재시도 | Config Agent |
+| 5 | Config Agent | ConfigMap/Secret 삭제 호출 | K8s API 오류 → 재시도, 최종 실패 시 orphaned 리소스 남음 | Config Agent / 운영팀 |
+| 6 | 운영팀 (필요시) | Orphaned ConfigMap/Secret 수동 정리 | — | 운영팀 |
+
+**동작 보장**:
+- Git commit: atomic ✓ (되돌릴 수 없음)
+- In-memory: 빠른 갱신 (즉시)
+- K8s ConfigMap/Secret: eventual cleanup (최대 30초 + 재시도)
+- Pod 상태: 기존 설정으로 계속 실행 (Config Agent 재시도 또는 수동 정리 전까지)
+
+**에러 처리**:
+- Git push 실패 3회 → API 503 응답 → 삭제 불완료, Console에 알림
+- Config Agent 정리 실패 → orphaned 리소스 경고 → 수동 cleanup 필요
+- 모든 재시도는 로그에 기록되어 감사 추적 가능
 
 ---
 

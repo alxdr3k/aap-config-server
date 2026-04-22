@@ -531,6 +531,22 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars
 
 > `resolve_secrets=false`에서는 `secret_refs` (시크릿 ID 참조), `resolve_secrets=true`에서는 `secrets` (실제 평문 값)로 키 이름이 달라진다.
 
+#### 보안 주의: resolve_secrets API의 접근 제어
+
+`resolve_secrets=true` 옵션은 시크릿 평문을 반환하므로 **API Key 유출 시 모든 시크릿이 노출되는 위험**이 있다. 다음 조치로 미완화:
+
+**필수 대응**:
+1. 이 API는 **클러스터 내부 네트워크에서만** 접근 가능하도록 제한 (K8s Network Policy)
+2. **Config Agent 전용**으로 사용하며, Console 또는 외부 서비스는 이 옵션을 사용하지 않음
+3. API Key 접근 시 모든 요청을 감사 로그에 기록 (누가, 언제, 어느 API 호출)
+4. 시크릿 값은 응답 후 메모리에서 즉시 제로화
+
+**선택 사항** (Phase 4 구현 시):
+- 클라이언트별 스코프 지정 (Config Agent와 Console에 다른 API Key 발급)
+- mTLS 기반 인증 추가
+
+이 API를 통해 노출되는 시크릿 접근은 최소화해야 한다.
+
 ### 4.4 FR-4: 설정/시크릿 일괄 변경 Admin API `[FR-4]`
 
 > **`aap-console` PRD 참조**: Console → Config Server 인터페이스는 Console PRD Section 3 "시스템 아키텍처 개요"에 정의된 Admin API 계약을 따른다.
@@ -631,6 +647,8 @@ POST /api/v1/admin/changes
 8. 다음 Config Agent polling 시 변경 감지 → ConfigMap/Secret 업데이트 → rolling restart
 
 > **Atomic Commit 원칙**: 하나의 API 호출로 발생하는 모든 파일 변경(config.yaml, env_vars.yaml, SealedSecret YAML)은 **반드시 단일 Git commit**으로 처리한다. 이 commit hash가 해당 변경의 유일한 버전 식별자가 되며, Console은 이 값을 DB에 저장하여 이력 추적 및 롤백에 사용한다.
+>
+> **원자성의 범위 명확화**: "atomic"은 **Git commit 단계에서만** 보장된다. Git commit 이후 K8s SealedSecret apply, SealedSecret Controller 복호화, Volume Mount sync, Config Agent polling, rolling restart 등 여러 단계는 비동기적으로 진행되므로, 모든 클라이언트가 새 설정을 동시에 수신할 수 없다. **이후 단계는 eventual consistency**로 처리된다. 단계별 실패 시나리오와 재시도 정책은 섹션 4.5 (삭제 흐름 안정성) 및 HLD에서 정의한다.
 
 #### 동시 변경 처리
 
@@ -673,6 +691,35 @@ DELETE /api/v1/admin/changes
 2. 단일 Git commit & push
 3. In-memory store에서 해당 서비스 설정 제거
 4. Config Agent가 다음 polling 시 변경 감지 → ConfigMap/Secret 정리
+
+#### 삭제 흐름 안정성
+
+삭제는 여러 단계의 리소스 정리를 포함하므로, 각 단계의 실패 시나리오를 명확히 정의한다:
+
+**단계별 처리**:
+
+| 단계 | 작업 | 실패 시 처리 | 정리 책임 |
+|------|------|-----------|---------|
+| 1 | Git에서 서비스 파일 삭제 → commit & push | Git push 재시도 (최대 3회). 최종 실패 시 503 응답 | Config Server |
+| 2 | In-memory store 제거 | 메모리 갱신 실패 → 다음 polling 시 재시도 | Config Server |
+| 3 | SealedSecret K8s 리소스 삭제 | 선택 사항 (Phase 4+). K8s API 실패 → 경고 로그 기록, 계속 진행 | Config Server (선택) |
+| 4 | Config Agent가 변경 감지 | 감지 지연 (polling 주기까지) → 설정 조회 시 이미 Git에서 제거됨 → 404 응답 | Config Agent |
+| 5 | Config Agent가 ConfigMap/Secret 삭제 | 삭제 실패 → 경고 로그, 수동 정리 필요 → 운영팀 개입 | Config Agent |
+| 6 | Orphaned ConfigMap/Secret 정리 | Pod 재시작으로 인해 기존 설정으로 일시적 실행. Config Agent 재시도 | Config Agent |
+
+**주요 특성**:
+- **단일 atomic commit** (Git): 모든 파일 삭제는 단일 commit으로 처리되므로, Git 시점에서는 완벽히 원자적이다.
+- **비동기 정리**: K8s ConfigMap/Secret 정리는 Config Agent가 다음 polling 때 수행하므로, 즉시 완료되지 않는다.
+- **Eventual cleanup**: 삭제 API 응답 후 실제 K8s 리소스가 정리되기까지 최대 polling interval (~30초) 소요.
+- **설정 조회 보호**: 삭제 후 설정 조회 요청 → Git에 파일 없음 → 404 응답. 로그에는 secret_ref ID 기록, 시크릿 값은 절대 노출되지 않음.
+
+**Console 책임**:
+- 삭제 API 호출 후, 별도로 `POST /admin/app-registry/webhook` (action: delete)를 호출하여 App 등록 해제 (Console FR-3 참조)
+- 삭제 실패 시 (API 응답 상태 코드 >= 400) Console UI에 명확한 에러 메시지 표시
+
+**운영 모니터링**:
+- Config Agent 재시도 실패 시 알림 발생 → 수동 정리 필요
+- ConfigMap/Secret이 삭제되지 않고 orphaned 상태로 남을 수 있으므로, 정기적 감사 필요
 
 ### 4.6 FR-6: 설정/환경변수 변경 감지 API `[FR-6]`
 
