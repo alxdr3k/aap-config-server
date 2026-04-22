@@ -72,7 +72,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 
 func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
 }
 
 func (h *Handler) readyz(w http.ResponseWriter, _ *http.Request) {
@@ -81,7 +81,7 @@ func (h *Handler) readyz(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
 }
 
 func (h *Handler) status(w http.ResponseWriter, r *http.Request) {

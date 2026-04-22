@@ -58,7 +58,7 @@ env_vars:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.EnvVars.Plain != nil && len(cfg.EnvVars.Plain) != 0 {
+	if len(cfg.EnvVars.Plain) != 0 {
 		t.Error("expected nil or empty plain map")
 	}
 	if cfg.EnvVars.SecretRefs["MY_KEY"] != "my-secret" {
