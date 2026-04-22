@@ -354,7 +354,7 @@ func TestStore_Concurrent_Reads(t *testing.T) {
 		go func() {
 			defer func() { done <- struct{}{} }()
 			for j := 0; j < 50; j++ {
-				s.GetConfig(ctx, "org", "p", "svc")
+				_, _ = s.GetConfig(ctx, "org", "p", "svc")
 				time.Sleep(time.Millisecond)
 			}
 		}()
