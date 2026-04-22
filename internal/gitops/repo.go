@@ -227,6 +227,10 @@ func (r *Repo) CommitAndPush(ctx context.Context, msg string, files map[string][
 			Author: signature(),
 		})
 		if err != nil {
+			if errors.Is(err, gogit.ErrEmptyCommit) {
+				h, _ := r.headHash()
+				return h, nil
+			}
 			return "", fmt.Errorf("git commit: %w", err)
 		}
 
@@ -320,6 +324,9 @@ func (r *Repo) ReadFile(path string) ([]byte, error) {
 // WalkConfigs iterates over all regular files under configs/.
 func (r *Repo) WalkConfigs(fn func(path string, data []byte) error) error {
 	configsRoot := filepath.Join(r.localPath, "configs")
+	if _, err := os.Stat(configsRoot); os.IsNotExist(err) {
+		return nil
+	}
 	return filepath.WalkDir(configsRoot, func(absPath string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err

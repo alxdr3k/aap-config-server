@@ -122,7 +122,7 @@ func (neverReady) IsReady() bool { return false }
 func newServer(t *testing.T, st handler.ConfigStore) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	h := handler.New(st, alwaysReady{})
+	h := handler.New(st, alwaysReady{}, "")
 	h.Routes(mux)
 	return httptest.NewServer(mux)
 }
@@ -185,7 +185,7 @@ func TestHealthz(t *testing.T) {
 
 func TestReadyz_Ready(t *testing.T) {
 	mux := http.NewServeMux()
-	h := handler.New(newFakeStore(), alwaysReady{})
+	h := handler.New(newFakeStore(), alwaysReady{}, "")
 	h.Routes(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -198,7 +198,7 @@ func TestReadyz_Ready(t *testing.T) {
 
 func TestReadyz_NotReady(t *testing.T) {
 	mux := http.NewServeMux()
-	h := handler.New(newFakeStore(), neverReady{})
+	h := handler.New(newFakeStore(), neverReady{}, "")
 	h.Routes(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -381,6 +381,66 @@ func TestRespondError_GitPush(t *testing.T) {
 	resp := postJSON(t, srv, "/api/v1/admin/changes", body)
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("git push failure: want 503, got %d", resp.StatusCode)
+	}
+}
+
+func TestAPIKeyAuth(t *testing.T) {
+	mux := http.NewServeMux()
+	h := handler.New(newFakeStore(), alwaysReady{}, "secret-key")
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	body := map[string]any{
+		"org": "o", "project": "p", "service": "s",
+		"config": map[string]any{},
+	}
+	b, _ := json.Marshal(body)
+
+	// No key → 401
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/admin/changes", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("no key: want 401, got %d", resp.StatusCode)
+	}
+
+	// Wrong key → 401
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/api/v1/admin/changes", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "wrong")
+	resp, _ = http.DefaultClient.Do(req)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("wrong key: want 401, got %d", resp.StatusCode)
+	}
+
+	// Correct key → 200
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/api/v1/admin/changes", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "secret-key")
+	resp, _ = http.DefaultClient.Do(req)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("correct key: want 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetConfig_HasUpdatedAt(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		Config: &parser.ServiceConfig{Version: "1"},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if _, ok := meta["updated_at"]; !ok {
+		t.Error("metadata.updated_at missing from response")
 	}
 }
 
