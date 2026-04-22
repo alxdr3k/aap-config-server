@@ -32,13 +32,14 @@ type Readiness interface {
 
 // Handler groups all HTTP handlers together.
 type Handler struct {
-	store    ConfigStore
+	store     ConfigStore
 	readiness Readiness
+	apiKey    string
 }
 
-// New creates a Handler.
-func New(st ConfigStore, ready Readiness) *Handler {
-	return &Handler{store: st, readiness: ready}
+// New creates a Handler. apiKey may be empty to disable authentication (dev/test only).
+func New(st ConfigStore, ready Readiness, apiKey string) *Handler {
+	return &Handler{store: st, readiness: ready, apiKey: apiKey}
 }
 
 // Routes registers all routes on the given mux.
@@ -47,7 +48,6 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
 	mux.HandleFunc("GET /api/v1/status", h.status)
-	mux.HandleFunc("POST /api/v1/admin/reload", h.adminReload)
 
 	// Service discovery
 	mux.HandleFunc("GET /api/v1/orgs", h.listOrgs)
@@ -62,9 +62,10 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/secrets",
 		h.getSecrets)
 
-	// Admin write
-	mux.HandleFunc("POST /api/v1/admin/changes", h.postChanges)
-	mux.HandleFunc("DELETE /api/v1/admin/changes", h.deleteChanges)
+	// Admin write — protected by API key
+	mux.HandleFunc("POST /api/v1/admin/changes", h.requireKey(h.postChanges))
+	mux.HandleFunc("DELETE /api/v1/admin/changes", h.requireKey(h.deleteChanges))
+	mux.HandleFunc("POST /api/v1/admin/reload", h.requireKey(h.adminReload))
 }
 
 // ---- health ----
@@ -161,7 +162,7 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	meta := configMeta(org, project, service, h.store.HeadVersion())
+	meta := configMeta(org, project, service, h.store.HeadVersion(), d.UpdatedAt)
 
 	if d.Config == nil {
 		respondJSON(w, http.StatusOK, map[string]any{
@@ -188,7 +189,7 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	meta := configMeta(org, project, service, h.store.HeadVersion())
+	meta := configMeta(org, project, service, h.store.HeadVersion(), d.UpdatedAt)
 
 	if d.EnvVars == nil {
 		respondJSON(w, http.StatusOK, map[string]any{
@@ -221,7 +222,7 @@ func (h *Handler) getSecrets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	meta := configMeta(org, project, service, h.store.HeadVersion())
+	meta := configMeta(org, project, service, h.store.HeadVersion(), d.UpdatedAt)
 
 	if d.Secrets == nil {
 		respondJSON(w, http.StatusOK, map[string]any{
@@ -254,6 +255,7 @@ type envVarsBody struct {
 }
 
 func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body postChangesRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
@@ -295,6 +297,7 @@ type deleteChangesRequest struct {
 }
 
 func (h *Handler) deleteChanges(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body deleteChangesRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
@@ -320,12 +323,25 @@ func (h *Handler) deleteChanges(w http.ResponseWriter, r *http.Request) {
 
 // ---- helpers ----
 
-func configMeta(org, project, service, version string) map[string]any {
+// requireKey enforces API key authentication via the X-API-Key header.
+// If apiKey is empty (dev mode), the middleware is a no-op.
+func (h *Handler) requireKey(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.apiKey != "" && r.Header.Get("X-API-Key") != h.apiKey {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func configMeta(org, project, service, version string, updatedAt time.Time) map[string]any {
 	return map[string]any{
-		"org":     org,
-		"project": project,
-		"service": service,
-		"version": version,
+		"org":        org,
+		"project":    project,
+		"service":    service,
+		"version":    version,
+		"updated_at": updatedAt.Format(time.RFC3339),
 	}
 }
 

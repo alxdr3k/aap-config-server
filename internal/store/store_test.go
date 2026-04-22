@@ -308,6 +308,37 @@ func TestStore_RefreshFromRepo_NoChange(t *testing.T) {
 	}
 }
 
+func TestStore_ApplyChanges_PathTraversal(t *testing.T) {
+	ctx := context.Background()
+	s := store.New(newFakeRepo())
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	badNames := []string{"../etc", "a/b", "my org", "..", "a b", ""}
+	for _, bad := range badNames {
+		req := &store.ChangeRequest{
+			Org:     bad,
+			Project: "proj",
+			Service: "svc",
+			Config:  map[string]any{},
+		}
+		if req.Org == "" {
+			req.Org = "org"
+			req.Project = bad
+		}
+		_, err := s.ApplyChanges(ctx, req)
+		if err == nil {
+			t.Errorf("ApplyChanges with %q: expected error, got nil", bad)
+			continue
+		}
+		var appErr *apperror.Error
+		if !errors.As(err, &appErr) {
+			t.Errorf("ApplyChanges with %q: expected apperror, got %T", bad, err)
+		}
+	}
+}
+
 func TestStore_Concurrent_Reads(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()

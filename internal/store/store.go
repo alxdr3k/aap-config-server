@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"gopkg.in/yaml.v3"
 
@@ -18,13 +19,22 @@ import (
 	"github.com/aap/config-server/internal/parser"
 )
 
+var validNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
+func validateName(field, value string) error {
+	if !validNameRe.MatchString(value) {
+		return apperror.New(apperror.CodeValidation,
+			fmt.Sprintf("%s %q contains invalid characters", field, value))
+	}
+	return nil
+}
+
 // Store is the in-memory config store.
 // Reads are served from an atomically swapped snapshot (COW pattern), providing
 // lock-free reads during background refreshes.
 type Store struct {
 	// snapshot is the current read-only view; updated via atomic pointer swap.
-	// Underlying type is *snapshot.
-	snapshot unsafe.Pointer
+	snapshot atomic.Pointer[snapshot]
 
 	// mu serialises writes (ApplyChanges / DeleteChanges / background refresh).
 	mu sync.Mutex
@@ -45,13 +55,12 @@ func newSnapshot(data map[string]*ServiceData, version string) *snapshot {
 // New creates a Store backed by the given GitRepo.
 func New(repo gitops.GitRepo) *Store {
 	s := &Store{repo: repo}
-	empty := newSnapshot(make(map[string]*ServiceData), "")
-	atomic.StorePointer(&s.snapshot, unsafe.Pointer(empty))
+	s.snapshot.Store(newSnapshot(make(map[string]*ServiceData), ""))
 	return s
 }
 
 func (s *Store) current() *snapshot {
-	return (*snapshot)(atomic.LoadPointer(&s.snapshot))
+	return s.snapshot.Load()
 }
 
 // LoadFromRepo performs the initial clone/open and full config load.
@@ -142,6 +151,7 @@ func (s *Store) ListServices(org, project string) []ServiceInfo {
 			UpdatedAt:  d.UpdatedAt,
 		})
 	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result
 }
 
@@ -149,6 +159,15 @@ func (s *Store) ListServices(org, project string) []ServiceInfo {
 func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeResult, error) {
 	if req.Org == "" || req.Project == "" || req.Service == "" {
 		return nil, apperror.New(apperror.CodeValidation, "org, project and service are required")
+	}
+	if err := validateName("org", req.Org); err != nil {
+		return nil, err
+	}
+	if err := validateName("project", req.Project); err != nil {
+		return nil, err
+	}
+	if err := validateName("service", req.Service); err != nil {
+		return nil, err
 	}
 	if req.Config == nil && req.EnvVars == nil {
 		return nil, apperror.New(apperror.CodeValidation, "at least one of config or env_vars must be provided")
@@ -187,9 +206,10 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 		ev := &parser.EnvVarsConfig{
 			Version: "1",
 			Metadata: parser.ServiceMetadata{
-				Service: req.Service,
-				Org:     req.Org,
-				Project: req.Project,
+				Service:   req.Service,
+				Org:       req.Org,
+				Project:   req.Project,
+				UpdatedAt: now.Format(time.RFC3339),
 			},
 			EnvVars: *req.EnvVars,
 		}
@@ -229,6 +249,15 @@ func (s *Store) DeleteChanges(ctx context.Context, req *DeleteRequest) (*DeleteR
 	if req.Org == "" || req.Project == "" || req.Service == "" {
 		return nil, apperror.New(apperror.CodeValidation, "org, project and service are required")
 	}
+	if err := validateName("org", req.Org); err != nil {
+		return nil, err
+	}
+	if err := validateName("project", req.Project); err != nil {
+		return nil, err
+	}
+	if err := validateName("service", req.Service); err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -251,7 +280,7 @@ func (s *Store) DeleteChanges(ctx context.Context, req *DeleteRequest) (*DeleteR
 	newData := copyMap(snap.data)
 	key := ServiceKey{Org: req.Org, Project: req.Project, Service: req.Service}.String()
 	delete(newData, key)
-	atomic.StorePointer(&s.snapshot, unsafe.Pointer(newSnapshot(newData, hash)))
+	s.snapshot.Store(newSnapshot(newData, hash))
 
 	return &DeleteResult{
 		Version:      hash,
@@ -283,7 +312,7 @@ func (s *Store) reloadUnlocked(_ context.Context) error {
 		return fmt.Errorf("walk configs: %w", err)
 	}
 
-	atomic.StorePointer(&s.snapshot, unsafe.Pointer(newSnapshot(data, hash)))
+	s.snapshot.Store(newSnapshot(data, hash))
 	slog.Info("config store reloaded", "services", len(data), "version", hash[:min(8, len(hash))])
 	return nil
 }
@@ -387,12 +416,7 @@ func keys(m map[string]struct{}) []string {
 	for k := range m {
 		out = append(out, k)
 	}
+	sort.Strings(out)
 	return out
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

@@ -40,15 +40,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// srv is the readiness provider; handler holds a pointer to it so the
-	// circular dependency is resolved at construction time without a factory.
-	srv := server.New(cfg.Addr, nil) // handler set below
-	h := handler.New(st, srv)
+	probe := &server.ReadinessProbe{}
+	h := handler.New(st, probe, cfg.APIKey)
 
 	mux := http.NewServeMux()
 	h.Routes(mux)
-	srv.SetHandler(mux)
-	srv.MarkReady()
+
+	srv := server.New(cfg.Addr, mux)
+	probe.MarkReady()
 
 	go pollLoop(ctx, st, cfg.GitPollInterval)
 
