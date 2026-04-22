@@ -21,7 +21,7 @@ test-e2e:
 	go test -tags=e2e ./... -timeout 300s
 
 lint:
-	go vet ./...
+	golangci-lint run ./...
 
 coverage:
 	go test ./... -coverprofile=coverage.out
