@@ -2,10 +2,12 @@ package handler
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/aap/config-server/internal/apperror"
@@ -37,7 +39,9 @@ type Handler struct {
 	apiKey    string
 }
 
-// New creates a Handler. apiKey may be empty to disable authentication (dev/test only).
+// New creates a Handler. If apiKey is empty, authenticated endpoints are left
+// open — this is intended only for tests; production wiring must pass a key
+// (enforced by config.Validate).
 func New(st ConfigStore, ready Readiness, apiKey string) *Handler {
 	return &Handler{store: st, readiness: ready, apiKey: apiKey}
 }
@@ -59,8 +63,11 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 		h.getConfig)
 	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars",
 		h.getEnvVars)
+	// Secret metadata is privileged even though values are never returned; auth
+	// is required so unauthenticated callers cannot enumerate which K8s secret
+	// objects back a service.
 	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/secrets",
-		h.getSecrets)
+		h.requireKey(h.getSecrets))
 
 	// Admin write — protected by API key
 	mux.HandleFunc("POST /api/v1/admin/changes", h.requireKey(h.postChanges))
@@ -240,6 +247,10 @@ func (h *Handler) getSecrets(w http.ResponseWriter, r *http.Request) {
 
 // ---- admin write ----
 
+// postChangesRequest matches the Phase-1 POST /admin/changes payload.
+// The `secrets` field from PRD v2.1 is intentionally not accepted here: the
+// server rejects any unknown field (including secrets) with 400 so callers
+// don't silently lose data while secret handling is unimplemented.
 type postChangesRequest struct {
 	Org     string         `json:"org"`
 	Project string         `json:"project"`
@@ -257,8 +268,10 @@ type envVarsBody struct {
 func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body postChangesRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_body", h.explainDecodeError(err))
 		return
 	}
 
@@ -282,12 +295,39 @@ func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondJSON(w, http.StatusOK, map[string]any{
-		"status":     "committed",
+	status := "committed"
+	code := http.StatusOK
+	if result.ReloadFailed {
+		// Git write succeeded but the serving snapshot could not be refreshed
+		// from the new HEAD. We surface this explicitly so operators can react
+		// instead of trusting a plain 200.
+		status = "committed_but_reload_failed"
+		code = http.StatusServiceUnavailable
+	}
+
+	resp := map[string]any{
+		"status":     status,
 		"version":    result.Version,
 		"updated_at": result.UpdatedAt,
 		"files":      result.Files,
-	})
+	}
+	if result.ReloadFailed && result.ReloadError != "" {
+		resp["reload_error"] = result.ReloadError
+	}
+	respondJSON(w, code, resp)
+}
+
+// explainDecodeError gives a slightly friendlier hint for the common case of
+// an unknown field (the PRD v2.1 `secrets` field, for example).
+func (h *Handler) explainDecodeError(err error) string {
+	msg := err.Error()
+	if strings.Contains(msg, "unknown field \"secrets\"") {
+		return "secrets are not accepted by POST /api/v1/admin/changes in Phase-1; see docs for planned behaviour"
+	}
+	if strings.Contains(msg, "unknown field") {
+		return "request contains an unknown field: " + msg
+	}
+	return "invalid JSON body: " + msg
 }
 
 type deleteChangesRequest struct {
@@ -299,8 +339,10 @@ type deleteChangesRequest struct {
 func (h *Handler) deleteChanges(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body deleteChangesRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_body", "invalid JSON body: "+err.Error())
 		return
 	}
 
@@ -323,16 +365,48 @@ func (h *Handler) deleteChanges(w http.ResponseWriter, r *http.Request) {
 
 // ---- helpers ----
 
-// requireKey enforces API key authentication via the X-API-Key header.
-// If apiKey is empty (dev mode), the middleware is a no-op.
+// requireKey enforces API key authentication. Accepts `Authorization: Bearer
+// <key>` (canonical) or the legacy `X-API-Key` header. If apiKey is empty, the
+// middleware allows the request through — this is only reachable in tests;
+// production startup requires a key (or an explicit dev opt-in flag).
 func (h *Handler) requireKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.apiKey != "" && r.Header.Get("X-API-Key") != h.apiKey {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		if h.apiKey == "" {
+			next(w, r)
+			return
+		}
+		if !authorized(r, h.apiKey) {
+			respondErrorCode(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API key")
 			return
 		}
 		next(w, r)
 	}
+}
+
+// authorized reports whether r presents a valid credential matching key. The
+// comparison uses crypto/subtle.ConstantTimeCompare to avoid timing side
+// channels.
+func authorized(r *http.Request, key string) bool {
+	if v := r.Header.Get("Authorization"); v != "" {
+		if token, ok := strings.CutPrefix(v, "Bearer "); ok {
+			return constantTimeEqual(token, key)
+		}
+	}
+	if v := r.Header.Get("X-API-Key"); v != "" {
+		return constantTimeEqual(v, key)
+	}
+	return false
+}
+
+func constantTimeEqual(a, b string) bool {
+	if len(a) != len(b) {
+		// Still do a constant-time compare of equal-length strings so timing
+		// doesn't leak whether the length matched; the length itself leaks but
+		// length alone is not meaningful for a fixed-length key deployment.
+		_ = subtle.ConstantTimeCompare([]byte(a), []byte(a))
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func configMeta(org, project, service, version string, updatedAt time.Time) map[string]any {
@@ -353,27 +427,41 @@ func respondJSON(w http.ResponseWriter, code int, v any) {
 	}
 }
 
+// errorBody is the standard JSON error envelope.
+type errorBody struct {
+	Error errorDetail `json:"error"`
+}
+
+type errorDetail struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func respondErrorCode(w http.ResponseWriter, status int, code, message string) {
+	respondJSON(w, status, errorBody{Error: errorDetail{Code: code, Message: message}})
+}
+
 func respondError(w http.ResponseWriter, err error) {
 	var appErr *apperror.Error
 	if errors.As(err, &appErr) {
 		switch appErr.Code {
 		case apperror.CodeNotFound:
-			http.Error(w, appErr.Message, http.StatusNotFound)
+			respondErrorCode(w, http.StatusNotFound, "not_found", appErr.Message)
 		case apperror.CodeValidation:
-			http.Error(w, appErr.Message, http.StatusBadRequest)
+			respondErrorCode(w, http.StatusBadRequest, "validation", appErr.Message)
 		case apperror.CodeConflict:
-			http.Error(w, appErr.Message, http.StatusConflict)
+			respondErrorCode(w, http.StatusConflict, "conflict", appErr.Message)
 		case apperror.CodeUnauthorized:
-			http.Error(w, appErr.Message, http.StatusUnauthorized)
+			respondErrorCode(w, http.StatusUnauthorized, "unauthorized", appErr.Message)
 		case apperror.CodeGitPush:
-			http.Error(w, appErr.Message, http.StatusServiceUnavailable)
+			respondErrorCode(w, http.StatusServiceUnavailable, "git_push_failed", appErr.Message)
 		default:
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			respondErrorCode(w, http.StatusInternalServerError, "internal", "internal server error")
 		}
 		return
 	}
 	slog.Error("unhandled error", "err", err)
-	http.Error(w, "internal server error", http.StatusInternalServerError)
+	respondErrorCode(w, http.StatusInternalServerError, "internal", "internal server error")
 }
 
 func nullToEmpty(m map[string]string) map[string]string {

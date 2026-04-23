@@ -72,6 +72,10 @@ func (s *Store) LoadFromRepo(ctx context.Context) error {
 }
 
 // RefreshFromRepo pulls remote changes and reloads if the HEAD moved.
+// Returns updated=true only when the in-memory snapshot was actually swapped;
+// if HEAD moved on the remote but reload failed (e.g. malformed YAML), the
+// last-known-good snapshot stays in place and updated=false is returned with
+// the reload error.
 func (s *Store) RefreshFromRepo(ctx context.Context) (bool, error) {
 	hash, updated, err := s.repo.Pull(ctx)
 	if err != nil {
@@ -82,7 +86,10 @@ func (s *Store) RefreshFromRepo(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	slog.Info("git pull: detected changes", "hash", hash)
-	return true, s.reload(ctx)
+	if err := s.reload(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // HeadVersion returns the git commit hash of the currently loaded snapshot.
@@ -232,16 +239,22 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 		return nil, err
 	}
 
-	// Reload in-memory snapshot using COW.
-	if err := s.reloadUnlocked(ctx); err != nil {
-		slog.Error("reload after commit failed", "err", err)
-	}
-
-	return &ChangeResult{
+	result := &ChangeResult{
 		Version:   hash,
 		UpdatedAt: now,
 		Files:     writtenFiles,
-	}, nil
+	}
+
+	// Reload in-memory snapshot using COW. If this fails the git write has
+	// already happened, so we can't pretend it didn't; instead we keep the
+	// previous (last-known-good) snapshot and tell the caller about it.
+	if err := s.reloadUnlocked(ctx); err != nil {
+		slog.Error("reload after commit failed; serving stale snapshot until next successful reload", "err", err)
+		result.ReloadFailed = true
+		result.ReloadError = err.Error()
+	}
+
+	return result, nil
 }
 
 // DeleteChanges removes a service's config files, commits, pushes, and refreshes memory.
@@ -297,19 +310,24 @@ func (s *Store) reload(ctx context.Context) error {
 }
 
 // reloadUnlocked is the same as reload but assumes mu is already held.
+// Reload is fail-closed: if any config file cannot be parsed the snapshot is
+// NOT swapped and the previous last-known-good view keeps serving.
 func (s *Store) reloadUnlocked(_ context.Context) error {
-	hash, err := s.repo.HeadHash()
-	if err != nil {
-		return fmt.Errorf("head hash: %w", err)
-	}
-
 	data := make(map[string]*ServiceData)
+	var parseErrors []string
 
-	err = s.repo.WalkConfigs(func(path string, raw []byte) error {
-		return parseAndStore(path, raw, data)
+	hash, err := s.repo.Snapshot(func(path string, raw []byte) error {
+		if perr := parseAndStore(path, raw, data); perr != nil {
+			parseErrors = append(parseErrors, fmt.Sprintf("%s: %v", path, perr))
+		}
+		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("walk configs: %w", err)
+		return fmt.Errorf("repo snapshot: %w", err)
+	}
+	if len(parseErrors) > 0 {
+		return fmt.Errorf("refusing to swap snapshot: %d file(s) failed to parse: %s",
+			len(parseErrors), strings.Join(parseErrors, "; "))
 	}
 
 	s.snapshot.Store(newSnapshot(data, hash))
@@ -335,8 +353,7 @@ func parseAndStore(path string, raw []byte, data map[string]*ServiceData) error 
 	case "config":
 		cfg, err := parser.ParseConfig(raw)
 		if err != nil {
-			slog.Warn("skip unparseable config.yaml", "path", path, "err", err)
-			return nil
+			return fmt.Errorf("parse config.yaml: %w", err)
 		}
 		sd.Config = cfg
 		if cfg.Metadata.UpdatedAt != "" {
@@ -347,15 +364,13 @@ func parseAndStore(path string, raw []byte, data map[string]*ServiceData) error 
 	case "env_vars":
 		ev, err := parser.ParseEnvVars(raw)
 		if err != nil {
-			slog.Warn("skip unparseable env_vars.yaml", "path", path, "err", err)
-			return nil
+			return fmt.Errorf("parse env_vars.yaml: %w", err)
 		}
 		sd.EnvVars = ev
 	case "secrets":
 		sec, err := parser.ParseSecrets(raw)
 		if err != nil {
-			slog.Warn("skip unparseable secrets.yaml", "path", path, "err", err)
-			return nil
+			return fmt.Errorf("parse secrets.yaml: %w", err)
 		}
 		sd.Secrets = sec
 	}

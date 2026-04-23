@@ -12,8 +12,9 @@ import (
 
 // fakeRepo is a minimal in-memory GitRepo for testing the store in isolation.
 type fakeRepo struct {
-	files     map[string][]byte
-	commitHash string
+	files            map[string][]byte
+	commitHash       string
+	nextPullUpdated  bool
 }
 
 func newFakeRepo() *fakeRepo {
@@ -26,7 +27,9 @@ func newFakeRepo() *fakeRepo {
 func (f *fakeRepo) CloneOrOpen(_ context.Context) error { return nil }
 
 func (f *fakeRepo) Pull(_ context.Context) (string, bool, error) {
-	return f.commitHash, false, nil
+	updated := f.nextPullUpdated
+	f.nextPullUpdated = false
+	return f.commitHash, updated, nil
 }
 
 func (f *fakeRepo) CommitAndPush(_ context.Context, _ string, files map[string][]byte) (string, error) {
@@ -60,6 +63,13 @@ func (f *fakeRepo) WalkConfigs(fn func(path string, data []byte) error) error {
 		}
 	}
 	return nil
+}
+
+func (f *fakeRepo) Snapshot(fn func(path string, data []byte) error) (string, error) {
+	if err := f.WalkConfigs(fn); err != nil {
+		return "", err
+	}
+	return f.commitHash, nil
 }
 
 func (f *fakeRepo) HeadHash() (string, error) { return f.commitHash, nil }
@@ -336,6 +346,88 @@ func TestStore_ApplyChanges_PathTraversal(t *testing.T) {
 		if !errors.As(err, &appErr) {
 			t.Errorf("ApplyChanges with %q: expected apperror, got %T", bad, err)
 		}
+	}
+}
+
+func TestStore_Reload_FailClosedOnMalformedYAML(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	// Confirm the last-known-good snapshot is present.
+	if _, err := s.GetConfig(ctx, "myorg", "proj", "litellm"); err != nil {
+		t.Fatalf("initial GetConfig: %v", err)
+	}
+	goodVersion := s.HeadVersion()
+
+	// Introduce a malformed file and move HEAD forward.
+	repo.files["configs/orgs/myorg/projects/proj/services/litellm/config.yaml"] = []byte("::: not valid yaml :::")
+	repo.commitHash = "newhead"
+	repo.nextPullUpdated = true
+
+	updated, err := s.RefreshFromRepo(ctx)
+	if err == nil {
+		t.Fatal("expected refresh error on malformed YAML")
+	}
+	if updated {
+		t.Error("updated should be false when reload failed")
+	}
+
+	// Snapshot must NOT have been replaced.
+	if v := s.HeadVersion(); v != goodVersion {
+		t.Errorf("HeadVersion changed after failed reload: %q → %q", goodVersion, v)
+	}
+	if _, err := s.GetConfig(ctx, "myorg", "proj", "litellm"); err != nil {
+		t.Errorf("last-known-good snapshot lost after failed reload: %v", err)
+	}
+}
+
+// reloadFailingRepo mimics a repo whose Snapshot returns a fresh HEAD hash but
+// a broken yaml blob, so ApplyChanges can commit successfully and then observe
+// a post-commit reload failure.
+type reloadFailingRepo struct {
+	*fakeRepo
+	fail bool
+}
+
+func (r *reloadFailingRepo) Snapshot(fn func(path string, data []byte) error) (string, error) {
+	if r.fail {
+		// Feed one malformed file so parse fails inside reload.
+		_ = fn("configs/orgs/o/projects/p/services/s/config.yaml", []byte(": broken"))
+		return r.commitHash, nil
+	}
+	return r.fakeRepo.Snapshot(fn)
+}
+
+func TestStore_ApplyChanges_ReportsReloadFailure(t *testing.T) {
+	ctx := context.Background()
+	inner := newFakeRepo()
+	repo := &reloadFailingRepo{fakeRepo: inner}
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	// Now make reload fail for the next call.
+	repo.fail = true
+
+	res, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+		Org: "o", Project: "p", Service: "s",
+		Config: map[string]any{"k": "v"},
+	})
+	if err != nil {
+		t.Fatalf("ApplyChanges must succeed even if post-commit reload fails, got %v", err)
+	}
+	if !res.ReloadFailed {
+		t.Error("ReloadFailed should be true")
+	}
+	if res.ReloadError == "" {
+		t.Error("ReloadError should be populated")
 	}
 }
 
