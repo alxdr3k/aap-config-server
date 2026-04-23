@@ -2,9 +2,9 @@
 
 > **버전**: 1.3
 > **작성일**: 2026-03-11
-> **최종 수정일**: 2026-04-22
-> **상태**: Approved
-> **참조**: [PRD v2.1](./PRD.md)
+> **최종 수정일**: 2026-04-23
+> **상태**: **Approved design — Phase-1 implementation in progress.** 본 문서의 패키지 구조(`cmd/config-agent`, `internal/seal`, `internal/secret`, `internal/auth`, `internal/registry`, `internal/agent` 등) 및 SealedSecret/Config Agent 흐름은 **목표 설계**이며, 현재 repo에는 Config Server 본체(`cmd/config-server`, `internal/{config,gitops,handler,parser,server,store,apperror}`)만 구현되어 있다. 실제 구현 범위는 [README.md Feature Matrix](../README.md#feature-matrix) 참조.
+> **참조**: [PRD v2.1](./PRD.md) · [README.md](../README.md)
 
 ---
 
