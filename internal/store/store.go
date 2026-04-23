@@ -29,12 +29,21 @@ func validateName(field, value string) error {
 	return nil
 }
 
+// reloadState records the outcome of the most recent reload attempt.
+type reloadState struct {
+	at  time.Time
+	err error // non-nil when the last reload failed
+}
+
 // Store is the in-memory config store.
 // Reads are served from an atomically swapped snapshot (COW pattern), providing
 // lock-free reads during background refreshes.
 type Store struct {
 	// snapshot is the current read-only view; updated via atomic pointer swap.
 	snapshot atomic.Pointer[snapshot]
+
+	// lastReload records the outcome of the most recent reload attempt.
+	lastReload atomic.Pointer[reloadState]
 
 	// mu serialises writes (ApplyChanges / DeleteChanges / background refresh).
 	mu sync.Mutex
@@ -95,6 +104,30 @@ func (s *Store) RefreshFromRepo(ctx context.Context) (bool, error) {
 // HeadVersion returns the git commit hash of the currently loaded snapshot.
 func (s *Store) HeadVersion() string {
 	return s.current().version
+}
+
+// IsDegraded reports whether the most recent reload attempt failed. When true
+// the server is serving the last-known-good snapshot.
+func (s *Store) IsDegraded() bool {
+	rs := s.lastReload.Load()
+	return rs != nil && rs.err != nil
+}
+
+// StatusInfo returns a point-in-time operational snapshot of the store.
+func (s *Store) StatusInfo() StoreStatus {
+	snap := s.current()
+	si := StoreStatus{
+		Version:        snap.version,
+		ServicesLoaded: len(snap.data),
+	}
+	if rs := s.lastReload.Load(); rs != nil {
+		si.LastReloadAt = rs.at
+		if rs.err != nil {
+			si.IsDegraded = true
+			si.LastReloadError = rs.err.Error()
+		}
+	}
+	return si
 }
 
 // GetConfig returns the parsed config for a service.
@@ -288,18 +321,23 @@ func (s *Store) DeleteChanges(ctx context.Context, req *DeleteRequest) (*DeleteR
 		return nil, err
 	}
 
-	// Remove from memory snapshot immediately (don't wait for pull).
-	snap := s.current()
-	newData := copyMap(snap.data)
-	key := ServiceKey{Org: req.Org, Project: req.Project, Service: req.Service}.String()
-	delete(newData, key)
-	s.snapshot.Store(newSnapshot(newData, hash))
-
-	return &DeleteResult{
+	result := &DeleteResult{
 		Version:      hash,
 		UpdatedAt:    time.Now().UTC(),
 		DeletedFiles: []string{"config.yaml", "env_vars.yaml", "secrets.yaml"},
-	}, nil
+	}
+
+	// Reload in-memory snapshot from the new HEAD so any concurrent remote
+	// changes that were pulled in during DeleteAndPush's retry loop are also
+	// reflected. If reload fails, keep the last-known-good snapshot and report
+	// the failure so operators can react.
+	if err := s.reloadUnlocked(ctx); err != nil {
+		slog.Error("reload after delete failed; serving stale snapshot until next successful reload", "err", err)
+		result.ReloadFailed = true
+		result.ReloadError = err.Error()
+	}
+
+	return result, nil
 }
 
 // reload reads all configs from the repository into a new snapshot (called with mu held).
@@ -323,14 +361,19 @@ func (s *Store) reloadUnlocked(_ context.Context) error {
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("repo snapshot: %w", err)
+		reloadErr := fmt.Errorf("repo snapshot: %w", err)
+		s.lastReload.Store(&reloadState{at: time.Now(), err: reloadErr})
+		return reloadErr
 	}
 	if len(parseErrors) > 0 {
-		return fmt.Errorf("refusing to swap snapshot: %d file(s) failed to parse: %s",
+		reloadErr := fmt.Errorf("refusing to swap snapshot: %d file(s) failed to parse: %s",
 			len(parseErrors), strings.Join(parseErrors, "; "))
+		s.lastReload.Store(&reloadState{at: time.Now(), err: reloadErr})
+		return reloadErr
 	}
 
 	s.snapshot.Store(newSnapshot(data, hash))
+	s.lastReload.Store(&reloadState{at: time.Now(), err: nil})
 	slog.Info("config store reloaded", "services", len(data), "version", hash[:min(8, len(hash))])
 	return nil
 }
@@ -416,14 +459,6 @@ func classifyPath(path string) (key string, fileType string, ok bool) {
 	}
 
 	return ServiceKey{Org: org, Project: proj, Service: svc}.String(), fileType, true
-}
-
-func copyMap(m map[string]*ServiceData) map[string]*ServiceData {
-	out := make(map[string]*ServiceData, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
 }
 
 func keys(m map[string]struct{}) []string {

@@ -25,6 +25,8 @@ type ConfigStore interface {
 	DeleteChanges(ctx context.Context, req *store.DeleteRequest) (*store.DeleteResult, error)
 	HeadVersion() string
 	RefreshFromRepo(ctx context.Context) (bool, error)
+	IsDegraded() bool
+	StatusInfo() store.StoreStatus
 }
 
 // Readiness is used to query whether the server is ready.
@@ -87,21 +89,40 @@ func (h *Handler) readyz(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "not ready", http.StatusServiceUnavailable)
 		return
 	}
+	if h.store.IsDegraded() {
+		http.Error(w, "degraded", http.StatusServiceUnavailable)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
 
 func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
-	respondJSON(w, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"version": h.store.HeadVersion(),
-	})
+	si := h.store.StatusInfo()
+	resp := map[string]any{
+		"status":          "ok",
+		"version":         si.Version,
+		"services_loaded": si.ServicesLoaded,
+	}
+	if !si.LastReloadAt.IsZero() {
+		resp["last_reload_at"] = si.LastReloadAt.UTC().Format(time.RFC3339)
+	}
+	if si.IsDegraded {
+		resp["status"] = "degraded"
+		resp["is_degraded"] = true
+		resp["last_reload_error"] = si.LastReloadError
+	}
+	respondJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) adminReload(w http.ResponseWriter, r *http.Request) {
 	updated, err := h.store.RefreshFromRepo(r.Context())
 	if err != nil {
-		respondError(w, err)
+		respondJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status":       "reload_failed",
+			"reload_error": err.Error(),
+			"version":      h.store.HeadVersion(),
+		})
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{
@@ -356,11 +377,22 @@ func (h *Handler) deleteChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondJSON(w, http.StatusOK, map[string]any{
-		"status":        "deleted",
+	status := "deleted"
+	code := http.StatusOK
+	if result.ReloadFailed {
+		status = "deleted_but_reload_failed"
+		code = http.StatusServiceUnavailable
+	}
+
+	resp := map[string]any{
+		"status":        status,
 		"version":       result.Version,
 		"deleted_files": result.DeletedFiles,
-	})
+	}
+	if result.ReloadFailed && result.ReloadError != "" {
+		resp["reload_error"] = result.ReloadError
+	}
+	respondJSON(w, code, resp)
 }
 
 // ---- helpers ----
@@ -386,9 +418,13 @@ func (h *Handler) requireKey(next http.HandlerFunc) http.HandlerFunc {
 // authorized reports whether r presents a valid credential matching key. The
 // comparison uses crypto/subtle.ConstantTimeCompare to avoid timing side
 // channels.
+//
+// The Authorization header is parsed per RFC 7235: the auth-scheme token is
+// case-insensitive, so "Bearer", "bearer", and "BEARER" are all accepted.
 func authorized(r *http.Request, key string) bool {
 	if v := r.Header.Get("Authorization"); v != "" {
-		if token, ok := strings.CutPrefix(v, "Bearer "); ok {
+		scheme, token, hasSep := strings.Cut(v, " ")
+		if hasSep && strings.EqualFold(scheme, "bearer") {
 			return constantTimeEqual(token, key)
 		}
 	}
