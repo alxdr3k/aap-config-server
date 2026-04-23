@@ -461,14 +461,6 @@ func classifyPath(path string) (key string, fileType string, ok bool) {
 	return ServiceKey{Org: org, Project: proj, Service: svc}.String(), fileType, true
 }
 
-func copyMap(m map[string]*ServiceData) map[string]*ServiceData {
-	out := make(map[string]*ServiceData, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
-
 func keys(m map[string]struct{}) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
