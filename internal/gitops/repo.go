@@ -53,6 +53,12 @@ type GitRepo interface {
 	// The path argument to fn is relative to the repo root.
 	WalkConfigs(fn func(path string, data []byte) error) error
 
+	// Snapshot returns the current HEAD hash together with a walk of every
+	// regular file under configs/. The walk is performed under the same lock
+	// that serialises Pull / CommitAndPush / DeleteAndPush so the worktree
+	// cannot mutate mid-iteration.
+	Snapshot(fn func(path string, data []byte) error) (hash string, err error)
+
 	// HeadHash returns the current HEAD commit hash.
 	HeadHash() (string, error)
 
@@ -322,7 +328,15 @@ func (r *Repo) ReadFile(path string) ([]byte, error) {
 }
 
 // WalkConfigs iterates over all regular files under configs/.
+// It acquires the repo lock for the full walk so concurrent Pull /
+// CommitAndPush cannot mutate the worktree mid-iteration.
 func (r *Repo) WalkConfigs(fn func(path string, data []byte) error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.walkConfigsUnlocked(fn)
+}
+
+func (r *Repo) walkConfigsUnlocked(fn func(path string, data []byte) error) error {
 	configsRoot := filepath.Join(r.localPath, "configs")
 	if _, err := os.Stat(configsRoot); os.IsNotExist(err) {
 		return nil
@@ -341,6 +355,21 @@ func (r *Repo) WalkConfigs(fn func(path string, data []byte) error) error {
 		}
 		return fn(rel, data)
 	})
+}
+
+// Snapshot returns (hash, walk-err) with HeadHash and WalkConfigs performed
+// under the same repo lock so reads never straddle a pull or commit.
+func (r *Repo) Snapshot(fn func(path string, data []byte) error) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	hash, err := r.headHash()
+	if err != nil {
+		return "", err
+	}
+	if err := r.walkConfigsUnlocked(fn); err != nil {
+		return "", err
+	}
+	return hash, nil
 }
 
 // HeadHash returns the current HEAD commit hash.

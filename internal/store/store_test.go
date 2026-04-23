@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,9 +12,13 @@ import (
 )
 
 // fakeRepo is a minimal in-memory GitRepo for testing the store in isolation.
+// All state is guarded by mu so concurrent tests exercise the store's locking
+// without racing on the fake itself.
 type fakeRepo struct {
-	files     map[string][]byte
-	commitHash string
+	mu              sync.Mutex
+	files           map[string][]byte
+	commitHash      string
+	nextPullUpdated bool
 }
 
 func newFakeRepo() *fakeRepo {
@@ -26,10 +31,16 @@ func newFakeRepo() *fakeRepo {
 func (f *fakeRepo) CloneOrOpen(_ context.Context) error { return nil }
 
 func (f *fakeRepo) Pull(_ context.Context) (string, bool, error) {
-	return f.commitHash, false, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	updated := f.nextPullUpdated
+	f.nextPullUpdated = false
+	return f.commitHash, updated, nil
 }
 
 func (f *fakeRepo) CommitAndPush(_ context.Context, _ string, files map[string][]byte) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for k, v := range files {
 		f.files[k] = v
 	}
@@ -38,6 +49,8 @@ func (f *fakeRepo) CommitAndPush(_ context.Context, _ string, files map[string][
 }
 
 func (f *fakeRepo) DeleteAndPush(_ context.Context, _ string, paths []string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, p := range paths {
 		delete(f.files, p)
 	}
@@ -46,6 +59,8 @@ func (f *fakeRepo) DeleteAndPush(_ context.Context, _ string, paths []string) (s
 }
 
 func (f *fakeRepo) ReadFile(path string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	d, ok := f.files[path]
 	if !ok {
 		return nil, errors.New("file not found: " + path)
@@ -53,8 +68,18 @@ func (f *fakeRepo) ReadFile(path string) ([]byte, error) {
 	return d, nil
 }
 
+// WalkConfigs copies the file map under the lock, then iterates the copy so
+// the caller's fn runs without holding the lock (matches the real Repo, which
+// holds its own lock for the walk but doesn't hold it while re-entering via
+// external callbacks).
 func (f *fakeRepo) WalkConfigs(fn func(path string, data []byte) error) error {
-	for path, data := range f.files {
+	f.mu.Lock()
+	snap := make(map[string][]byte, len(f.files))
+	for k, v := range f.files {
+		snap[k] = v
+	}
+	f.mu.Unlock()
+	for path, data := range snap {
 		if err := fn(path, data); err != nil {
 			return err
 		}
@@ -62,9 +87,30 @@ func (f *fakeRepo) WalkConfigs(fn func(path string, data []byte) error) error {
 	return nil
 }
 
-func (f *fakeRepo) HeadHash() (string, error) { return f.commitHash, nil }
+// Snapshot mirrors gitops.Repo.Snapshot: HEAD + walk are observed together.
+func (f *fakeRepo) Snapshot(fn func(path string, data []byte) error) (string, error) {
+	f.mu.Lock()
+	hash := f.commitHash
+	snap := make(map[string][]byte, len(f.files))
+	for k, v := range f.files {
+		snap[k] = v
+	}
+	f.mu.Unlock()
+	for path, data := range snap {
+		if err := fn(path, data); err != nil {
+			return "", err
+		}
+	}
+	return hash, nil
+}
 
-func (f *fakeRepo) ReadFileAtCommit(commitHash, path string) ([]byte, error) {
+func (f *fakeRepo) HeadHash() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.commitHash, nil
+}
+
+func (f *fakeRepo) ReadFileAtCommit(_ string, path string) ([]byte, error) {
 	return f.ReadFile(path)
 }
 
@@ -339,6 +385,89 @@ func TestStore_ApplyChanges_PathTraversal(t *testing.T) {
 	}
 }
 
+func TestStore_Reload_FailClosedOnMalformedYAML(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	// Confirm the last-known-good snapshot is present.
+	if _, err := s.GetConfig(ctx, "myorg", "proj", "litellm"); err != nil {
+		t.Fatalf("initial GetConfig: %v", err)
+	}
+	goodVersion := s.HeadVersion()
+
+	// Introduce a malformed file and move HEAD forward.
+	repo.files["configs/orgs/myorg/projects/proj/services/litellm/config.yaml"] = []byte("::: not valid yaml :::")
+	repo.commitHash = "newhead"
+	repo.nextPullUpdated = true
+
+	updated, err := s.RefreshFromRepo(ctx)
+	if err == nil {
+		t.Fatal("expected refresh error on malformed YAML")
+	}
+	if updated {
+		t.Error("updated should be false when reload failed")
+	}
+
+	// Snapshot must NOT have been replaced.
+	if v := s.HeadVersion(); v != goodVersion {
+		t.Errorf("HeadVersion changed after failed reload: %q → %q", goodVersion, v)
+	}
+	if _, err := s.GetConfig(ctx, "myorg", "proj", "litellm"); err != nil {
+		t.Errorf("last-known-good snapshot lost after failed reload: %v", err)
+	}
+}
+
+// reloadFailingRepo mimics a repo whose Snapshot returns a fresh HEAD hash but
+// a broken yaml blob, so ApplyChanges can commit successfully and then observe
+// a post-commit reload failure.
+type reloadFailingRepo struct {
+	*fakeRepo
+	fail bool
+}
+
+func (r *reloadFailingRepo) Snapshot(fn func(path string, data []byte) error) (string, error) {
+	if r.fail {
+		// Feed one malformed file so parse fails inside reload.
+		_ = fn("configs/orgs/o/projects/p/services/s/config.yaml", []byte(": broken"))
+		hash, _ := r.HeadHash()
+		return hash, nil
+	}
+	return r.fakeRepo.Snapshot(fn)
+}
+
+func TestStore_ApplyChanges_ReportsReloadFailure(t *testing.T) {
+	ctx := context.Background()
+	inner := newFakeRepo()
+	repo := &reloadFailingRepo{fakeRepo: inner}
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	// Now make reload fail for the next call.
+	repo.fail = true
+
+	res, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+		Org: "o", Project: "p", Service: "s",
+		Config: map[string]any{"k": "v"},
+	})
+	if err != nil {
+		t.Fatalf("ApplyChanges must succeed even if post-commit reload fails, got %v", err)
+	}
+	if !res.ReloadFailed {
+		t.Error("ReloadFailed should be true")
+	}
+	if res.ReloadError == "" {
+		t.Error("ReloadError should be populated")
+	}
+}
+
 func TestStore_Concurrent_Reads(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
@@ -362,4 +491,88 @@ func TestStore_Concurrent_Reads(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		<-done
 	}
+}
+
+// TestStore_Concurrent_RefreshApplyRead hammers the store with concurrent
+// refreshes, admin writes, and reads. The race detector should be clean and
+// GetConfig must never observe a partial snapshot (either the service is
+// absent, or it has a non-nil Config — never a half-filled ServiceData).
+func TestStore_Concurrent_RefreshApplyRead(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "org", "p", "svc")
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	const (
+		readers   = 8
+		refreshes = 4
+		writers   = 2
+		iters     = 30
+	)
+
+	var wg sync.WaitGroup
+
+	// Readers: any service we find must have its Config populated (since every
+	// seeded/committed file carries config).
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iters; j++ {
+				d, err := s.GetConfig(ctx, "org", "p", "svc")
+				if err == nil && d.Config == nil && d.EnvVars == nil && d.Secrets == nil {
+					t.Errorf("observed empty ServiceData for org/p/svc (partial snapshot)")
+					return
+				}
+			}
+		}()
+	}
+
+	// Refreshers: alternate between "no change" and "HEAD moved".
+	for i := 0; i < refreshes; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iters; j++ {
+				if j%2 == 0 {
+					repo.mu.Lock()
+					repo.nextPullUpdated = true
+					repo.mu.Unlock()
+				}
+				if _, err := s.RefreshFromRepo(ctx); err != nil {
+					t.Errorf("refresher %d: RefreshFromRepo: %v", id, err)
+					return
+				}
+			}
+		}(i)
+	}
+
+	// Writers: run ApplyChanges for different services.
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			svcName := "writer-svc"
+			// Keep names valid for validateName.
+			if id == 1 {
+				svcName = "writer.svc-1"
+			}
+			for j := 0; j < iters; j++ {
+				_, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+					Org: "org", Project: "p", Service: svcName,
+					Config: map[string]any{"n": j},
+				})
+				if err != nil {
+					t.Errorf("writer %d: ApplyChanges: %v", id, err)
+					return
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
 }

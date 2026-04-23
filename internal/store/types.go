@@ -52,6 +52,12 @@ type ChangeResult struct {
 	Version   string
 	UpdatedAt time.Time
 	Files     []string // files that were written
+
+	// ReloadFailed is set when the git commit/push succeeded but the in-memory
+	// snapshot could not be refreshed from the new HEAD. Callers must treat
+	// this as "committed but stale read" and not as plain success.
+	ReloadFailed bool
+	ReloadError  string
 }
 
 // DeleteRequest carries the payload for DELETE /admin/changes.

@@ -17,8 +17,17 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		// Logger hasn't been configured yet; write to stderr directly.
+		_, _ = os.Stderr.WriteString("config: " + err.Error() + "\n")
+		os.Exit(2)
+	}
 	setupLogger(cfg.LogLevel)
+
+	if cfg.APIKey == "" && cfg.AllowUnauthenticatedDev {
+		slog.Warn("admin API authentication is DISABLED (ALLOW_UNAUTHENTICATED_DEV=true). Never use this in production.")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -58,6 +67,10 @@ func main() {
 }
 
 func pollLoop(ctx context.Context, st *store.Store, interval time.Duration) {
+	if interval <= 0 {
+		slog.Warn("git poll disabled: interval <= 0", "interval", interval)
+		return
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {

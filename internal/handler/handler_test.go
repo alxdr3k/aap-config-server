@@ -18,9 +18,11 @@ import (
 // --- fakes ---
 
 type fakeStore struct {
-	services      map[string]*store.ServiceData
-	version       string
-	failNextWrite error
+	services         map[string]*store.ServiceData
+	version          string
+	failNextWrite    error
+	nextReloadFailed bool
+	nextReloadErr    string
 }
 
 func newFakeStore() *fakeStore {
@@ -95,7 +97,12 @@ func (f *fakeStore) ApplyChanges(_ context.Context, req *store.ChangeRequest) (*
 	key := req.Org + "/" + req.Project + "/" + req.Service
 	f.services[key] = &store.ServiceData{}
 	f.version = "newcommit"
-	return &store.ChangeResult{Version: f.version, Files: []string{"config.yaml"}}, nil
+	return &store.ChangeResult{
+		Version:      f.version,
+		Files:        []string{"config.yaml"},
+		ReloadFailed: f.nextReloadFailed,
+		ReloadError:  f.nextReloadErr,
+	}, nil
 }
 
 func (f *fakeStore) DeleteChanges(_ context.Context, req *store.DeleteRequest) (*store.DeleteResult, error) {
@@ -421,6 +428,167 @@ func TestAPIKeyAuth(t *testing.T) {
 	resp, _ = http.DefaultClient.Do(req)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("correct key: want 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestAPIKeyAuth_BearerHeader(t *testing.T) {
+	mux := http.NewServeMux()
+	h := handler.New(newFakeStore(), alwaysReady{}, "secret-key")
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"org": "o", "project": "p", "service": "s",
+		"config": map[string]any{},
+	})
+
+	cases := []struct {
+		name    string
+		header  string
+		value   string
+		wantCode int
+	}{
+		{"bearer correct", "Authorization", "Bearer secret-key", http.StatusOK},
+		{"bearer wrong", "Authorization", "Bearer nope", http.StatusUnauthorized},
+		{"bearer wrong scheme", "Authorization", "Basic secret-key", http.StatusUnauthorized},
+		{"x-api-key alias", "X-API-Key", "secret-key", http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/admin/changes", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(tc.header, tc.value)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			if resp.StatusCode != tc.wantCode {
+				t.Errorf("%s: want %d, got %d", tc.name, tc.wantCode, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestPostChanges_RejectsSecretsField(t *testing.T) {
+	// PRD v2.1 describes a `secrets` field that is not implemented in Phase-1.
+	// Silently ignoring it would lose data; we require a loud 400 instead.
+	srv := newServer(t, newFakeStore())
+	defer srv.Close()
+
+	body := map[string]any{
+		"org": "o", "project": "p", "service": "s",
+		"config":  map[string]any{},
+		"secrets": []any{map[string]any{"id": "foo"}},
+	}
+	resp := postJSON(t, srv, "/api/v1/admin/changes", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400 for unknown `secrets` field, got %d", resp.StatusCode)
+	}
+
+	var env map[string]any
+	decodeJSON(t, resp, &env)
+	errObj, ok := env["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected JSON error envelope, got %v", env)
+	}
+	if !strings.Contains(strings.ToLower(errObj["message"].(string)), "secrets") {
+		t.Errorf("error message should mention secrets, got %v", errObj["message"])
+	}
+}
+
+func TestPostChanges_RejectsUnknownField(t *testing.T) {
+	srv := newServer(t, newFakeStore())
+	defer srv.Close()
+
+	body := map[string]any{
+		"org": "o", "project": "p", "service": "s",
+		"config":  map[string]any{},
+		"bogus":   "value",
+	}
+	resp := postJSON(t, srv, "/api/v1/admin/changes", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400 for unknown field, got %d", resp.StatusCode)
+	}
+}
+
+func TestPostChanges_ReloadFailedReported(t *testing.T) {
+	st := newFakeStore()
+	st.nextReloadFailed = true
+	st.nextReloadErr = "snapshot refused: bad yaml at foo"
+
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	body := map[string]any{
+		"org": "o", "project": "p", "service": "s",
+		"config": map[string]any{"k": "v"},
+	}
+	resp := postJSON(t, srv, "/api/v1/admin/changes", body)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want 503 when reload failed after commit, got %d", resp.StatusCode)
+	}
+
+	var body2 map[string]any
+	decodeJSON(t, resp, &body2)
+	if body2["status"] != "committed_but_reload_failed" {
+		t.Errorf("status: want committed_but_reload_failed, got %v", body2["status"])
+	}
+	if body2["reload_error"] == nil || body2["reload_error"] == "" {
+		t.Errorf("reload_error missing: %v", body2)
+	}
+}
+
+func TestGetSecrets_RequiresAuth(t *testing.T) {
+	mux := http.NewServeMux()
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	h := handler.New(st, alwaysReady{}, "secret-key")
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// No key → 401.
+	resp, err := http.Get(srv.URL + "/api/v1/orgs/org/projects/proj/services/svc/secrets")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("want 401 without key, got %d", resp.StatusCode)
+	}
+
+	// With bearer → 200.
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/orgs/org/projects/proj/services/svc/secrets", nil)
+	req.Header.Set("Authorization", "Bearer secret-key")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET authed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("want 200 with key, got %d", resp.StatusCode)
+	}
+}
+
+func TestErrorResponse_IsJSONEnvelope(t *testing.T) {
+	srv := newServer(t, newFakeStore())
+	defer srv.Close()
+
+	// Force a 404 via unknown service.
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/nope/config")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("want 404, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type: want application/json, got %q", ct)
+	}
+	var env map[string]any
+	decodeJSON(t, resp, &env)
+	errObj, ok := env["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error envelope, got %v", env)
+	}
+	if errObj["code"] != "not_found" {
+		t.Errorf("code: want not_found, got %v", errObj["code"])
 	}
 }
 
