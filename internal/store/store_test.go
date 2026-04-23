@@ -318,11 +318,77 @@ func TestStore_DeleteChanges(t *testing.T) {
 	if result.Version == "" {
 		t.Error("expected non-empty version")
 	}
+	if result.ReloadFailed {
+		t.Errorf("ReloadFailed should be false on success, got error: %s", result.ReloadError)
+	}
 
-	// Service should be gone from memory.
+	// Service should be gone from memory (full reload sees deleted files).
 	_, err = s.GetConfig(ctx, "myorg", "proj", "svc")
 	if err == nil {
 		t.Error("expected not-found after delete")
+	}
+}
+
+// reloadFailingAfterDeleteRepo wraps fakeRepo so that Snapshot returns a
+// broken YAML blob after DeleteAndPush, simulating a post-delete reload failure.
+type reloadFailingAfterDeleteRepo struct {
+	*fakeRepo
+	failOnce bool
+}
+
+func (r *reloadFailingAfterDeleteRepo) DeleteAndPush(ctx context.Context, msg string, paths []string) (string, error) {
+	hash, err := r.fakeRepo.DeleteAndPush(ctx, msg, paths)
+	if err == nil {
+		r.failOnce = true
+	}
+	return hash, err
+}
+
+func (r *reloadFailingAfterDeleteRepo) Snapshot(fn func(path string, data []byte) error) (string, error) {
+	if r.failOnce {
+		r.failOnce = false
+		_ = fn("configs/orgs/o/projects/p/services/s/config.yaml", []byte(": broken"))
+		hash, _ := r.HeadHash()
+		return hash, nil
+	}
+	return r.fakeRepo.Snapshot(fn)
+}
+
+func TestStore_DeleteChanges_ReportsReloadFailure(t *testing.T) {
+	ctx := context.Background()
+	inner := newFakeRepo()
+	seedFakeRepo(inner, "myorg", "proj", "svc")
+	repo := &reloadFailingAfterDeleteRepo{fakeRepo: inner}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	goodVersion := s.HeadVersion()
+
+	res, err := s.DeleteChanges(ctx, &store.DeleteRequest{
+		Org: "myorg", Project: "proj", Service: "svc",
+	})
+	if err != nil {
+		t.Fatalf("DeleteChanges must succeed even if post-delete reload fails: %v", err)
+	}
+	if !res.ReloadFailed {
+		t.Error("ReloadFailed should be true")
+	}
+	if res.ReloadError == "" {
+		t.Error("ReloadError should be populated")
+	}
+
+	// Last-known-good snapshot must still be in place.
+	if v := s.HeadVersion(); v != goodVersion {
+		t.Errorf("HeadVersion changed after failed reload: %q → %q", goodVersion, v)
+	}
+	if _, err := s.GetConfig(ctx, "myorg", "proj", "svc"); err != nil {
+		t.Errorf("last-known-good snapshot lost after failed delete reload: %v", err)
+	}
+	if !s.IsDegraded() {
+		t.Error("store should be degraded after reload failure")
 	}
 }
 
@@ -420,6 +486,9 @@ func TestStore_Reload_FailClosedOnMalformedYAML(t *testing.T) {
 	}
 	if _, err := s.GetConfig(ctx, "myorg", "proj", "litellm"); err != nil {
 		t.Errorf("last-known-good snapshot lost after failed reload: %v", err)
+	}
+	if !s.IsDegraded() {
+		t.Error("store should be degraded after failed reload")
 	}
 }
 

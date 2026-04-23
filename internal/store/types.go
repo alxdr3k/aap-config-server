@@ -72,6 +72,21 @@ type DeleteResult struct {
 	Version      string
 	UpdatedAt    time.Time
 	DeletedFiles []string
+
+	// ReloadFailed is set when the git delete/push succeeded but the in-memory
+	// snapshot could not be refreshed from the new HEAD. The last-known-good
+	// snapshot stays in place; callers must treat this as "deleted but stale read".
+	ReloadFailed bool
+	ReloadError  string
+}
+
+// StoreStatus holds operational status information about the store.
+type StoreStatus struct {
+	Version         string
+	ServicesLoaded  int
+	LastReloadAt    time.Time
+	IsDegraded      bool
+	LastReloadError string
 }
 
 // ServiceInfo is a summary entry returned by the services listing API.

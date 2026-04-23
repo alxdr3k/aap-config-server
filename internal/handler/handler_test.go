@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,11 +19,15 @@ import (
 // --- fakes ---
 
 type fakeStore struct {
-	services         map[string]*store.ServiceData
-	version          string
-	failNextWrite    error
-	nextReloadFailed bool
-	nextReloadErr    string
+	services               map[string]*store.ServiceData
+	version                string
+	failNextWrite          error
+	nextReloadFailed       bool
+	nextReloadErr          string
+	nextDeleteReloadFailed bool
+	nextDeleteReloadErr    string
+	degraded               bool
+	refreshErr             error
 }
 
 func newFakeStore() *fakeStore {
@@ -109,12 +114,32 @@ func (f *fakeStore) DeleteChanges(_ context.Context, req *store.DeleteRequest) (
 	key := req.Org + "/" + req.Project + "/" + req.Service
 	delete(f.services, key)
 	f.version = "delcommit"
-	return &store.DeleteResult{Version: f.version, DeletedFiles: []string{"config.yaml"}}, nil
+	return &store.DeleteResult{
+		Version:      f.version,
+		DeletedFiles: []string{"config.yaml"},
+		ReloadFailed: f.nextDeleteReloadFailed,
+		ReloadError:  f.nextDeleteReloadErr,
+	}, nil
 }
 
 func (f *fakeStore) HeadVersion() string { return f.version }
 
-func (f *fakeStore) RefreshFromRepo(_ context.Context) (bool, error) { return false, nil }
+func (f *fakeStore) RefreshFromRepo(_ context.Context) (bool, error) {
+	if f.refreshErr != nil {
+		return false, f.refreshErr
+	}
+	return false, nil
+}
+
+func (f *fakeStore) IsDegraded() bool { return f.degraded }
+
+func (f *fakeStore) StatusInfo() store.StoreStatus {
+	return store.StoreStatus{
+		Version:        f.version,
+		ServicesLoaded: len(f.services),
+		IsDegraded:     f.degraded,
+	}
+}
 
 type alwaysReady struct{}
 
@@ -609,6 +634,154 @@ func TestGetConfig_HasUpdatedAt(t *testing.T) {
 	meta := body["metadata"].(map[string]any)
 	if _, ok := meta["updated_at"]; !ok {
 		t.Error("metadata.updated_at missing from response")
+	}
+}
+
+func TestDeleteChanges_ReloadFailed(t *testing.T) {
+	st := newFakeStore()
+	st.services["myorg/proj/svc"] = &store.ServiceData{}
+	st.nextDeleteReloadFailed = true
+	st.nextDeleteReloadErr = "refusing to swap snapshot: bad yaml"
+
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	body := map[string]any{"org": "myorg", "project": "proj", "service": "svc"}
+	resp := deleteJSON(t, srv, "/api/v1/admin/changes", body)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want 503 when reload failed after delete, got %d", resp.StatusCode)
+	}
+
+	var result map[string]any
+	decodeJSON(t, resp, &result)
+	if result["status"] != "deleted_but_reload_failed" {
+		t.Errorf("status: want deleted_but_reload_failed, got %v", result["status"])
+	}
+	if result["reload_error"] == nil || result["reload_error"] == "" {
+		t.Errorf("reload_error missing: %v", result)
+	}
+}
+
+func TestReadyz_Degraded(t *testing.T) {
+	st := newFakeStore()
+	st.degraded = true
+	mux := http.NewServeMux()
+	h := handler.New(st, alwaysReady{}, "")
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp := get(t, srv, "/readyz")
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("readyz degraded: want 503, got %d", resp.StatusCode)
+	}
+}
+
+func TestStatus_Enriched(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/status")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	if body["status"] != "ok" {
+		t.Errorf("status: want ok, got %v", body["status"])
+	}
+	if body["version"] != "abc123" {
+		t.Errorf("version: want abc123, got %v", body["version"])
+	}
+	if body["services_loaded"] == nil {
+		t.Error("services_loaded missing from /status response")
+	}
+}
+
+func TestStatus_Degraded(t *testing.T) {
+	st := newFakeStore()
+	st.degraded = true
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/status")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200 (not 503) for /status even when degraded, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	if body["status"] != "degraded" {
+		t.Errorf("status: want degraded, got %v", body["status"])
+	}
+	if body["is_degraded"] != true {
+		t.Errorf("is_degraded: want true, got %v", body["is_degraded"])
+	}
+}
+
+func TestAdminReload_Error(t *testing.T) {
+	st := newFakeStore()
+	st.refreshErr = errors.New("refusing to swap snapshot: 1 file(s) failed to parse")
+	mux := http.NewServeMux()
+	h := handler.New(st, alwaysReady{}, "")
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/admin/reload", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST reload: %v", err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want 503 on reload failure, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	if body["status"] != "reload_failed" {
+		t.Errorf("status: want reload_failed, got %v", body["status"])
+	}
+	if body["reload_error"] == nil || body["reload_error"] == "" {
+		t.Errorf("reload_error missing: %v", body)
+	}
+}
+
+func TestAPIKeyAuth_BearerCaseInsensitive(t *testing.T) {
+	mux := http.NewServeMux()
+	h := handler.New(newFakeStore(), alwaysReady{}, "secret-key")
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"org": "o", "project": "p", "service": "s",
+		"config": map[string]any{},
+	})
+
+	cases := []struct {
+		name     string
+		authVal  string
+		wantCode int
+	}{
+		{"canonical Bearer", "Bearer secret-key", http.StatusOK},
+		{"lowercase bearer", "bearer secret-key", http.StatusOK},
+		{"uppercase BEARER", "BEARER secret-key", http.StatusOK},
+		{"wrong token", "bearer wrong-key", http.StatusUnauthorized},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/admin/changes", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", tc.authVal)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			if resp.StatusCode != tc.wantCode {
+				t.Errorf("%s: want %d, got %d", tc.name, tc.wantCode, resp.StatusCode)
+			}
+		})
 	}
 }
 

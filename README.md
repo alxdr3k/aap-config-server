@@ -22,6 +22,8 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | API key auth (Authorization: Bearer, X-API-Key)    | Implemented |
 | Last-known-good snapshot on parse error            | Implemented |
 | `committed_but_reload_failed` post-commit signal   | Implemented |
+| `deleted_but_reload_failed` post-delete signal     | Implemented |
+| Degraded state exposed via `/readyz` and `/status` | Implemented |
 | Secret metadata read (`GET .../secrets`)           | Implemented (auth-gated) |
 | Secret **write** via `secrets` field on POST       | **Not implemented** — rejected with 400 |
 | SealedSecret generation / kubeseal integration     | Not implemented |
@@ -87,7 +89,7 @@ will log a loud warning so it's obvious in logs that auth is disabled.
 
 ## API
 
-All responses are JSON. Errors use a stable envelope:
+Most responses are JSON. The exceptions are `/healthz` and `/readyz`, which return plain-text bodies (`ok`, `not ready`, or `degraded`) with no `Content-Type: application/json` header — they are intended for health-check tooling, not API consumers. Errors use a stable JSON envelope:
 
 ```json
 { "error": { "code": "validation", "message": "org, project and service are required" } }
@@ -194,6 +196,28 @@ curl -X DELETE http://localhost:8080/api/v1/admin/changes \
   -d '{"org":"myorg","project":"ai","service":"litellm"}'
 ```
 
+Successful response:
+
+```json
+{
+  "status":        "deleted",
+  "version":       "<commit hash>",
+  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml"]
+}
+```
+
+If the Git delete succeeded but the in-memory snapshot could not be reloaded
+from the new HEAD, the response is `503` with:
+
+```json
+{
+  "status":        "deleted_but_reload_failed",
+  "version":       "<commit hash>",
+  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml"],
+  "reload_error":  "refusing to swap snapshot: 1 file(s) failed to parse: ..."
+}
+```
+
 ### Reload
 
 ```bash
@@ -207,9 +231,21 @@ curl -X POST http://localhost:8080/api/v1/admin/reload \
   every file parses. A malformed `config.yaml` in the repo will fail the
   reload; reads keep returning the previous snapshot. Check logs for
   `"refusing to swap snapshot"` errors and fix the offending file.
+- **Degraded state.** When the last reload failed (background poll or admin
+  reload), the server is in a degraded state: it serves the last-known-good
+  snapshot but the snapshot may be stale. In this state:
+  - `/readyz` returns `503 degraded` so Kubernetes removes the pod from load
+    balancer rotation until the underlying YAML is fixed.
+  - `/api/v1/status` returns `"status": "degraded"` with `is_degraded: true`
+    and `last_reload_error` describing the parse failure.
 - **Post-commit reload.** `ApplyChanges` commits and pushes before reloading.
   A successful commit with a failed reload produces the `committed_but_reload_failed`
-  response documented above rather than a bare `200`.
+  response documented above rather than a bare `200`. Similarly,
+  `DeleteChanges` produces `deleted_but_reload_failed` if the post-delete
+  reload fails.
+- **Post-reload admin endpoint.** `POST /api/v1/admin/reload` returns
+  `503 {"status":"reload_failed","reload_error":"..."}` when the reload fails,
+  so operators can distinguish parse errors from generic 500s.
 - **Poll interval must be positive.** `GIT_POLL_INTERVAL=0s` (or negative) is
   rejected at startup rather than panicking inside `time.NewTicker`.
 
@@ -224,7 +260,7 @@ make docker-build   # build the container image
 ```
 
 The CI pipeline (`.github/workflows/ci.yml`) runs `go vet`, race tests, and
-`govulncheck` on every push.
+`govulncheck` on every push to or pull request targeting `main`.
 
 ## Repository layout
 
