@@ -44,7 +44,11 @@ under `configs/orgs/<org>/projects/<proj>/services/<svc>/`.
 git clone <this repo> && cd aap-config-server
 
 export GIT_URL=git@github.com:myorg/aap-helm-charts.git
-export GIT_SSH_KEY=$HOME/.ssh/id_ed25519     # or set GIT_URL=https://... and use BasicAuth
+export GIT_SSH_KEY=$HOME/.ssh/id_ed25519     # SSH auth (for git@ / ssh:// remotes)
+# …or, for an https:// remote, use BasicAuth:
+#   export GIT_URL=https://github.com/myorg/aap-helm-charts.git
+#   export GIT_USERNAME=myuser
+#   export GIT_PASSWORD=ghp_xxx               # env-only; never passed via flag
 export API_KEY=$(openssl rand -hex 32)        # required in non-dev
 export GIT_POLL_INTERVAL=30s
 
@@ -68,7 +72,9 @@ curl http://localhost:8080/api/v1/orgs
 | `GIT_BRANCH`                 | no                       | `main`                |                                                        |
 | `GIT_LOCAL_PATH`             | no                       | `/tmp/aap-helm-charts` | Local clone location.                                  |
 | `GIT_POLL_INTERVAL`          | no                       | `30s`                 | Must be > 0; `0` or negative is rejected at startup.   |
-| `GIT_SSH_KEY`                | no                       | —                     | Path to SSH private key when using an `ssh://` remote. |
+| `GIT_SSH_KEY`                | no                       | —                     | Path to SSH private key when using an `ssh://` remote. Mutually exclusive with `GIT_USERNAME`/`GIT_PASSWORD`. |
+| `GIT_USERNAME`               | no                       | —                     | HTTPS BasicAuth username (pair with `GIT_PASSWORD`).   |
+| `GIT_PASSWORD`               | no                       | —                     | HTTPS BasicAuth password/token. Env-only; not accepted as a flag. |
 | `API_KEY`                    | yes (prod) / no (dev)    | —                     | See below.                                             |
 | `ALLOW_UNAUTHENTICATED_DEV`  | no                       | `false`               | Set to `true` to boot without an API key — dev/test only. |
 | `ADDR`                       | no                       | `:8080`               | HTTP listen address.                                   |
