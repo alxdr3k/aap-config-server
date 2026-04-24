@@ -388,6 +388,12 @@ func (r *Repo) walkConfigsUnlocked(fn func(path string, data []byte) error) erro
 
 // Snapshot returns (hash, walk-err) with HeadHash and WalkConfigs performed
 // under the same repo lock so reads never straddle a pull or commit.
+//
+// Snapshot also refuses to build a view over a dirty configs/ worktree: if
+// any file under configs/ is modified, added, deleted, or untracked (outside
+// of our own locked write paths), the reported HEAD hash would not describe
+// what we're about to serve. Returning an error here fails the reload closed,
+// which the store then reports via /readyz degraded and /status.
 func (r *Repo) Snapshot(fn func(path string, data []byte) error) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -395,10 +401,52 @@ func (r *Repo) Snapshot(fn func(path string, data []byte) error) (string, error)
 	if err != nil {
 		return "", err
 	}
+	if err := r.assertConfigsCleanUnlocked(); err != nil {
+		return "", err
+	}
 	if err := r.walkConfigsUnlocked(fn); err != nil {
 		return "", err
 	}
 	return hash, nil
+}
+
+// assertConfigsCleanUnlocked returns an error if any file under configs/ is
+// in a non-clean git state. CommitAndPush / DeleteAndPush hold the same lock
+// while mutating the worktree, so this check only ever fires on changes made
+// outside the process — i.e. drift on the local checkout that would make the
+// served snapshot diverge from the reported HEAD.
+func (r *Repo) assertConfigsCleanUnlocked() error {
+	w, err := r.repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("worktree: %w", err)
+	}
+	status, err := w.Status()
+	if err != nil {
+		return fmt.Errorf("git status: %w", err)
+	}
+	var dirty []string
+	for path, st := range status {
+		if !strings.HasPrefix(filepath.ToSlash(path), "configs/") {
+			continue
+		}
+		// Ignore Unmodified entries (go-git's Status map can include them).
+		if st.Staging == gogit.Unmodified && st.Worktree == gogit.Unmodified {
+			continue
+		}
+		dirty = append(dirty, path)
+	}
+	if len(dirty) > 0 {
+		// Cap the list in the error so a huge dirty worktree doesn't produce
+		// an unreadably long message.
+		const max = 5
+		shown := dirty
+		if len(shown) > max {
+			shown = shown[:max]
+		}
+		return fmt.Errorf("configs/ worktree is dirty (%d file(s), e.g. %s); refusing to snapshot",
+			len(dirty), strings.Join(shown, ", "))
+	}
+	return nil
 }
 
 // HeadHash returns the current HEAD commit hash.

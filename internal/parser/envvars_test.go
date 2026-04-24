@@ -1,6 +1,7 @@
 package parser_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/aap/config-server/internal/parser"
@@ -70,5 +71,22 @@ func TestParseEnvVars_InvalidYAML(t *testing.T) {
 	_, err := parser.ParseEnvVars([]byte("{ bad: yaml"))
 	if err == nil {
 		t.Error("expected error for invalid YAML")
+	}
+}
+
+// TestParseEnvVars_RejectsMissingMetadata covers the P3 review item: env_vars
+// must carry the same identifying metadata as config.yaml or the store can't
+// route the file to a service key.
+func TestParseEnvVars_RejectsMissingMetadata(t *testing.T) {
+	input := `version: "1"
+env_vars:
+  plain:
+    LOG_LEVEL: "INFO"`
+	_, err := parser.ParseEnvVars([]byte(input))
+	if err == nil {
+		t.Fatal("expected validation error when metadata is missing")
+	}
+	if !strings.Contains(err.Error(), "metadata") {
+		t.Errorf("error should mention metadata, got %v", err)
 	}
 }

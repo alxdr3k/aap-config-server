@@ -7,11 +7,19 @@ import (
 )
 
 // ParseSecrets parses the contents of a secrets.yaml file.
-// It contains only metadata — plaintext values are never present.
+// It contains only metadata — plaintext values are never present — but the
+// metadata identifies real K8s Secret objects and missing or partial pointers
+// would silently corrupt whatever code reads the list later (secret-mount,
+// SealedSecret sync, etc.). We validate every entry fully up front.
 func ParseSecrets(data []byte) (*SecretsConfig, error) {
 	var cfg SecretsConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse secrets.yaml: %w", err)
+	}
+	for i, entry := range cfg.Secrets {
+		if err := validateSecretEntry(i, entry); err != nil {
+			return nil, err
+		}
 	}
 	return &cfg, nil
 }

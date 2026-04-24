@@ -1,6 +1,7 @@
 package parser_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/aap/config-server/internal/parser"
@@ -69,6 +70,61 @@ func TestParseConfig_InvalidYAML(t *testing.T) {
 	_, err := parser.ParseConfig([]byte("{ bad: yaml: ["))
 	if err == nil {
 		t.Error("expected error for invalid YAML")
+	}
+}
+
+// TestParseConfig_RejectsMissingMetadata covers the P3 review item: semantic
+// validation must catch YAML that parses as valid but lacks the identifying
+// metadata the store keys on.
+func TestParseConfig_RejectsMissingMetadata(t *testing.T) {
+	cases := []struct {
+		name  string
+		yaml  string
+		field string
+	}{
+		{
+			name: "missing service",
+			yaml: `version: "1"
+metadata:
+  org: o
+  project: p
+config: {}`,
+			field: "metadata.service",
+		},
+		{
+			name: "missing org",
+			yaml: `version: "1"
+metadata:
+  service: s
+  project: p
+config: {}`,
+			field: "metadata.org",
+		},
+		{
+			name: "missing project",
+			yaml: `version: "1"
+metadata:
+  service: s
+  org: o
+config: {}`,
+			field: "metadata.project",
+		},
+		{
+			name:  "missing whole metadata block",
+			yaml:  `version: "1"`,
+			field: "metadata",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parser.ParseConfig([]byte(tc.yaml))
+			if err == nil {
+				t.Fatalf("expected validation error for %s, got nil", tc.field)
+			}
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("error should mention %q, got %v", tc.field, err)
+			}
+		})
 	}
 }
 

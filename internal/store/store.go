@@ -73,9 +73,20 @@ func (s *Store) current() *snapshot {
 }
 
 // LoadFromRepo performs the initial clone/open and full config load.
+//
+// After CloneOrOpen — which only touches the network for a fresh clone — we
+// run one Pull so that an already-present local clone (dev box, persistent
+// volume) is brought up to the remote HEAD before we build the first
+// snapshot. A pull failure here is not fatal: we log and fall back to the
+// on-disk checkout so a transient network blip doesn't block startup; the
+// background poll and /readyz degraded state will surface the drift.
 func (s *Store) LoadFromRepo(ctx context.Context) error {
 	if err := s.repo.CloneOrOpen(ctx); err != nil {
 		return fmt.Errorf("clone/open repo: %w", err)
+	}
+	if _, _, err := s.repo.Pull(ctx); err != nil {
+		slog.Warn("initial pull failed; serving on-disk checkout until background poll recovers",
+			"err", err)
 	}
 	return s.reload(ctx)
 }
@@ -85,6 +96,11 @@ func (s *Store) LoadFromRepo(ctx context.Context) error {
 // if HEAD moved on the remote but reload failed (e.g. malformed YAML), the
 // last-known-good snapshot stays in place and updated=false is returned with
 // the reload error.
+//
+// This is the background-poll path. Operators calling POST /admin/reload must
+// use ReloadFromRepo instead: a degraded store whose HEAD has not moved needs
+// to re-parse the current checkout to recover, which RefreshFromRepo would
+// silently skip.
 func (s *Store) RefreshFromRepo(ctx context.Context) (bool, error) {
 	hash, updated, err := s.repo.Pull(ctx)
 	if err != nil {
@@ -99,6 +115,39 @@ func (s *Store) RefreshFromRepo(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// ReloadFromRepo pulls remote changes and unconditionally re-parses the
+// current checkout into a fresh snapshot. Unlike RefreshFromRepo this is a
+// force reload: it runs even when git HEAD did not move, so a degraded store
+// recovers once the offending YAML on the current HEAD has been fixed (either
+// by a no-op reload of the same commit, or by amending the file in place for
+// a local dev clone).
+//
+// Returns updated=true when the serving snapshot was swapped (i.e. the reload
+// produced a new HEAD or the last reload had failed and now succeeds).
+func (s *Store) ReloadFromRepo(ctx context.Context) (bool, error) {
+	hash, pullUpdated, err := s.repo.Pull(ctx)
+	if err != nil {
+		return false, err
+	}
+	if pullUpdated {
+		slog.Info("git pull: detected changes", "hash", hash)
+	} else {
+		slog.Debug("git pull: already up to date; force reloading anyway", "hash", hash)
+	}
+
+	prevVersion := s.HeadVersion()
+	wasDegraded := s.IsDegraded()
+
+	if err := s.reload(ctx); err != nil {
+		return false, err
+	}
+
+	// Report updated=true when the serving snapshot meaningfully changed —
+	// either HEAD moved, or we just recovered from a degraded state.
+	swapped := pullUpdated || s.HeadVersion() != prevVersion || wasDegraded
+	return swapped, nil
 }
 
 // HeadVersion returns the git commit hash of the currently loaded snapshot.

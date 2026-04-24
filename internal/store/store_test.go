@@ -19,6 +19,7 @@ type fakeRepo struct {
 	files           map[string][]byte
 	commitHash      string
 	nextPullUpdated bool
+	pullCalls       int
 }
 
 func newFakeRepo() *fakeRepo {
@@ -33,6 +34,7 @@ func (f *fakeRepo) CloneOrOpen(_ context.Context) error { return nil }
 func (f *fakeRepo) Pull(_ context.Context) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.pullCalls++
 	updated := f.nextPullUpdated
 	f.nextPullUpdated = false
 	return f.commitHash, updated, nil
@@ -465,6 +467,23 @@ env_vars:
 	}
 }
 
+// TestStore_LoadFromRepo_PullsBeforeFirstReload guards the P2 review item:
+// a stale local clone (dev box, persistent volume) must not serve Phase-1
+// traffic until the first background poll tick catches up. LoadFromRepo
+// must pull once before building the first snapshot.
+func TestStore_LoadFromRepo_PullsBeforeFirstReload(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+	if repo.pullCalls != 1 {
+		t.Errorf("expected LoadFromRepo to call Pull exactly once, got %d", repo.pullCalls)
+	}
+}
+
 func TestStore_HeadVersion(t *testing.T) {
 	ctx := context.Background()
 	s := store.New(newFakeRepo())
@@ -490,6 +509,59 @@ func TestStore_RefreshFromRepo_NoChange(t *testing.T) {
 	}
 	if updated {
 		t.Error("expected no update since HEAD didn't move")
+	}
+}
+
+// TestStore_ReloadFromRepo_ForcesReloadWhenHeadUnchanged guards the P1 admin-
+// reload semantics: force reload must re-parse the current checkout even when
+// the remote has not moved, so a degraded store recovers after the operator
+// fixes the offending YAML and hits POST /admin/reload.
+func TestStore_ReloadFromRepo_ForcesReloadWhenHeadUnchanged(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	// Poison the checkout without advancing HEAD, then try to recover via
+	// a background refresh. RefreshFromRepo must short-circuit (HEAD didn't
+	// move), leaving the store healthy.
+	repo.mu.Lock()
+	repo.files["configs/orgs/myorg/projects/proj/services/litellm/config.yaml"] = []byte("::: not yaml :::")
+	repo.mu.Unlock()
+
+	if _, err := s.RefreshFromRepo(ctx); err != nil {
+		t.Fatalf("RefreshFromRepo should be a no-op when HEAD doesn't move: %v", err)
+	}
+	if s.IsDegraded() {
+		t.Fatal("RefreshFromRepo must not degrade the store when HEAD didn't move")
+	}
+
+	// An operator force reload, however, must re-parse and surface the parse
+	// failure — this is the bug the P1 review called out.
+	if _, err := s.ReloadFromRepo(ctx); err == nil {
+		t.Fatal("ReloadFromRepo must fail when current checkout has malformed YAML")
+	}
+	if !s.IsDegraded() {
+		t.Error("store should be degraded after force reload hits malformed YAML")
+	}
+
+	// Now fix the file in place (still no HEAD move) and force reload again;
+	// the store should recover because ReloadFromRepo re-parses unconditionally.
+	seedFakeRepo(repo, "myorg", "proj", "litellm") // restore good yaml
+
+	updated, err := s.ReloadFromRepo(ctx)
+	if err != nil {
+		t.Fatalf("ReloadFromRepo recovery: %v", err)
+	}
+	if !updated {
+		t.Error("updated should be true when recovering from a degraded state")
+	}
+	if s.IsDegraded() {
+		t.Error("store should no longer be degraded after successful force reload")
 	}
 }
 

@@ -249,9 +249,33 @@ curl -X POST http://localhost:8080/api/v1/admin/reload \
   response documented above rather than a bare `200`. Similarly,
   `DeleteChanges` produces `deleted_but_reload_failed` if the post-delete
   reload fails.
-- **Post-reload admin endpoint.** `POST /api/v1/admin/reload` returns
-  `503 {"status":"reload_failed","reload_error":"..."}` when the reload fails,
-  so operators can distinguish parse errors from generic 500s.
+- **Post-reload admin endpoint.** `POST /api/v1/admin/reload` is a **force
+  reload**: it pulls, then re-parses the current checkout unconditionally.
+  Unlike the background poll (which skips the reload when HEAD hasn't moved),
+  the operator endpoint always re-parses, so a degraded store recovers on
+  the next call once the offending YAML is fixed. Response shapes:
+  - `200 {"status":"ok","updated":<bool>,"version":"..."}` — `updated` is
+    `true` when the serving snapshot actually changed (HEAD moved, or we
+    recovered from a degraded state).
+  - `503 {"status":"reload_failed","reload_error":"..."}` — reload (pull or
+    parse) failed; the previous snapshot keeps serving.
+- **Startup pull.** On startup the server clones the repo if the local path is
+  empty, otherwise it opens the existing clone and runs one pull before the
+  first snapshot. That keeps a persistent-volume / dev clone from serving
+  stale content until the first background poll tick. A pull failure at
+  startup is logged and the on-disk checkout is used; `/readyz` degraded
+  state will surface any resulting drift.
+- **Dirty worktree detection.** The snapshot walk refuses to build a view over
+  a `configs/` subtree that has been mutated outside the server's own locked
+  write path (modified, staged, or untracked files). Such drift would make
+  `metadata.version` lie about what's being served, so the reload fails
+  closed and the server enters the degraded state documented above.
+- **Schema validation.** `config.yaml` and `env_vars.yaml` require
+  `metadata.service` / `metadata.org` / `metadata.project`; every
+  `secrets.yaml` entry requires an `id` and a complete `k8s_secret` pointer
+  (`name`, `namespace`, `key`). Files that parse as valid YAML but miss
+  these fields fail the reload instead of loading as an unreachable or
+  half-referenced entry.
 - **Poll interval must be positive.** `GIT_POLL_INTERVAL=0s` (or negative) is
   rejected at startup rather than panicking inside `time.NewTicker`.
 

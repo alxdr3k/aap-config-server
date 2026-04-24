@@ -327,6 +327,66 @@ func TestDeleteAndPush_RetriesOnRejectedPush(t *testing.T) {
 	}
 }
 
+// TestSnapshot_RejectsDirtyConfigsWorktree covers the P2 review item: if the
+// configs/ subtree contains files that don't match HEAD, Snapshot must fail
+// so the reported HEAD doesn't mislead callers about what they would read.
+func TestSnapshot_RejectsDirtyConfigsWorktree(t *testing.T) {
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	if _, err := repo.CommitAndPush(ctx, "seed", map[string][]byte{
+		"configs/orgs/o/projects/p/services/s/config.yaml": []byte("version: \"1\"\nconfig: {}"),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Clean snapshot must work.
+	if _, err := repo.Snapshot(func(path string, data []byte) error { return nil }); err != nil {
+		t.Fatalf("clean Snapshot: %v", err)
+	}
+
+	// Introduce an out-of-band untracked file under configs/ (simulating
+	// someone touching the container's worktree). Snapshot must refuse.
+	dirty := filepath.Join(repo.LocalPath(), "configs/orgs/o/projects/p/services/s/stray.yaml")
+	if err := os.WriteFile(dirty, []byte("stray"), 0o644); err != nil {
+		t.Fatalf("write stray: %v", err)
+	}
+	defer os.Remove(dirty)
+
+	if _, err := repo.Snapshot(func(path string, data []byte) error { return nil }); err == nil {
+		t.Error("Snapshot should fail when configs/ worktree has an untracked file")
+	}
+}
+
+// TestSnapshot_IgnoresDirtyOutsideConfigs ensures the dirty check scopes to
+// configs/ — we don't care about files elsewhere in the repo root.
+func TestSnapshot_IgnoresDirtyOutsideConfigs(t *testing.T) {
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	if _, err := repo.CommitAndPush(ctx, "seed", map[string][]byte{
+		"configs/orgs/o/projects/p/services/s/config.yaml": []byte("version: \"1\"\nconfig: {}"),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	stray := filepath.Join(repo.LocalPath(), "some-other-file.txt")
+	if err := os.WriteFile(stray, []byte("anything"), 0o644); err != nil {
+		t.Fatalf("write stray: %v", err)
+	}
+	defer os.Remove(stray)
+
+	if _, err := repo.Snapshot(func(path string, data []byte) error { return nil }); err != nil {
+		t.Errorf("Snapshot with dirty non-configs file should pass, got %v", err)
+	}
+}
+
 func TestReadFileAtCommit(t *testing.T) {
 	_, repo := newLocalRepo(t)
 	ctx := context.Background()

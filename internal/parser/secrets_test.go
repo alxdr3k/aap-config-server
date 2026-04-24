@@ -1,6 +1,7 @@
 package parser_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/aap/config-server/internal/parser"
@@ -64,6 +65,70 @@ func TestParseSecrets_InvalidYAML(t *testing.T) {
 	_, err := parser.ParseSecrets([]byte("{[}"))
 	if err == nil {
 		t.Error("expected error for invalid YAML")
+	}
+}
+
+// TestParseSecrets_RejectsIncompleteEntry covers the P3 review item: every
+// secrets.yaml entry must carry a complete k8s_secret pointer so downstream
+// secret resolution can't silently operate on a partial reference.
+func TestParseSecrets_RejectsIncompleteEntry(t *testing.T) {
+	cases := []struct {
+		name     string
+		yaml     string
+		wantMiss string
+	}{
+		{
+			name: "missing id",
+			yaml: `version: "1"
+secrets:
+  - description: "some"
+    k8s_secret:
+      name: n
+      namespace: ns
+      key: k`,
+			wantMiss: "id",
+		},
+		{
+			name: "missing k8s_secret.name",
+			yaml: `version: "1"
+secrets:
+  - id: foo
+    k8s_secret:
+      namespace: ns
+      key: k`,
+			wantMiss: "k8s_secret.name",
+		},
+		{
+			name: "missing k8s_secret.namespace",
+			yaml: `version: "1"
+secrets:
+  - id: foo
+    k8s_secret:
+      name: n
+      key: k`,
+			wantMiss: "k8s_secret.namespace",
+		},
+		{
+			name: "missing k8s_secret.key",
+			yaml: `version: "1"
+secrets:
+  - id: foo
+    k8s_secret:
+      name: n
+      namespace: ns`,
+			wantMiss: "k8s_secret.key",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parser.ParseSecrets([]byte(tc.yaml))
+			if err == nil {
+				t.Fatalf("expected error for missing %s", tc.wantMiss)
+			}
+			if !strings.Contains(err.Error(), tc.wantMiss) {
+				t.Errorf("error should mention %q, got %v", tc.wantMiss, err)
+			}
+		})
 	}
 }
 
