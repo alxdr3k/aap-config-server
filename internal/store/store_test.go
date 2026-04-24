@@ -392,6 +392,79 @@ func TestStore_DeleteChanges_ReportsReloadFailure(t *testing.T) {
 	}
 }
 
+func TestStore_EnvVarsOnlyService_PropagatesMetadataUpdatedAt(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	base := "configs/orgs/myorg/projects/proj/services/envonly"
+	want := "2026-01-15T09:30:00Z"
+	repo.files[base+"/env_vars.yaml"] = []byte(`version: "1"
+metadata:
+  service: envonly
+  org: myorg
+  project: proj
+  updated_at: "` + want + `"
+env_vars:
+  plain:
+    LOG_LEVEL: "DEBUG"
+`)
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	svcs := s.ListServices("myorg", "proj")
+	if len(svcs) != 1 {
+		t.Fatalf("want 1 service, got %d", len(svcs))
+	}
+	wantT, _ := time.Parse(time.RFC3339, want)
+	if !svcs[0].UpdatedAt.Equal(wantT) {
+		t.Errorf("UpdatedAt for env-only service: want %v, got %v", wantT, svcs[0].UpdatedAt)
+	}
+}
+
+func TestStore_UpdatedAt_PicksMaxAcrossFiles(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	base := "configs/orgs/o/projects/p/services/s"
+	olderCfg := "2026-02-01T00:00:00Z"
+	newerEnv := "2026-03-20T00:00:00Z"
+
+	repo.files[base+"/config.yaml"] = []byte(`version: "1"
+metadata:
+  service: s
+  org: o
+  project: p
+  updated_at: "` + olderCfg + `"
+config:
+  k: v
+`)
+	repo.files[base+"/env_vars.yaml"] = []byte(`version: "1"
+metadata:
+  service: s
+  org: o
+  project: p
+  updated_at: "` + newerEnv + `"
+env_vars:
+  plain:
+    FOO: "bar"
+`)
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	svcs := s.ListServices("o", "p")
+	if len(svcs) != 1 {
+		t.Fatalf("want 1 service, got %d", len(svcs))
+	}
+	wantT, _ := time.Parse(time.RFC3339, newerEnv)
+	if !svcs[0].UpdatedAt.Equal(wantT) {
+		t.Errorf("expected newer env_vars timestamp %v, got %v", wantT, svcs[0].UpdatedAt)
+	}
+}
+
 func TestStore_HeadVersion(t *testing.T) {
 	ctx := context.Background()
 	s := store.New(newFakeRepo())

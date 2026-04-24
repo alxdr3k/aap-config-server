@@ -37,6 +37,8 @@ func main() {
 		RemoteURL:  cfg.GitURL,
 		Branch:     cfg.GitBranch,
 		SSHKeyPath: cfg.GitSSHKeyPath,
+		Username:   cfg.GitUsername,
+		Password:   cfg.GitPassword,
 	})
 	if err != nil {
 		slog.Error("create git repo", "err", err)

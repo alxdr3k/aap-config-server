@@ -19,6 +19,8 @@ type ServerConfig struct {
 	GitLocalPath             string
 	GitPollInterval          time.Duration
 	GitSSHKeyPath            string
+	GitUsername              string
+	GitPassword              string
 	APIKey                   string
 	AllowUnauthenticatedDev  bool
 	SecretMountPath          string
@@ -39,12 +41,14 @@ func Load() (*ServerConfig, error) {
 	flag.StringVar(&cfg.GitLocalPath, "git-local-path", env("GIT_LOCAL_PATH", "/tmp/aap-helm-charts"), "Local git clone path")
 	flag.DurationVar(&cfg.GitPollInterval, "git-poll-interval", envDuration("GIT_POLL_INTERVAL", 30*time.Second), "Git poll interval (must be > 0)")
 	flag.StringVar(&cfg.GitSSHKeyPath, "git-ssh-key", env("GIT_SSH_KEY", ""), "Path to SSH private key for git auth")
+	flag.StringVar(&cfg.GitUsername, "git-username", env("GIT_USERNAME", ""), "Username for HTTPS BasicAuth (use with GIT_PASSWORD)")
 	flag.StringVar(&cfg.SecretMountPath, "secret-mount-path", env("SECRET_MOUNT_PATH", "/secrets"), "Volume mount path for K8s secrets")
 	flag.StringVar(&cfg.ConsoleAPIURL, "console-api-url", env("CONSOLE_API_URL", ""), "AAP Console API URL")
 	flag.StringVar(&cfg.LogLevel, "log-level", env("LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 
-	// API_KEY is env-only — never accept via flag (would expose via ps).
+	// API_KEY and GIT_PASSWORD are env-only — never accept via flag (would expose via ps).
 	cfg.APIKey = os.Getenv("API_KEY")
+	cfg.GitPassword = os.Getenv("GIT_PASSWORD")
 	cfg.AllowUnauthenticatedDev = envBool("ALLOW_UNAUTHENTICATED_DEV", false)
 
 	flag.Parse()
@@ -67,6 +71,12 @@ func (c *ServerConfig) Validate() error {
 	}
 	if c.APIKey == "" && !c.AllowUnauthenticatedDev {
 		return errors.New("API_KEY is required. Set ALLOW_UNAUTHENTICATED_DEV=true only for local dev/test")
+	}
+	if c.GitSSHKeyPath != "" && (c.GitUsername != "" || c.GitPassword != "") {
+		return errors.New("set either GIT_SSH_KEY or GIT_USERNAME/GIT_PASSWORD, not both")
+	}
+	if (c.GitUsername != "") != (c.GitPassword != "") {
+		return errors.New("GIT_USERNAME and GIT_PASSWORD must be set together")
 	}
 	return nil
 }

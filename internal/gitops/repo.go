@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,11 +22,33 @@ import (
 	"github.com/aap/config-server/internal/apperror"
 )
 
+// isNonFastForwardPush reports whether a go-git push error signals the remote
+// rejected the update because it is not a fast-forward. go-git does not wrap
+// ErrNonFastForwardUpdate from its push path; the error is a fresh
+// fmt.Errorf("non-fast-forward update: %s", refname). We match on the message
+// prefix and also accept the sentinel for completeness.
+func isNonFastForwardPush(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gogit.ErrNonFastForwardUpdate) {
+		return true
+	}
+	return strings.Contains(err.Error(), "non-fast-forward update")
+}
+
 const (
 	maxPushRetries  = 3
 	committerName   = "aap-config-server"
 	committerEmail  = "config-server@aap.internal"
 )
+
+// afterPullHook is a test-only hook invoked inside CommitAndPush /
+// DeleteAndPush between the pre-operation pull and the worktree mutation.
+// Tests use it to inject a competing commit on the remote so the subsequent
+// push is rejected non-fast-forward, exercising the retry path.
+// It is nil in production.
+var afterPullHook func(attempt int)
 
 // GitRepo is the interface the store uses to interact with the git repository.
 // All path arguments are relative to the repository root.
@@ -209,6 +232,9 @@ func (r *Repo) CommitAndPush(ctx context.Context, msg string, files map[string][
 		if err := r.pull(ctx); err != nil && !errors.Is(err, gogit.NoErrAlreadyUpToDate) {
 			return "", fmt.Errorf("pre-commit pull: %w", err)
 		}
+		if afterPullHook != nil {
+			afterPullHook(attempt)
+		}
 
 		w, err := r.repo.Worktree()
 		if err != nil {
@@ -247,7 +273,7 @@ func (r *Repo) CommitAndPush(ctx context.Context, msg string, files map[string][
 		if pushErr == nil {
 			return hash.String(), nil
 		}
-		if !errors.Is(pushErr, gogit.ErrNonFastForwardUpdate) {
+		if !isNonFastForwardPush(pushErr) {
 			return "", apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
 		}
 
@@ -270,6 +296,9 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (s
 	for attempt := 0; attempt < maxPushRetries; attempt++ {
 		if err := r.pull(ctx); err != nil && !errors.Is(err, gogit.NoErrAlreadyUpToDate) {
 			return "", fmt.Errorf("pre-delete pull: %w", err)
+		}
+		if afterPullHook != nil {
+			afterPullHook(attempt)
 		}
 
 		w, err := r.repo.Worktree()
@@ -309,7 +338,7 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (s
 		if pushErr == nil {
 			return hash.String(), nil
 		}
-		if !errors.Is(pushErr, gogit.ErrNonFastForwardUpdate) {
+		if !isNonFastForwardPush(pushErr) {
 			return "", apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
 		}
 
@@ -415,7 +444,10 @@ func (r *Repo) ReadFileAtCommit(commitHash, path string) ([]byte, error) {
 // LocalPath returns the absolute filesystem path of the local clone.
 func (r *Repo) LocalPath() string { return r.localPath }
 
-// resetToParent does a mixed reset to HEAD~1 (undoes last commit, keeps working tree).
+// resetToParent does a hard reset to HEAD~1. It undoes the rejected local
+// commit AND discards the staged working-tree changes, so the next retry
+// iteration starts from a clean tree before pulling the remote's newer
+// commits. Files are re-applied by the retry loop itself.
 func resetToParent(repo *gogit.Repository, w *gogit.Worktree) error {
 	head, err := repo.Head()
 	if err != nil {
@@ -432,7 +464,7 @@ func resetToParent(repo *gogit.Repository, w *gogit.Worktree) error {
 	}
 	return w.Reset(&gogit.ResetOptions{
 		Commit: parent.Hash,
-		Mode:   gogit.MixedReset,
+		Mode:   gogit.HardReset,
 	})
 }
 

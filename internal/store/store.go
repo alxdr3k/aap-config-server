@@ -372,6 +372,15 @@ func (s *Store) reloadUnlocked(_ context.Context) error {
 		return reloadErr
 	}
 
+	// Fallback: services whose YAML carried no parseable metadata.updated_at
+	// get the reload time so listings still show *some* timestamp.
+	now := time.Now()
+	for _, sd := range data {
+		if sd.UpdatedAt.IsZero() {
+			sd.UpdatedAt = now
+		}
+	}
+
 	s.snapshot.Store(newSnapshot(data, hash))
 	s.lastReload.Store(&reloadState{at: time.Now(), err: nil})
 	slog.Info("config store reloaded", "services", len(data), "version", hash[:min(8, len(hash))])
@@ -379,6 +388,10 @@ func (s *Store) reloadUnlocked(_ context.Context) error {
 }
 
 // parseAndStore determines the file type and updates the data map accordingly.
+//
+// UpdatedAt precedence: the latest parseable metadata.updated_at across the
+// service's YAML files wins. If neither config.yaml nor env_vars.yaml carries
+// a usable timestamp, reloadUnlocked falls back to reload wall-clock time.
 func parseAndStore(path string, raw []byte, data map[string]*ServiceData) error {
 	// Only handle files inside orgs/…/services/…
 	key, fileType, ok := classifyPath(path)
@@ -388,7 +401,7 @@ func parseAndStore(path string, raw []byte, data map[string]*ServiceData) error 
 
 	sd := data[key]
 	if sd == nil {
-		sd = &ServiceData{UpdatedAt: time.Now()}
+		sd = &ServiceData{}
 		data[key] = sd
 	}
 
@@ -399,17 +412,14 @@ func parseAndStore(path string, raw []byte, data map[string]*ServiceData) error 
 			return fmt.Errorf("parse config.yaml: %w", err)
 		}
 		sd.Config = cfg
-		if cfg.Metadata.UpdatedAt != "" {
-			if t, err := time.Parse(time.RFC3339, cfg.Metadata.UpdatedAt); err == nil {
-				sd.UpdatedAt = t
-			}
-		}
+		applyMetadataUpdatedAt(sd, cfg.Metadata.UpdatedAt)
 	case "env_vars":
 		ev, err := parser.ParseEnvVars(raw)
 		if err != nil {
 			return fmt.Errorf("parse env_vars.yaml: %w", err)
 		}
 		sd.EnvVars = ev
+		applyMetadataUpdatedAt(sd, ev.Metadata.UpdatedAt)
 	case "secrets":
 		sec, err := parser.ParseSecrets(raw)
 		if err != nil {
@@ -419,6 +429,21 @@ func parseAndStore(path string, raw []byte, data map[string]*ServiceData) error 
 	}
 
 	return nil
+}
+
+// applyMetadataUpdatedAt adopts iso as sd.UpdatedAt if it parses and is more
+// recent than what's already there (zero-time is treated as "unset").
+func applyMetadataUpdatedAt(sd *ServiceData, iso string) {
+	if iso == "" {
+		return
+	}
+	t, err := time.Parse(time.RFC3339, iso)
+	if err != nil {
+		return
+	}
+	if sd.UpdatedAt.IsZero() || t.After(sd.UpdatedAt) {
+		sd.UpdatedAt = t
+	}
 }
 
 // classifyPath maps a repo-relative file path to a service key and file type.

@@ -211,6 +211,122 @@ func TestWalkConfigs(t *testing.T) {
 	}
 }
 
+// injectCompetingCommit clones bareRemote into a scratch dir, commits one file,
+// and pushes. Used by the rejected-push retry tests to race against Repo.
+func injectCompetingCommit(t *testing.T, bareRemote string, name string) {
+	t.Helper()
+	scratch := t.TempDir()
+	rr, err := gogit.PlainClone(scratch, false, &gogit.CloneOptions{URL: bareRemote})
+	if err != nil {
+		t.Fatalf("competitor clone: %v", err)
+	}
+	w, err := rr.Worktree()
+	if err != nil {
+		t.Fatalf("competitor worktree: %v", err)
+	}
+	p := filepath.Join(scratch, name)
+	if err := os.WriteFile(p, []byte("competitor"), 0o644); err != nil {
+		t.Fatalf("competitor write: %v", err)
+	}
+	if _, err := w.Add(name); err != nil {
+		t.Fatalf("competitor add: %v", err)
+	}
+	if _, err := w.Commit("competitor "+name, &gogit.CommitOptions{
+		Author: &object.Signature{Name: "other", Email: "other@test.com", When: time.Now()},
+	}); err != nil {
+		t.Fatalf("competitor commit: %v", err)
+	}
+	if err := rr.Push(&gogit.PushOptions{RemoteName: "origin"}); err != nil {
+		t.Fatalf("competitor push: %v", err)
+	}
+}
+
+func TestCommitAndPush_RetriesOnRejectedPush(t *testing.T) {
+	remotePath, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+
+	// Competitor pushes once, right after our first pull → our first push is
+	// rejected non-fast-forward, forcing the retry path.
+	var hookCalls int
+	restore := gitops.SetAfterPullHook(func(attempt int) {
+		hookCalls++
+		if attempt == 0 {
+			injectCompetingCommit(t, remotePath, "competitor-commit.txt")
+		}
+	})
+	defer restore()
+
+	files := map[string][]byte{
+		"configs/orgs/myorg/projects/p/services/svc/config.yaml": []byte("version: \"1\"\nconfig: {}"),
+	}
+	hash, err := repo.CommitAndPush(ctx, "add svc", files)
+	if err != nil {
+		t.Fatalf("CommitAndPush: %v", err)
+	}
+	if hash == "" {
+		t.Fatal("expected non-empty hash after retry")
+	}
+	if hookCalls < 2 {
+		t.Errorf("expected retry loop to run at least twice, got %d", hookCalls)
+	}
+
+	// Both our file and the competitor's file must live in the final worktree.
+	got, err := repo.ReadFile("configs/orgs/myorg/projects/p/services/svc/config.yaml")
+	if err != nil || len(got) == 0 {
+		t.Errorf("our file missing after retry: err=%v", err)
+	}
+	if _, err := repo.ReadFile("competitor-commit.txt"); err != nil {
+		t.Errorf("competitor's file missing after retry: %v", err)
+	}
+}
+
+func TestDeleteAndPush_RetriesOnRejectedPush(t *testing.T) {
+	remotePath, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+
+	target := "configs/orgs/myorg/projects/p/services/svc/config.yaml"
+	if _, err := repo.CommitAndPush(ctx, "seed", map[string][]byte{
+		target: []byte("version: \"1\"\nconfig: {}"),
+	}); err != nil {
+		t.Fatalf("seed CommitAndPush: %v", err)
+	}
+
+	var hookCalls int
+	restore := gitops.SetAfterPullHook(func(attempt int) {
+		hookCalls++
+		if attempt == 0 {
+			injectCompetingCommit(t, remotePath, "competitor-during-delete.txt")
+		}
+	})
+	defer restore()
+
+	hash, err := repo.DeleteAndPush(ctx, "delete svc", []string{target})
+	if err != nil {
+		t.Fatalf("DeleteAndPush: %v", err)
+	}
+	if hash == "" {
+		t.Fatal("expected non-empty hash after retry")
+	}
+	if hookCalls < 2 {
+		t.Errorf("expected retry loop to run at least twice, got %d", hookCalls)
+	}
+
+	if _, err := repo.ReadFile(target); err == nil {
+		t.Error("target file should be gone after delete retry")
+	}
+	if _, err := repo.ReadFile("competitor-during-delete.txt"); err != nil {
+		t.Errorf("competitor's file missing after retry: %v", err)
+	}
+}
+
 func TestReadFileAtCommit(t *testing.T) {
 	_, repo := newLocalRepo(t)
 	ctx := context.Background()
