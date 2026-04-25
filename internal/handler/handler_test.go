@@ -28,6 +28,10 @@ type fakeStore struct {
 	nextDeleteReloadErr    string
 	degraded               bool
 	refreshErr             error
+	reloadErr              error
+	reloadUpdated          bool
+	reloadCalls            int
+	refreshCalls           int
 }
 
 func newFakeStore() *fakeStore {
@@ -125,10 +129,21 @@ func (f *fakeStore) DeleteChanges(_ context.Context, req *store.DeleteRequest) (
 func (f *fakeStore) HeadVersion() string { return f.version }
 
 func (f *fakeStore) RefreshFromRepo(_ context.Context) (bool, error) {
+	f.refreshCalls++
 	if f.refreshErr != nil {
 		return false, f.refreshErr
 	}
 	return false, nil
+}
+
+func (f *fakeStore) ReloadFromRepo(_ context.Context) (bool, error) {
+	f.reloadCalls++
+	if f.reloadErr != nil {
+		return false, f.reloadErr
+	}
+	// Force-reload clears the degraded flag on success.
+	f.degraded = false
+	return f.reloadUpdated, nil
 }
 
 func (f *fakeStore) IsDegraded() bool { return f.degraded }
@@ -722,7 +737,7 @@ func TestStatus_Degraded(t *testing.T) {
 
 func TestAdminReload_Error(t *testing.T) {
 	st := newFakeStore()
-	st.refreshErr = errors.New("refusing to swap snapshot: 1 file(s) failed to parse")
+	st.reloadErr = errors.New("refusing to swap snapshot: 1 file(s) failed to parse")
 	mux := http.NewServeMux()
 	h := handler.New(st, alwaysReady{}, "")
 	h.Routes(mux)
@@ -744,6 +759,76 @@ func TestAdminReload_Error(t *testing.T) {
 	}
 	if body["reload_error"] == nil || body["reload_error"] == "" {
 		t.Errorf("reload_error missing: %v", body)
+	}
+}
+
+// TestAdminReload_DegradedNoHeadUpdate_Returns503 exercises the P1 fix from
+// the 2026-04 review. Background poll's RefreshFromRepo skips reload when
+// HEAD has not moved, but an operator-triggered POST /admin/reload MUST re-
+// parse the current checkout — otherwise a degraded store that has lost its
+// reason to repull would keep returning a bogus 200 OK. We simulate that by
+// seeding a store whose ReloadFromRepo reports a parse failure and asserting
+// the handler surfaces a 503 reload_failed.
+func TestAdminReload_DegradedNoHeadUpdate_Returns503(t *testing.T) {
+	st := newFakeStore()
+	st.degraded = true
+	// RefreshFromRepo would succeed (no HEAD update → no reload → 200), but
+	// ReloadFromRepo force-reloads and re-hits the underlying parse failure.
+	st.refreshErr = nil
+	st.reloadErr = errors.New("refusing to swap snapshot: 1 file(s) failed to parse: bad.yaml")
+
+	mux := http.NewServeMux()
+	h := handler.New(st, alwaysReady{}, "")
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/admin/reload", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST reload: %v", err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("degraded + no HEAD move: want 503, got %d", resp.StatusCode)
+	}
+	if st.reloadCalls != 1 {
+		t.Errorf("expected ReloadFromRepo to be called exactly once, got %d", st.reloadCalls)
+	}
+	if st.refreshCalls != 0 {
+		t.Errorf("admin reload must not route through RefreshFromRepo, got %d calls", st.refreshCalls)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	if body["status"] != "reload_failed" {
+		t.Errorf("status: want reload_failed, got %v", body["status"])
+	}
+}
+
+// TestAdminReload_ForceReloadsWhenHeadUnchanged asserts the happy path of the
+// same P1 fix: if the operator hits POST /admin/reload while HEAD has not
+// moved, the handler still force-reloads and returns 200. `updated` may be
+// true (recovered from degraded) or false (no-op); the shape must be 200/ok.
+func TestAdminReload_ForceReloadsWhenHeadUnchanged(t *testing.T) {
+	st := newFakeStore()
+	st.reloadUpdated = false // HEAD didn't move, reload was a no-op
+
+	mux := http.NewServeMux()
+	h := handler.New(st, alwaysReady{}, "")
+	h.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/admin/reload", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST reload: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200 on successful force reload, got %d", resp.StatusCode)
+	}
+	if st.reloadCalls != 1 {
+		t.Errorf("expected ReloadFromRepo to be called exactly once, got %d", st.reloadCalls)
 	}
 }
 

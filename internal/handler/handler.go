@@ -25,6 +25,7 @@ type ConfigStore interface {
 	DeleteChanges(ctx context.Context, req *store.DeleteRequest) (*store.DeleteResult, error)
 	HeadVersion() string
 	RefreshFromRepo(ctx context.Context) (bool, error)
+	ReloadFromRepo(ctx context.Context) (bool, error)
 	IsDegraded() bool
 	StatusInfo() store.StoreStatus
 }
@@ -115,8 +116,15 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, resp)
 }
 
+// adminReload force-reloads the store from the repo. It pulls any remote
+// changes and then re-parses the current checkout unconditionally, so that a
+// store which is degraded from an earlier parse failure recovers even when
+// HEAD has not moved since. The background poll path uses the lazier
+// RefreshFromRepo (skip reload if HEAD unchanged) — an operator-triggered
+// reload is the stronger signal and must not silently return 200 while the
+// store is still serving a last-known-good snapshot.
 func (h *Handler) adminReload(w http.ResponseWriter, r *http.Request) {
-	updated, err := h.store.RefreshFromRepo(r.Context())
+	updated, err := h.store.ReloadFromRepo(r.Context())
 	if err != nil {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"status":       "reload_failed",

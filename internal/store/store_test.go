@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ type fakeRepo struct {
 	files           map[string][]byte
 	commitHash      string
 	nextPullUpdated bool
+	pullCalls       int
 }
 
 func newFakeRepo() *fakeRepo {
@@ -33,6 +35,7 @@ func (f *fakeRepo) CloneOrOpen(_ context.Context) error { return nil }
 func (f *fakeRepo) Pull(_ context.Context) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.pullCalls++
 	updated := f.nextPullUpdated
 	f.nextPullUpdated = false
 	return f.commitHash, updated, nil
@@ -465,6 +468,76 @@ env_vars:
 	}
 }
 
+// TestStore_LoadFromRepo_PullsBeforeFirstReload guards the P2 review item:
+// a stale local clone (dev box, persistent volume) must not serve Phase-1
+// traffic until the first background poll tick catches up. LoadFromRepo
+// must pull once before building the first snapshot.
+func TestStore_LoadFromRepo_PullsBeforeFirstReload(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+	if repo.pullCalls != 1 {
+		t.Errorf("expected LoadFromRepo to call Pull exactly once, got %d", repo.pullCalls)
+	}
+}
+
+// pullErrRepo is a fakeRepo whose Pull returns a configured error. Used to
+// exercise the LoadFromRepo error-propagation policy.
+type pullErrRepo struct {
+	*fakeRepo
+	pullErr error
+}
+
+func (r *pullErrRepo) Pull(ctx context.Context) (string, bool, error) {
+	r.fakeRepo.mu.Lock()
+	r.fakeRepo.pullCalls++
+	r.fakeRepo.mu.Unlock()
+	return "", false, r.pullErr
+}
+
+// TestStore_LoadFromRepo_PropagatesContextCancellation ensures startup honors
+// a canceled / deadline-exceeded context: a pull failure tied to context is
+// fatal so callers can actually abort startup, while transient non-context
+// pull errors fall back to the on-disk checkout (covered separately below).
+func TestStore_LoadFromRepo_PropagatesContextCancellation(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"canceled", context.Canceled},
+		{"deadline exceeded", context.DeadlineExceeded},
+		{"wrapped canceled", fmt.Errorf("pull: %w", context.Canceled)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &pullErrRepo{fakeRepo: newFakeRepo(), pullErr: tc.err}
+			s := store.New(repo)
+			err := s.LoadFromRepo(context.Background())
+			if err == nil {
+				t.Fatal("expected LoadFromRepo to fail on context-cancellation pull error")
+			}
+			if !errors.Is(err, tc.err) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("error chain should preserve context error, got %v", err)
+			}
+		})
+	}
+}
+
+// TestStore_LoadFromRepo_TolerantToTransientPullFailure asserts the other
+// half of the policy: a non-context pull error (e.g. transient network blip)
+// is logged and startup continues using the on-disk checkout.
+func TestStore_LoadFromRepo_TolerantToTransientPullFailure(t *testing.T) {
+	repo := &pullErrRepo{fakeRepo: newFakeRepo(), pullErr: errors.New("boom: network unreachable")}
+	s := store.New(repo)
+	if err := s.LoadFromRepo(context.Background()); err != nil {
+		t.Fatalf("LoadFromRepo should tolerate transient pull failure, got %v", err)
+	}
+}
+
 func TestStore_HeadVersion(t *testing.T) {
 	ctx := context.Background()
 	s := store.New(newFakeRepo())
@@ -490,6 +563,59 @@ func TestStore_RefreshFromRepo_NoChange(t *testing.T) {
 	}
 	if updated {
 		t.Error("expected no update since HEAD didn't move")
+	}
+}
+
+// TestStore_ReloadFromRepo_ForcesReloadWhenHeadUnchanged guards the P1 admin-
+// reload semantics: force reload must re-parse the current checkout even when
+// the remote has not moved, so a degraded store recovers after the operator
+// fixes the offending YAML and hits POST /admin/reload.
+func TestStore_ReloadFromRepo_ForcesReloadWhenHeadUnchanged(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	// Poison the checkout without advancing HEAD, then try to recover via
+	// a background refresh. RefreshFromRepo must short-circuit (HEAD didn't
+	// move), leaving the store healthy.
+	repo.mu.Lock()
+	repo.files["configs/orgs/myorg/projects/proj/services/litellm/config.yaml"] = []byte("::: not yaml :::")
+	repo.mu.Unlock()
+
+	if _, err := s.RefreshFromRepo(ctx); err != nil {
+		t.Fatalf("RefreshFromRepo should be a no-op when HEAD doesn't move: %v", err)
+	}
+	if s.IsDegraded() {
+		t.Fatal("RefreshFromRepo must not degrade the store when HEAD didn't move")
+	}
+
+	// An operator force reload, however, must re-parse and surface the parse
+	// failure — this is the bug the P1 review called out.
+	if _, err := s.ReloadFromRepo(ctx); err == nil {
+		t.Fatal("ReloadFromRepo must fail when current checkout has malformed YAML")
+	}
+	if !s.IsDegraded() {
+		t.Error("store should be degraded after force reload hits malformed YAML")
+	}
+
+	// Now fix the file in place (still no HEAD move) and force reload again;
+	// the store should recover because ReloadFromRepo re-parses unconditionally.
+	seedFakeRepo(repo, "myorg", "proj", "litellm") // restore good yaml
+
+	updated, err := s.ReloadFromRepo(ctx)
+	if err != nil {
+		t.Fatalf("ReloadFromRepo recovery: %v", err)
+	}
+	if !updated {
+		t.Error("updated should be true when recovering from a degraded state")
+	}
+	if s.IsDegraded() {
+		t.Error("store should no longer be degraded after successful force reload")
 	}
 }
 
