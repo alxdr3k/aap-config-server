@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -481,6 +482,59 @@ func TestStore_LoadFromRepo_PullsBeforeFirstReload(t *testing.T) {
 	}
 	if repo.pullCalls != 1 {
 		t.Errorf("expected LoadFromRepo to call Pull exactly once, got %d", repo.pullCalls)
+	}
+}
+
+// pullErrRepo is a fakeRepo whose Pull returns a configured error. Used to
+// exercise the LoadFromRepo error-propagation policy.
+type pullErrRepo struct {
+	*fakeRepo
+	pullErr error
+}
+
+func (r *pullErrRepo) Pull(ctx context.Context) (string, bool, error) {
+	r.fakeRepo.mu.Lock()
+	r.fakeRepo.pullCalls++
+	r.fakeRepo.mu.Unlock()
+	return "", false, r.pullErr
+}
+
+// TestStore_LoadFromRepo_PropagatesContextCancellation ensures startup honors
+// a canceled / deadline-exceeded context: a pull failure tied to context is
+// fatal so callers can actually abort startup, while transient non-context
+// pull errors fall back to the on-disk checkout (covered separately below).
+func TestStore_LoadFromRepo_PropagatesContextCancellation(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"canceled", context.Canceled},
+		{"deadline exceeded", context.DeadlineExceeded},
+		{"wrapped canceled", fmt.Errorf("pull: %w", context.Canceled)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &pullErrRepo{fakeRepo: newFakeRepo(), pullErr: tc.err}
+			s := store.New(repo)
+			err := s.LoadFromRepo(context.Background())
+			if err == nil {
+				t.Fatal("expected LoadFromRepo to fail on context-cancellation pull error")
+			}
+			if !errors.Is(err, tc.err) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("error chain should preserve context error, got %v", err)
+			}
+		})
+	}
+}
+
+// TestStore_LoadFromRepo_TolerantToTransientPullFailure asserts the other
+// half of the policy: a non-context pull error (e.g. transient network blip)
+// is logged and startup continues using the on-disk checkout.
+func TestStore_LoadFromRepo_TolerantToTransientPullFailure(t *testing.T) {
+	repo := &pullErrRepo{fakeRepo: newFakeRepo(), pullErr: errors.New("boom: network unreachable")}
+	s := store.New(repo)
+	if err := s.LoadFromRepo(context.Background()); err != nil {
+		t.Fatalf("LoadFromRepo should tolerate transient pull failure, got %v", err)
 	}
 }
 

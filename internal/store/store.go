@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -77,14 +78,19 @@ func (s *Store) current() *snapshot {
 // After CloneOrOpen — which only touches the network for a fresh clone — we
 // run one Pull so that an already-present local clone (dev box, persistent
 // volume) is brought up to the remote HEAD before we build the first
-// snapshot. A pull failure here is not fatal: we log and fall back to the
-// on-disk checkout so a transient network blip doesn't block startup; the
+// snapshot. A transient network pull failure is logged and we fall back to
+// the on-disk checkout so a brief outage doesn't block startup; the
 // background poll and /readyz degraded state will surface the drift.
+// Context cancellation/deadline errors are propagated so callers can
+// actually abort startup when they ask to.
 func (s *Store) LoadFromRepo(ctx context.Context) error {
 	if err := s.repo.CloneOrOpen(ctx); err != nil {
 		return fmt.Errorf("clone/open repo: %w", err)
 	}
 	if _, _, err := s.repo.Pull(ctx); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("initial pull: %w", err)
+		}
 		slog.Warn("initial pull failed; serving on-disk checkout until background poll recovers",
 			"err", err)
 	}
