@@ -23,6 +23,7 @@ Question ↔ Decision ↔ Requirement ↔ Gate/Test ↔ Milestone/Track/Phase/Sl
 | `TRACE-008` |  | `ADR-001`, `ADR-002` | `FR-9` | `AC-030` | `P1-M2` | `AGENT` | `AGENT-1A` | `AGENT-1A.1` | Planned Config Agent. |
 | `TRACE-009` | `Q-001` | `DEC-001`, `DEC-002` | Documentation migration | `AC-014` | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.1` | Boilerplate docs adopted; `FR-*` remains canonical. |
 | `TRACE-010` |  | `DEC-001` | Documentation workflow | `AC-015` | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.2` | PR template and doc freshness soft-check. |
+| `TRACE-011` | `Q-003` | `DEC-003` | Deployment ownership | operations/runbook docs | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.1` | Repo owns binary/image/runtime docs; Helm/K8s manifests remain external. |
 
 ## Invariants
 

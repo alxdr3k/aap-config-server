@@ -77,3 +77,39 @@ later.
 - Positive: stable requirement references across docs, ADRs, and tests.
 - Negative: project IDs differ from boilerplate examples.
 - Follow-ups: none required.
+
+### DEC-003: Keep deployment manifests outside this repo
+
+- Date: 2026-04-29
+- Status: accepted
+- Deciders: maintainers
+- Supersedes: —
+- Superseded by: —
+- Resolves: `Q-003`
+- Impacts: `README.md`, `docs/current/OPERATIONS.md`, `docs/05_RUNBOOK.md`, deployment handoff
+
+**Context**
+
+This repo defines the Config Server binary, Docker image build, runtime config,
+and operational docs. The PRD/HLD target design references Helm/Kubernetes
+deployment concerns, but no Helm chart or Kubernetes manifest tree exists here.
+
+**Decision**
+
+Keep this repo focused on the binary, Docker image build, runtime configuration,
+and runbook guidance. Do not add Helm charts or Kubernetes deployment manifests
+until deployment ownership is explicitly reassigned to this repo by a future
+decision.
+
+**Rationale**
+
+This avoids introducing partial deployment manifests without a clear owner and
+keeps runtime guidance separate from environment-specific rollout mechanics.
+
+**Consequences**
+
+- Positive: clear boundary between binary/image ownership and deployment-system
+  ownership.
+- Negative: operators must look to the owning deployment repo/system for Helm
+  chart and Kubernetes manifest changes.
+- Follow-ups: update this decision if deployment ownership moves into this repo.

@@ -65,12 +65,20 @@ write/refresh operations.
 
 - Opened: 2026-04-29
 - Owner: maintainers
-- Status: open
+- Status: resolved
 - Proposed Answer: Keep this repo focused on the binary until deployment ownership is explicit; document current absence in `docs/current/OPERATIONS.md`.
-- Blocks: `OPS` deployment gate
-- Resolution: pending
+- Blocks: —
+- Resolution: `DEC-003`
 
 **Context**
 
 The README references container build support, but this repo does not currently
 own Helm charts or K8s manifests for deploying Config Server.
+
+**Discussion**
+
+- Container image build support is in scope for this repo.
+- Helm/Kubernetes manifests are deployment-system artifacts and remain outside
+  this repo until ownership is explicitly reassigned.
+- Decision: `DEC-003` keeps this repo focused on the binary, image build, and
+  runtime documentation.

@@ -105,7 +105,7 @@ Gate status:
 
 ## Risks (open)
 
-- `Q-003`: Deployment ownership for Helm/K8s manifests.
+- None currently.
 
 ## Capacity / Timeline
 
