@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aap/config-server/internal/registry"
@@ -80,6 +81,25 @@ func TestConsoleClient_LoadAppsRejectsBadStatus(t *testing.T) {
 	}
 	if _, err := client.LoadApps(context.Background()); err == nil {
 		t.Fatal("expected bad status error")
+	}
+}
+
+func TestConsoleClient_LoadAppsRejectsOversizedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat(" ", (4<<20)+1)))
+	}))
+	defer srv.Close()
+
+	client, err := registry.NewConsoleClient(registry.ClientOptions{
+		BaseURL:    srv.URL,
+		HTTPClient: srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewConsoleClient: %v", err)
+	}
+	_, err = client.LoadApps(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected oversized response error, got %v", err)
 	}
 }
 

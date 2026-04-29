@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+const maxConsoleRegistryResponseBytes int64 = 4 << 20
+
 // Loader loads the full Console App Registry.
 type Loader interface {
 	LoadApps(ctx context.Context) ([]App, error)
@@ -86,9 +88,12 @@ func parseBaseURL(raw string) (*url.URL, error) {
 }
 
 func decodeApps(r io.Reader) ([]App, error) {
-	raw, err := io.ReadAll(r)
+	raw, err := io.ReadAll(io.LimitReader(r, maxConsoleRegistryResponseBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(raw)) > maxConsoleRegistryResponseBytes {
+		return nil, fmt.Errorf("response exceeds %d bytes", maxConsoleRegistryResponseBytes)
 	}
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
