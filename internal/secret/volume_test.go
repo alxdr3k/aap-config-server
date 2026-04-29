@@ -114,6 +114,62 @@ func TestFileVolumeReader_WatchRefreshesChangedFile(t *testing.T) {
 	}
 }
 
+func TestFileVolumeReader_WatchRefreshesDuplicatePathReferences(t *testing.T) {
+	root := t.TempDir()
+	refA := testReference()
+	refB := refA
+	refB.ID = "shared-api-key"
+	path := writeMountedSecret(t, root, refA, "initial")
+
+	reader, err := secret.NewFileVolumeReader(root)
+	if err != nil {
+		t.Fatalf("NewFileVolumeReader: %v", err)
+	}
+	for _, ref := range []secret.Reference{refA, refB} {
+		if _, err := reader.Refresh(context.Background(), ref); err != nil {
+			t.Fatalf("initial refresh %s: %v", ref.ID, err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events, err := reader.Watch(ctx, []secret.Reference{refA, refB})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+
+	if err := os.WriteFile(path, []byte("rotated"), 0o600); err != nil {
+		t.Fatalf("write rotated secret: %v", err)
+	}
+
+	seen := map[string]bool{}
+	deadline := time.After(3 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatal("watch channel closed before duplicate ref events")
+			}
+			if ev.Err != nil {
+				t.Fatalf("watch event error: %v", ev.Err)
+			}
+			seen[ev.Reference.ID] = true
+		case <-deadline:
+			t.Fatalf("timed out waiting for duplicate ref events, saw %v", seen)
+		}
+	}
+
+	for _, ref := range []secret.Reference{refA, refB} {
+		got, err := reader.Read(context.Background(), ref)
+		if err != nil {
+			t.Fatalf("Read after watch %s: %v", ref.ID, err)
+		}
+		if string(got.Bytes()) != "rotated" {
+			t.Fatalf("watch should refresh cache for %s, got %q", ref.ID, string(got.Bytes()))
+		}
+	}
+}
+
 func testReference() secret.Reference {
 	return secret.Reference{
 		ID:        "api-key",

@@ -122,7 +122,7 @@ func (r *FileVolumeReader) Watch(ctx context.Context, refs []Reference) (<-chan 
 		return nil, errors.New("at least one secret reference is required")
 	}
 
-	paths := make(map[string]Reference, len(refs))
+	paths := make(map[string][]Reference, len(refs))
 	byDir := map[string][]Reference{}
 	for _, ref := range refs {
 		path, err := r.Path(ref)
@@ -130,7 +130,7 @@ func (r *FileVolumeReader) Watch(ctx context.Context, refs []Reference) (<-chan 
 			return nil, err
 		}
 		clean := filepath.Clean(path)
-		paths[clean] = ref
+		paths[clean] = append(paths[clean], ref)
 		dir := filepath.Dir(clean)
 		byDir[dir] = append(byDir[dir], ref)
 	}
@@ -154,7 +154,7 @@ func (r *FileVolumeReader) Watch(ctx context.Context, refs []Reference) (<-chan 
 func (r *FileVolumeReader) watchLoop(
 	ctx context.Context,
 	watcher *fsnotify.Watcher,
-	paths map[string]Reference,
+	paths map[string][]Reference,
 	byDir map[string][]Reference,
 	out chan<- VolumeEvent,
 ) {
@@ -182,13 +182,15 @@ func (r *FileVolumeReader) watchLoop(
 func (r *FileVolumeReader) handleWatchEvent(
 	ctx context.Context,
 	event fsnotify.Event,
-	paths map[string]Reference,
+	paths map[string][]Reference,
 	byDir map[string][]Reference,
 	out chan<- VolumeEvent,
 ) {
 	clean := filepath.Clean(event.Name)
-	if ref, ok := paths[clean]; ok {
-		r.refreshFromEvent(ctx, ref, clean, classifyVolumeOp(event.Op), out)
+	if refs, ok := paths[clean]; ok {
+		for _, ref := range refs {
+			r.refreshFromEvent(ctx, ref, clean, classifyVolumeOp(event.Op), out)
+		}
 		return
 	}
 	for _, ref := range byDir[clean] {
