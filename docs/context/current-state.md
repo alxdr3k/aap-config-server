@@ -18,7 +18,7 @@ from an atomically swapped in-memory snapshot.
 - active phase: follow-up planning from open questions
 - active slice: none
 - last accepted gate: `AC-014` / `AC-015` via PR #10
-- next gate: resolve `Q-002` and `Q-003`
+- next gate: resolve `Q-003`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
 
 ## Implemented
@@ -26,6 +26,8 @@ from an atomically swapped in-memory snapshot.
 - Go module `github.com/aap/config-server` with `cmd/config-server`.
 - Runtime config loading from env/flags with fail-closed `API_KEY` behavior.
 - Git clone/open/pull/commit/push using `go-git`.
+- Phase-1 admin writes, deletes, refreshes, and Git operations are serialized
+  globally by `ADR-005`; service-level mutexes remain target design only.
 - In-memory store with atomic snapshot swap and last-known-good behavior.
 - Parser support for `config.yaml`, `env_vars.yaml`, and `secrets.yaml` metadata.
 - Read APIs for config, env vars, service discovery, status, health/readiness.
@@ -48,12 +50,10 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Decide whether to supersede ADR-003 or implement service-level mutex (`Q-002`).
-2. Decide deployment manifest ownership (`Q-003`).
+1. Decide deployment manifest ownership (`Q-003`).
 
 ## Current risks / unknowns
 
-- `Q-002`: ADR-003 describes service-level mutex; current implementation serializes git operations globally.
 - `Q-003`: Exact deployment owner for Helm/K8s manifests is not represented in this repo.
 
 ## Current validation

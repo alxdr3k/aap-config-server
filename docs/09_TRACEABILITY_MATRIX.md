@@ -18,7 +18,7 @@ Question ↔ Decision ↔ Requirement ↔ Gate/Test ↔ Milestone/Track/Phase/Sl
 | `TRACE-003` |  | `ADR-003` | `FR-4`, `FR-5` | `AC-005` / `TEST-005` | `P0-M1` | `CORE` | `CORE-1A` | `CORE-1A.5` | Admin write/delete through Git. |
 | `TRACE-004` |  |  | `FR-15` | `AC-007` / `TEST-007` | `P0-M2` | `OPS` | `OPS-1A` | `OPS-1A.2` | Degraded readiness/status and force reload. |
 | `TRACE-005` |  |  | `FR-16`, `FR-17` | `AC-006` / `TEST-006` | `P0-M2` | `OPS` | `OPS-1A` | `OPS-1A.1` | API key auth boundary. |
-| `TRACE-006` | `Q-002` | `ADR-003` | `FR-4` | `AC-005` / `TEST-005` | `P0-M1` | `CORE` | `CORE-1A` | `CORE-1A.5` | ADR says service mutex; implementation uses global git mutex. |
+| `TRACE-006` | `Q-002` | `ADR-005` | `FR-4` | `AC-005` / `TEST-005` | `P0-M1` | `CORE` | `CORE-1A` | `CORE-1A.5` | Phase-1 accepts global Git/store serialization; ADR-003 remains target design. |
 | `TRACE-007` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.1` | Planned SealedSecret/resolve path. |
 | `TRACE-008` |  | `ADR-001`, `ADR-002` | `FR-9` | `AC-030` | `P1-M2` | `AGENT` | `AGENT-1A` | `AGENT-1A.1` | Planned Config Agent. |
 | `TRACE-009` | `Q-001` | `DEC-001`, `DEC-002` | Documentation migration | `AC-014` | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.1` | Boilerplate docs adopted; `FR-*` remains canonical. |
@@ -34,4 +34,3 @@ Question ↔ Decision ↔ Requirement ↔ Gate/Test ↔ Milestone/Track/Phase/Sl
 ## Gaps
 
 - Some target PRD/HLD features have gates but no code/tests yet.
-- ADR-003 concurrency design and current global mutex implementation need a follow-up decision or ADR update path (`Q-002`).

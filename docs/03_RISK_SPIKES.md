@@ -16,7 +16,7 @@
 - Owner: maintainers
 - Time-box: 1 day
 - Start / End: not scheduled
-- Status: open
+- Status: deferred
 
 **Experiment**
 
@@ -26,12 +26,15 @@ ADR-003 is required now or should be superseded/deferred.
 
 **Result**
 
-Pending.
+`ADR-005` accepts current global Git/store serialization for Phase-1. The spike
+is deferred until measured write volume or contention suggests that
+service-level concurrency is needed.
 
 **Decision / Next Step**
 
-- Decision: pending `Q-002`.
-- Follow-up: either implementation slice under `CORE` or a superseding ADR.
+- Decision: `ADR-005`.
+- Follow-up: before high write volume, measure concurrent admin write behavior
+  and either implement `ADR-003` fully or replace it with a new scale decision.
 
 ---
 

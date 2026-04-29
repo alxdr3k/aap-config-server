@@ -38,9 +38,9 @@ func isNonFastForwardPush(err error) bool {
 }
 
 const (
-	maxPushRetries  = 3
-	committerName   = "aap-config-server"
-	committerEmail  = "config-server@aap.internal"
+	maxPushRetries = 3
+	committerName  = "aap-config-server"
+	committerEmail = "config-server@aap.internal"
 )
 
 // afterPullHook is a test-only hook invoked inside CommitAndPush /
@@ -94,7 +94,8 @@ type GitRepo interface {
 
 // Repo is a go-git backed GitRepo implementation.
 // A global mutex serialises all git operations to prevent concurrent push
-// conflicts (Phase-1 simplification; see ADR-003 for the full design).
+// conflicts (Phase-1 behavior accepted by ADR-005; see ADR-003 for the target
+// service-level design).
 type Repo struct {
 	mu        sync.Mutex
 	repo      *gogit.Repository

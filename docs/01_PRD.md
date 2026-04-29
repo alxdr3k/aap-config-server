@@ -639,6 +639,8 @@ POST /api/v1/admin/changes
 다른 서비스 간 병렬 처리 시 `git push` rejected가 발생할 수 있으나, 파일이 다르므로 **pull-rebase로 항상 자동 해결**된다 (최대 3회 재시도 후 `503`).
 
 > 상세 설계: [ADR-003: 동시 변경 처리 — 서비스별 Mutex](./adr/003-concurrent-change-per-service-mutex.md)
+> Phase-1 current implementation serializes Git/store writes globally; see
+> [ADR-005: Phase-1 global Git serialization](./adr/005-phase-1-global-git-serialization.md).
 
 ### 4.5 FR-5: 설정/시크릿 일괄 삭제 Admin API `[FR-5]`
 

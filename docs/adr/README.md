@@ -27,6 +27,7 @@
 | [002](./002-central-config-agent-vs-sidecar.md) | Central Config Agent vs Sidecar | accepted | 2026-03-12 |
 | [003](./003-concurrent-change-per-service-mutex.md) | Concurrent change handling: service-level mutex | accepted | 2026-03-12 |
 | [004](./004-secret-storage-sealedsecret-volume-mount.md) | Secret storage: SealedSecret + Volume Mount | accepted | 2026-03-12 |
+| [005](./005-phase-1-global-git-serialization.md) | Phase-1 global Git serialization | accepted | 2026-04-29 |
 
 ## Naming note
 

@@ -13,6 +13,10 @@ Status: active.
 7. HTTP handlers serve reads from memory and admin writes through the store.
 8. A background poll loop calls `RefreshFromRepo` at `GIT_POLL_INTERVAL`.
 
+Admin writes, deletes, background refreshes, and Git worktree mutations are
+serialized globally in Phase-1. `ADR-005` records this as the accepted current
+implementation; `ADR-003` remains the future service-level mutex target design.
+
 ## Implemented API surface
 
 - `GET /healthz`
