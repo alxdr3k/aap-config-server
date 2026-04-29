@@ -74,6 +74,9 @@ snapshot for serving reads.
   admin endpoints and update only the in-memory registry cache. Events must
   carry RFC3339 `updated_at`; stale retries are ignored, including older
   upserts that arrive after a newer delete.
+- `/api/v1/status` reports App Registry cache/load state under
+  `app_registry`; registry-only degradation appears in `degraded_components`
+  but does not make `/readyz` fail.
 - No Prometheus metrics endpoint is currently implemented.
 - Operational state is exposed through `/readyz` and `/api/v1/status`.
 
@@ -135,6 +138,22 @@ Action:
 3. For reload failures, fix the offending config repo state and force reload.
 4. For apply failures, fix K8s access/controller issues, then re-apply the
    committed SealedSecret manifest or retry the admin write.
+
+### App Registry degradation
+
+Symptom:
+
+- `/readyz` returns 200.
+- `/api/v1/status` returns `is_degraded: true`,
+  `degraded_components: ["app_registry"]`, and
+  `app_registry.last_load_error`.
+
+Action:
+
+1. Confirm `CONSOLE_API_URL` and network access to AAP Console.
+2. Check Config Server logs for `app registry bootstrap failed`.
+3. Let Console webhook retries repopulate changed app records, or restart
+   Config Server after Console API is reachable to reload the full registry.
 
 ### Auth failure
 

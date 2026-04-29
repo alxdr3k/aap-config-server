@@ -1,6 +1,7 @@
 package registry_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -153,5 +154,35 @@ func TestCache_RejectsInvalidEventTimestamp(t *testing.T) {
 	}, time.Now())
 	if err == nil {
 		t.Fatal("expected invalid updated_at error")
+	}
+}
+
+func TestCache_StatusStartsNotConfigured(t *testing.T) {
+	status := registry.NewCache().Status()
+	if status.State != "not_configured" || status.IsDegraded {
+		t.Fatalf("status: %+v", status)
+	}
+}
+
+func TestCache_WebhookUpdateDoesNotClearLoadFailure(t *testing.T) {
+	cache := registry.NewCache()
+	cache.MarkLoadFailed(errors.New("console unavailable"))
+	updatedAt := time.Date(2026, 4, 29, 10, 0, 0, 0, time.UTC)
+
+	if _, changed, err := cache.Upsert(registry.App{
+		Org:       "myorg",
+		Project:   "ai",
+		Service:   "litellm",
+		UpdatedAt: "2026-04-29T10:00:00Z",
+	}, updatedAt); err != nil || !changed {
+		t.Fatalf("upsert after load failure: changed=%v err=%v", changed, err)
+	}
+
+	status := cache.Status()
+	if status.State != "degraded" || !status.IsDegraded || status.LastLoadError == "" {
+		t.Fatalf("load failure should remain visible after webhook update: %+v", status)
+	}
+	if status.AppsLoaded != 1 || !status.LastUpdatedAt.Equal(updatedAt) {
+		t.Fatalf("cache update state not recorded: %+v", status)
 	}
 }

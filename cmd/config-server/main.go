@@ -96,6 +96,7 @@ func main() {
 
 func bootstrapAppRegistry(ctx context.Context, cfg *config.ServerConfig, cache *registry.Cache) registry.BootstrapResult {
 	if cfg.ConsoleAPIURL == "" {
+		cache.MarkLoadSkipped()
 		slog.Info("app registry bootstrap skipped: CONSOLE_API_URL not set")
 		return registry.BootstrapResult{Skipped: true}
 	}

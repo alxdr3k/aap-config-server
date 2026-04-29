@@ -26,7 +26,7 @@ Status: active.
 | `internal/store/` | In-memory service snapshot, Git-backed reload, config/env/secret apply operations, delete operations, degraded status. |
 | `internal/parser/` | YAML structs/parsers/validation for config, env vars, secrets, and defaults. |
 | `internal/secret/` | Secret runtime boundary types, mounted K8s Secret file reader/watch support, deterministic SealedSecret YAML generation, controller public-key encryption, K8s SealedSecret apply adapter, and slog-backed non-sensitive audit logging. |
-| `internal/registry/` | AAP Console App Registry HTTP client, in-memory cache, startup bootstrap retry/backoff logic, and cache update semantics. |
+| `internal/registry/` | AAP Console App Registry HTTP client, in-memory cache, startup bootstrap retry/backoff logic, cache update semantics, and status state. |
 
 ## Data / Persistence
 
@@ -46,11 +46,11 @@ Status: active.
 | `internal/registry/*_test.go` | Console App Registry client decoding, cache replacement/update semantics, and startup bootstrap retry behavior. |
 | `internal/store/*_test.go` | Snapshot reload, config/env/secret apply, secret audit logging, delete, degraded behavior, concurrency. |
 | `internal/gitops/*_test.go` | Local Git clone/pull/commit/delete/snapshot behavior. |
-| `internal/handler/*_test.go` | HTTP routes, auth, admin write response shape, App Registry webhook auth/cache updates, secret write input cleanup, resolved env var secret reads, secret audit logging, reload/degraded status. |
+| `internal/handler/*_test.go` | HTTP routes, auth, admin write response shape, App Registry webhook auth/cache updates, App Registry status reporting, secret write input cleanup, resolved env var secret reads, secret audit logging, reload/degraded status. |
 
 ## Needs audit
 
 | Path | Reason |
 |---|---|
-| `docs/02_HLD.md` | Includes planned packages such as `seal` and `agent`, plus registry readiness/status flows that are not implemented. |
+| `docs/02_HLD.md` | Includes planned packages such as `seal` and `agent`; current implementation boundaries are summarized in `README.md` and `docs/current/*`. |
 | `docs/01_PRD.md` | Phase checklist predates current implementation status; use `docs/04_IMPLEMENTATION_PLAN.md` as status ledger. |

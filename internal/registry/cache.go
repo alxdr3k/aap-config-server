@@ -7,20 +7,31 @@ import (
 	"time"
 )
 
+const (
+	cacheStatusNotConfigured = "not_configured"
+	cacheStatusOK            = "ok"
+	cacheStatusDegraded      = "degraded"
+)
+
 // Cache stores the last Console App Registry snapshot in memory.
 type Cache struct {
 	mu          sync.RWMutex
 	apps        map[Key]App
 	lastEventAt map[Key]time.Time
 	lastLoaded  time.Time
+	lastUpdated time.Time
 	lastLoadErr error
+	status      string
 }
 
 // Status reports cache load state without exposing mutable cache internals.
 type Status struct {
 	AppsLoaded    int
 	LastLoadedAt  time.Time
+	LastUpdatedAt time.Time
 	LastLoadError string
+	State         string
+	IsDegraded    bool
 }
 
 // NewCache creates an empty registry cache.
@@ -28,6 +39,7 @@ func NewCache() *Cache {
 	return &Cache{
 		apps:        map[Key]App{},
 		lastEventAt: map[Key]time.Time{},
+		status:      cacheStatusNotConfigured,
 	}
 }
 
@@ -57,7 +69,9 @@ func (c *Cache) Replace(apps []App, loadedAt time.Time) {
 		rememberEventTime(c.lastEventAt, key, eventAt)
 	}
 	c.lastLoaded = loadedAt.UTC()
+	c.lastUpdated = loadedAt.UTC()
 	c.lastLoadErr = nil
+	c.status = cacheStatusOK
 }
 
 // Upsert inserts or replaces one app registration. If app.UpdatedAt is set
@@ -96,8 +110,7 @@ func (c *Cache) Upsert(app App, updatedAt time.Time) (App, bool, error) {
 	}
 	c.apps[key] = normalized
 	rememberEventTime(c.lastEventAt, key, eventAt)
-	c.lastLoaded = updatedAt.UTC()
-	c.lastLoadErr = nil
+	c.markCacheUpdatedLocked(updatedAt)
 	return normalized, true, nil
 }
 
@@ -135,9 +148,20 @@ func (c *Cache) Delete(app App, updatedAt time.Time) (Key, bool, error) {
 	}
 	delete(c.apps, key)
 	rememberEventTime(c.lastEventAt, key, eventAt)
-	c.lastLoaded = updatedAt.UTC()
-	c.lastLoadErr = nil
+	c.markCacheUpdatedLocked(updatedAt)
 	return key, existed, nil
+}
+
+// MarkLoadSkipped records that startup App Registry loading was not configured.
+func (c *Cache) MarkLoadSkipped() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureMapsLocked()
+	c.status = cacheStatusNotConfigured
+	c.lastLoadErr = nil
 }
 
 // MarkLoadFailed records a failed load while preserving the previous snapshot.
@@ -147,6 +171,8 @@ func (c *Cache) MarkLoadFailed(err error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.ensureMapsLocked()
+	c.status = cacheStatusDegraded
 	c.lastLoadErr = err
 }
 
@@ -181,13 +207,27 @@ func (c *Cache) Status() Status {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	status := Status{
-		AppsLoaded:   len(c.apps),
-		LastLoadedAt: c.lastLoaded,
+		AppsLoaded:    len(c.apps),
+		LastLoadedAt:  c.lastLoaded,
+		LastUpdatedAt: c.lastUpdated,
+		State:         c.status,
+	}
+	if status.State == "" {
+		status.State = cacheStatusNotConfigured
 	}
 	if c.lastLoadErr != nil {
 		status.LastLoadError = c.lastLoadErr.Error()
 	}
+	status.IsDegraded = status.State == cacheStatusDegraded
 	return status
+}
+
+func (c *Cache) markCacheUpdatedLocked(updatedAt time.Time) {
+	c.lastUpdated = updatedAt.UTC()
+	if c.status != cacheStatusDegraded {
+		c.lastLoadErr = nil
+		c.status = cacheStatusOK
+	}
 }
 
 func (c *Cache) ensureMapsLocked() {

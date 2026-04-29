@@ -13,12 +13,12 @@ from an atomically swapped in-memory snapshot.
 
 ## Current roadmap position
 
-- current milestone: `P1-M1` Console App Registry integration next
-- active tracks: `REGISTRY`
-- active phase: `REGISTRY-1A`
+- current milestone: `P1-M2` Config Agent rollout path next
+- active tracks: `AGENT`
+- active phase: `AGENT-1A`
 - active slice: none
-- last accepted gate: `AC-020`
-- next gate: `P1-M1` / `AC-021`
+- last accepted gate: `AC-021`
+- next gate: `P1-M2` / `AC-030`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
 
 ## Implemented
@@ -54,10 +54,12 @@ from an atomically swapped in-memory snapshot.
   exponential backoff and graceful empty-cache startup on final failure.
 - Auth-gated App Registry webhook endpoint for Console-driven cache upsert and
   delete updates.
+- App Registry cache/load state in `/api/v1/status`, including degraded
+  component reporting for registry-only Console load failures without failing
+  `/readyz`.
 
 ## Planned
 
-- App Registry readiness/status integration.
 - Config Agent rollout path.
 - Watch/history/revert endpoints, config inheritance, response optimizations,
   metrics, schema validation, rate limiting, and integration/load validation.
@@ -70,7 +72,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Continue `REGISTRY-1A` with `REGISTRY-1A.3` App Registry readiness/status integration.
+1. Review `AGENT-1A.1` readiness and dependencies before starting Config Agent work.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -83,8 +85,10 @@ from an atomically swapped in-memory snapshot.
 
 - Commands are listed in `docs/current/TESTING.md`.
 - Acceptance gates are listed in `docs/06_ACCEPTANCE_TESTS.md`.
-- `AC-020` is passing for the secret write/resolve path; subsequent dev-cycle
-  PRs use the repo `check`, `lint`, `scan`, and `test` checks before merge.
+- `AC-020` is passing for the secret write/resolve path, and `AC-021` is
+  passing for App Registry bootstrap/webhook/status integration. Subsequent
+  dev-cycle PRs use the repo `check`, `lint`, `scan`, and `test` checks before
+  merge.
 - Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`, `make test-race`, and `make build` pass in this workspace.
 

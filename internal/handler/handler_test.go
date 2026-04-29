@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aap/config-server/internal/apperror"
 	"github.com/aap/config-server/internal/handler"
@@ -303,6 +304,19 @@ func decodeJSON(t *testing.T, resp *http.Response, v any) {
 	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
+}
+
+func jsonArrayContains(values any, want string) bool {
+	list, ok := values.([]any)
+	if !ok {
+		return false
+	}
+	for _, value := range list {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // --- tests ---
@@ -1082,6 +1096,94 @@ func TestStatus_Enriched(t *testing.T) {
 	if body["services_loaded"] == nil {
 		t.Error("services_loaded missing from /api/v1/status response")
 	}
+	appRegistry, ok := body["app_registry"].(map[string]any)
+	if !ok {
+		t.Fatalf("app_registry missing from /api/v1/status response: %#v", body["app_registry"])
+	}
+	if appRegistry["status"] != "not_configured" {
+		t.Errorf("app_registry.status: want not_configured, got %v", appRegistry["status"])
+	}
+}
+
+func TestStatus_IncludesAppRegistryState(t *testing.T) {
+	st := newFakeStore()
+	cache := registry.NewCache()
+	loadedAt := time.Date(2026, 4, 29, 10, 0, 0, 0, time.UTC)
+	cache.Replace([]registry.App{{
+		Org:       "myorg",
+		Project:   "ai",
+		Service:   "litellm",
+		UpdatedAt: "2026-04-29T09:00:00Z",
+	}}, loadedAt)
+	srv := newServerWithAPIKey(t, st, "", handler.WithAppRegistry(cache))
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/status")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	if body["status"] != "ok" {
+		t.Fatalf("status: want ok, got %v", body["status"])
+	}
+	appRegistry, ok := body["app_registry"].(map[string]any)
+	if !ok {
+		t.Fatalf("app_registry missing from /api/v1/status response: %#v", body["app_registry"])
+	}
+	if appRegistry["status"] != "ok" {
+		t.Errorf("app_registry.status: want ok, got %v", appRegistry["status"])
+	}
+	if appRegistry["apps_loaded"] != float64(1) {
+		t.Errorf("app_registry.apps_loaded: want 1, got %v", appRegistry["apps_loaded"])
+	}
+	if appRegistry["last_loaded_at"] != loadedAt.Format(time.RFC3339) {
+		t.Errorf("app_registry.last_loaded_at: want %s, got %v",
+			loadedAt.Format(time.RFC3339), appRegistry["last_loaded_at"])
+	}
+	if appRegistry["last_updated_at"] != loadedAt.Format(time.RFC3339) {
+		t.Errorf("app_registry.last_updated_at: want %s, got %v",
+			loadedAt.Format(time.RFC3339), appRegistry["last_updated_at"])
+	}
+}
+
+func TestStatus_AppRegistryFailureIsDegradedButReady(t *testing.T) {
+	st := newFakeStore()
+	cache := registry.NewCache()
+	cache.MarkLoadFailed(errors.New("console unavailable"))
+	srv := newServerWithAPIKey(t, st, "", handler.WithAppRegistry(cache))
+	defer srv.Close()
+
+	readyResp := get(t, srv, "/readyz")
+	if readyResp.StatusCode != http.StatusOK {
+		t.Fatalf("readyz should stay ready for registry-only degradation, got %d", readyResp.StatusCode)
+	}
+
+	resp := get(t, srv, "/api/v1/status")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	if body["status"] != "degraded" {
+		t.Errorf("status: want degraded, got %v", body["status"])
+	}
+	if body["is_degraded"] != true {
+		t.Errorf("is_degraded: want true, got %v", body["is_degraded"])
+	}
+	if !jsonArrayContains(body["degraded_components"], "app_registry") {
+		t.Errorf("degraded_components missing app_registry: %v", body["degraded_components"])
+	}
+	appRegistry, ok := body["app_registry"].(map[string]any)
+	if !ok {
+		t.Fatalf("app_registry missing from /api/v1/status response: %#v", body["app_registry"])
+	}
+	if appRegistry["status"] != "degraded" {
+		t.Errorf("app_registry.status: want degraded, got %v", appRegistry["status"])
+	}
+	if !strings.Contains(appRegistry["last_load_error"].(string), "console unavailable") {
+		t.Errorf("app_registry.last_load_error: got %v", appRegistry["last_load_error"])
+	}
 }
 
 func TestStatus_Degraded(t *testing.T) {
@@ -1101,6 +1203,9 @@ func TestStatus_Degraded(t *testing.T) {
 	}
 	if body["is_degraded"] != true {
 		t.Errorf("is_degraded: want true, got %v", body["is_degraded"])
+	}
+	if !jsonArrayContains(body["degraded_components"], "store") {
+		t.Errorf("degraded_components missing store: %v", body["degraded_components"])
 	}
 }
 
