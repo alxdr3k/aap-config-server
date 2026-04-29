@@ -59,6 +59,9 @@ snapshot.
 - SealedSecret generation sorts data keys and emits stable YAML field order;
   path identity and K8s target segments are validated before plaintext values
   are passed to the injected encryptor.
+- Generated SealedSecret manifest paths use
+  `sealed-secrets/{namespace}/{name}.yaml` under the service directory to avoid
+  cross-namespace filename collisions.
 - Invalid YAML or missing required fields fail reload closed.
 
 ## Lifecycle states

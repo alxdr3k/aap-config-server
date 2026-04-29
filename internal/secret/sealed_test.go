@@ -40,7 +40,7 @@ func TestDeterministicSealer_SealProducesStableYAML(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	if manifest.Path != "configs/orgs/myorg/projects/ai/services/litellm/sealed-secrets/litellm-secrets.yaml" {
+	if manifest.Path != "configs/orgs/myorg/projects/ai/services/litellm/sealed-secrets/ai-platform/litellm-secrets.yaml" {
 		t.Fatalf("manifest path: got %q", manifest.Path)
 	}
 	if !reflect.DeepEqual(enc.keys, []string{"database-url", "master-key"}) {
@@ -86,6 +86,30 @@ func TestDeterministicSealer_ClusterWideAnnotation(t *testing.T) {
 	}
 	if !strings.Contains(string(manifest.YAML), "sealedsecrets.bitnami.com/cluster-wide: \"true\"") {
 		t.Fatalf("cluster-wide annotation missing:\n%s", string(manifest.YAML))
+	}
+}
+
+func TestDeterministicSealer_PathIncludesNamespace(t *testing.T) {
+	sealer, err := secret.NewDeterministicSealer(secret.SealedSecretScopeStrict, &fakeEncryptor{})
+	if err != nil {
+		t.Fatalf("NewDeterministicSealer: %v", err)
+	}
+
+	req := validSealRequest()
+	req.Namespace = "tenant-a"
+	first, err := sealer.Seal(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Seal first: %v", err)
+	}
+
+	req.Namespace = "tenant-b"
+	second, err := sealer.Seal(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Seal second: %v", err)
+	}
+
+	if first.Path == second.Path {
+		t.Fatalf("paths should differ by namespace, got %q", first.Path)
 	}
 }
 

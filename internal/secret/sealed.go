@@ -185,7 +185,7 @@ func scopeAnnotations(scope string) []*yaml.Node {
 func sealedSecretPath(req SealRequest) string {
 	return filepath.ToSlash(filepath.Join(
 		"configs", "orgs", req.Org, "projects", req.Project, "services", req.Service,
-		"sealed-secrets", req.Name+".yaml",
+		"sealed-secrets", req.Namespace, req.Name+".yaml",
 	))
 }
 
