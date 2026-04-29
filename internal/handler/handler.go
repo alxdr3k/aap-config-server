@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,16 +39,33 @@ type Readiness interface {
 
 // Handler groups all HTTP handlers together.
 type Handler struct {
-	store     ConfigStore
-	readiness Readiness
-	apiKey    string
+	store      ConfigStore
+	readiness  Readiness
+	apiKey     string
+	secretDeps secret.Dependencies
+}
+
+// Option customizes Handler dependencies.
+type Option func(*Handler)
+
+// WithSecretDependencies wires secret read dependencies into handlers that
+// resolve secret-backed env vars.
+func WithSecretDependencies(deps secret.Dependencies) Option {
+	return func(h *Handler) {
+		h.secretDeps = deps.WithDefaults()
+	}
 }
 
 // New creates a Handler. If apiKey is empty, authenticated endpoints are left
 // open — this is intended only for tests; production wiring must pass a key
 // (enforced by config.Validate).
-func New(st ConfigStore, ready Readiness, apiKey string) *Handler {
-	return &Handler{store: st, readiness: ready, apiKey: apiKey}
+func New(st ConfigStore, ready Readiness, apiKey string, opts ...Option) *Handler {
+	h := &Handler{store: st, readiness: ready, apiKey: apiKey}
+	for _, opt := range opts {
+		opt(h)
+	}
+	h.secretDeps = h.secretDeps.WithDefaults()
+	return h
 }
 
 // Routes registers all routes on the given mux.
@@ -219,6 +237,18 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
 	project := r.PathValue("project")
 	service := r.PathValue("service")
+	resolveSecrets, err := parseBoolQuery(r, "resolve_secrets")
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	if resolveSecrets {
+		if !h.authenticate(w, r) {
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Del("ETag")
+	}
 
 	d, err := h.store.GetConfig(r.Context(), org, project, service)
 	if err != nil {
@@ -229,11 +259,37 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 	meta := configMeta(org, project, service, h.store.HeadVersion(), d.UpdatedAt)
 
 	if d.EnvVars == nil {
+		if resolveSecrets {
+			respondJSON(w, http.StatusOK, map[string]any{
+				"metadata": meta,
+				"env_vars": map[string]any{
+					"plain":   map[string]string{},
+					"secrets": map[string]string{},
+				},
+			})
+			return
+		}
 		respondJSON(w, http.StatusOK, map[string]any{
 			"metadata": meta,
 			"env_vars": map[string]any{
 				"plain":       map[string]string{},
 				"secret_refs": map[string]string{},
+			},
+		})
+		return
+	}
+
+	if resolveSecrets {
+		resolved, err := h.resolveEnvSecrets(r.Context(), d)
+		if err != nil {
+			respondError(w, err)
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]any{
+			"metadata": meta,
+			"env_vars": map[string]any{
+				"plain":   nullToEmpty(d.EnvVars.EnvVars.Plain),
+				"secrets": resolved,
 			},
 		})
 		return
@@ -246,6 +302,49 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 			"secret_refs": nullToEmpty(d.EnvVars.EnvVars.SecretRefs),
 		},
 	})
+}
+
+func (h *Handler) resolveEnvSecrets(ctx context.Context, d *store.ServiceData) (map[string]string, error) {
+	refs := d.EnvVars.EnvVars.SecretRefs
+	if len(refs) == 0 {
+		return map[string]string{}, nil
+	}
+	if h.secretDeps.VolumeReader == nil {
+		return nil, apperror.New(apperror.CodeInternal, "secret volume reader is not configured")
+	}
+	if d.Secrets == nil {
+		return nil, apperror.New(apperror.CodeInternal, "secret metadata is required to resolve env var secret_refs")
+	}
+
+	byID := make(map[string]parser.SecretEntry, len(d.Secrets.Secrets))
+	for _, entry := range d.Secrets.Secrets {
+		byID[entry.ID] = entry
+	}
+
+	resolved := make(map[string]string, len(refs))
+	for envName, secretID := range refs {
+		entry, ok := byID[secretID]
+		if !ok {
+			return nil, apperror.New(apperror.CodeInternal,
+				"env var secret_ref references unknown secret metadata id")
+		}
+		value, err := h.secretDeps.VolumeReader.Read(ctx, secret.Reference{
+			ID:        entry.ID,
+			Namespace: entry.K8sSecret.Namespace,
+			Name:      entry.K8sSecret.Name,
+			Key:       entry.K8sSecret.Key,
+		})
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, "read mounted secret value", err)
+		}
+		bytes := value.Bytes()
+		resolved[envName] = string(bytes)
+		value.Destroy()
+		for i := range bytes {
+			bytes[i] = 0
+		}
+	}
+	return resolved, nil
 }
 
 func (h *Handler) getSecrets(w http.ResponseWriter, r *http.Request) {
@@ -434,16 +533,22 @@ func (h *Handler) deleteChanges(w http.ResponseWriter, r *http.Request) {
 // production startup requires a key (or an explicit dev opt-in flag).
 func (h *Handler) requireKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.apiKey == "" {
-			next(w, r)
-			return
-		}
-		if !authorized(r, h.apiKey) {
-			respondErrorCode(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API key")
+		if !h.authenticate(w, r) {
 			return
 		}
 		next(w, r)
 	}
+}
+
+func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) bool {
+	if h.apiKey == "" {
+		return true
+	}
+	if !authorized(r, h.apiKey) {
+		respondErrorCode(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API key")
+		return false
+	}
+	return true
 }
 
 // authorized reports whether r presents a valid credential matching key. The
@@ -484,6 +589,18 @@ func configMeta(org, project, service, version string, updatedAt time.Time) map[
 		"version":    version,
 		"updated_at": updatedAt.Format(time.RFC3339),
 	}
+}
+
+func parseBoolQuery(r *http.Request, name string) (bool, error) {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, errors.New(name + " must be a boolean")
+	}
+	return value, nil
 }
 
 func respondJSON(w http.ResponseWriter, code int, v any) {

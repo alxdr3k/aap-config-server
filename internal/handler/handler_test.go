@@ -13,6 +13,7 @@ import (
 	"github.com/aap/config-server/internal/apperror"
 	"github.com/aap/config-server/internal/handler"
 	"github.com/aap/config-server/internal/parser"
+	"github.com/aap/config-server/internal/secret"
 	"github.com/aap/config-server/internal/store"
 )
 
@@ -35,6 +36,24 @@ type fakeStore struct {
 	reloadCalls            int
 	refreshCalls           int
 	lastChange             *store.ChangeRequest
+}
+
+type fakeVolumeReader struct {
+	values   map[secret.Reference]string
+	requests []secret.Reference
+	err      error
+}
+
+func (f *fakeVolumeReader) Read(_ context.Context, ref secret.Reference) (secret.Value, error) {
+	f.requests = append(f.requests, ref)
+	if f.err != nil {
+		return secret.Value{}, f.err
+	}
+	value, ok := f.values[ref]
+	if !ok {
+		return secret.Value{}, errors.New("secret value not found")
+	}
+	return secret.NewValue([]byte(value)), nil
 }
 
 func newFakeStore() *fakeStore {
@@ -173,9 +192,13 @@ func (neverReady) IsReady() bool { return false }
 // --- test helpers ---
 
 func newServer(t *testing.T, st handler.ConfigStore) *httptest.Server {
+	return newServerWithAPIKey(t, st, "")
+}
+
+func newServerWithAPIKey(t *testing.T, st handler.ConfigStore, apiKey string, opts ...handler.Option) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	h := handler.New(st, alwaysReady{}, "")
+	h := handler.New(st, alwaysReady{}, apiKey, opts...)
 	h.Routes(mux)
 	return httptest.NewServer(mux)
 }
@@ -183,6 +206,20 @@ func newServer(t *testing.T, st handler.ConfigStore) *httptest.Server {
 func get(t *testing.T, srv *httptest.Server, path string) *http.Response {
 	t.Helper()
 	resp, err := http.Get(srv.URL + path)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	return resp
+}
+
+func getWithBearer(t *testing.T, srv *httptest.Server, path, token string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+	if err != nil {
+		t.Fatalf("new GET %s: %v", path, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", path, err)
 	}
@@ -330,6 +367,98 @@ func TestGetEnvVars_Found(t *testing.T) {
 	plain := envVars["plain"].(map[string]any)
 	if plain["LOG_LEVEL"] != "INFO" {
 		t.Errorf("LOG_LEVEL: want INFO, got %v", plain["LOG_LEVEL"])
+	}
+}
+
+func TestGetEnvVars_ResolveSecrets(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"LOG_LEVEL": "INFO"},
+				SecretRefs: map[string]string{"API_KEY": "litellm-api-key"},
+			},
+		},
+		Secrets: &parser.SecretsConfig{
+			Secrets: []parser.SecretEntry{
+				{
+					ID: "litellm-api-key",
+					K8sSecret: parser.K8sSecret{
+						Namespace: "ai-platform",
+						Name:      "litellm-secrets",
+						Key:       "api-key",
+					},
+				},
+			},
+		},
+	}
+	ref := secret.Reference{
+		ID:        "litellm-api-key",
+		Namespace: "ai-platform",
+		Name:      "litellm-secrets",
+		Key:       "api-key",
+	}
+	reader := &fakeVolumeReader{values: map[secret.Reference]string{ref: "top-secret"}}
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithSecretDependencies(secret.Dependencies{
+		VolumeReader: reader,
+	}))
+	defer srv.Close()
+
+	resp := getWithBearer(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true", "secret-key")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control: got %q", got)
+	}
+	if got := resp.Header.Get("ETag"); got != "" {
+		t.Fatalf("ETag should be omitted for resolved secrets, got %q", got)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	if plain["LOG_LEVEL"] != "INFO" {
+		t.Errorf("LOG_LEVEL: want INFO, got %v", plain["LOG_LEVEL"])
+	}
+	secrets := envVars["secrets"].(map[string]any)
+	if secrets["API_KEY"] != "top-secret" {
+		t.Fatalf("resolved API_KEY: got %v", secrets["API_KEY"])
+	}
+	if _, ok := envVars["secret_refs"]; ok {
+		t.Fatal("resolve_secrets=true response must not include secret_refs")
+	}
+	if len(reader.requests) != 1 || reader.requests[0] != ref {
+		t.Fatalf("reader requests: got %+v", reader.requests)
+	}
+}
+
+func TestGetEnvVars_ResolveSecretsRequiresAuth(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			SecretRefs: map[string]string{"API_KEY": "litellm-api-key"},
+		}},
+	}
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithSecretDependencies(secret.Dependencies{
+		VolumeReader: &fakeVolumeReader{values: map[secret.Reference]string{}},
+	}))
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetEnvVars_ResolveSecretsRejectsInvalidQuery(t *testing.T) {
+	srv := newServer(t, newFakeStore())
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=maybe")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
 	}
 }
 
