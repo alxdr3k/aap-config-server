@@ -113,7 +113,7 @@ Gate status:
 | `EXT-1C.2` | `P1-M3` | `EXT` | `EXT-1C` | Implement deep merge with scalar override, recursive map merge, array replacement, and null deletion. | `EXT-1C.1` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
 | `EXT-1C.3` | `P1-M3` | `EXT` | `EXT-1C` | Apply `inherit=true/false` query semantics to config and env var read paths. | `EXT-1C.2`, `CORE-1A.4` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
 | `EXT-1C.4` | `P1-M3` | `EXT` | `EXT-1C` | Preserve service-level admin write behavior while inherited reads are enabled, with docs and regression tests. | `EXT-1C.3`, `CORE-1A.5` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
-| `EXT-1D.1` | `P1-M3` | `EXT` | `EXT-1D` | Add ETag and `If-None-Match` support for non-secret config/env responses. | `CORE-1A.4`, `SECRET-1A.6` | `AC-041` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1D.1` | `P1-M3` | `EXT` | `EXT-1D` | Add ETag and `If-None-Match` support for non-secret config/env responses. | `CORE-1A.4`, `SECRET-1A.7` | `AC-041` | `defined` | `planned` | `docs/01_PRD.md` |  |
 | `EXT-1D.2` | `P1-M3` | `EXT` | `EXT-1D` | Add gzip response compression for eligible read APIs. | `EXT-1D.1` | `AC-041` | `defined` | `planned` | `docs/01_PRD.md` |  |
 | `EXT-1D.3` | `P1-M3` | `EXT` | `EXT-1D` | Implement batch config/env read API for multiple services. | `EXT-1C.3`, `CORE-1A.4` | `AC-041` | `defined` | `planned` | `docs/01_PRD.md` |  |
 | `EXT-1D.4` | `P1-M3` | `EXT` | `EXT-1D` | Add Prometheus metrics for reloads, Git operations, API latency, watch waits, and degraded state. | `OPS-1A.2`, `EXT-1A.3` | `AC-041` | `defined` | `planned` | `docs/01_PRD.md` |  |
