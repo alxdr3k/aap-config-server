@@ -8,8 +8,9 @@ For normal implementation tasks in this repo, read:
 2. `docs/04_IMPLEMENTATION_PLAN.md` active milestone / track / phase / slice
 3. `docs/current/CODE_MAP.md`
 4. `docs/current/TESTING.md`
-5. task-relevant source files
-6. relevant ADR only if changing architecture or product scope
+5. `docs/11_CI_CD.md` if changing CI/CD, release, deployment pipeline, or required checks
+6. task-relevant source files
+7. relevant ADR only if changing architecture or product scope
 
 Do not read archived design docs by default.
 
@@ -22,6 +23,7 @@ Do not read archived design docs by default.
 - `docs/01_PRD.md` owns product scope.
 - `docs/02_HLD.md` owns intended high-level design.
 - `docs/current/` owns thin implementation-state navigation docs.
+- `docs/11_CI_CD.md` owns stack-neutral CI/CD guidance.
 - `docs/07_QUESTIONS_REGISTER.md` owns open questions.
 - `docs/08_DECISION_REGISTER.md` owns lightweight decisions.
 - `docs/adr/` owns major architecture decisions.
@@ -42,6 +44,8 @@ Do not read archived design docs by default.
   file under `docs/generated/`.
 - If test/lint/typecheck/eval commands change, update `docs/current/TESTING.md`.
 - If operational/env/deployment behavior changes, update `docs/current/OPERATIONS.md` or `docs/05_RUNBOOK.md`.
+- If CI/CD workflow, required check, branch protection, release, or deployment pipeline behavior changes,
+  update `docs/11_CI_CD.md`, `docs/current/TESTING.md`, `docs/current/OPERATIONS.md`, or `docs/05_RUNBOOK.md` as applicable.
 - If product scope changes, update `docs/01_PRD.md`.
 - If architecture direction changes, create or supersede an ADR.
 - Do not rewrite archived design notes for implementation changes.

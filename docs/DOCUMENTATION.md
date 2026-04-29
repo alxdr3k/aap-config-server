@@ -10,7 +10,7 @@ from implementation-stage current state.
 1. Code and tests once implementation exists
 2. Roadmap / status ledger in `docs/04_IMPLEMENTATION_PLAN.md`
 3. Thin current-state docs under `docs/context/` and `docs/current/`
-4. PRD/HLD/spec/runbook/acceptance docs
+4. PRD/HLD/spec/runbook/acceptance/CI/CD docs
 5. ADRs and Decision Register
 6. Generated docs under `docs/generated/` as derived references
 7. Discovery and archived design notes
@@ -22,6 +22,9 @@ from implementation-stage current state.
   milestone, track, phase, slice, gate, status, evidence, and next work.
 - `docs/context/current-state.md` only summarizes the active roadmap position.
 - `docs/current/` describes implemented state navigation, not future roadmap inventory.
+- `docs/11_CI_CD.md` describes stack-neutral CI/CD guidance. Actual commands
+  live in `docs/current/TESTING.md`; deployment ownership and runbooks live in
+  `docs/current/OPERATIONS.md` and `docs/05_RUNBOOK.md`.
 - Accepted ADRs are not edited to reflect new behavior; create a new ADR that supersedes the old one.
 - Discovery notes are not current implementation authority.
 - Archived design notes are not current implementation authority.
@@ -46,6 +49,7 @@ Use this table:
 | Parser/store/data model changes | update `docs/current/DATA_MODEL.md` |
 | Test/lint/typecheck/eval command changes | update `docs/current/TESTING.md` |
 | Operational/env/deployment changes | update `docs/current/OPERATIONS.md` or `docs/05_RUNBOOK.md` |
+| CI/CD workflow, required check, release, or branch protection changes | update `docs/current/TESTING.md`, `docs/current/OPERATIONS.md`, `docs/05_RUNBOOK.md`, `docs/06_ACCEPTANCE_TESTS.md`, and `docs/11_CI_CD.md` as applicable |
 | New open question | add Q row to `docs/07_QUESTIONS_REGISTER.md` |
 | Lightweight accepted decision | add DEC row to `docs/08_DECISION_REGISTER.md` |
 | Major accepted decision | add ADR under `docs/adr/` |
@@ -76,6 +80,24 @@ roadmap language into the taxonomy in `docs/04_IMPLEMENTATION_PLAN.md`:
    and agent instructions.
 8. Preserve source anchors when moving status: repo path, commit, PR, ADR,
    DEC, Q, AC, TEST, or issue ID. If unknown, write `anchor missing`.
+
+## CI/CD migration
+
+When adopting this boilerplate in an existing project, migrate CI/CD knowledge
+without rewriting history or inventing a cleaner process than the one that
+exists.
+
+1. Inventory workflow files, external CI/CD systems, release scripts, deploy
+   platforms, package registries, cron jobs, Makefiles, and manual steps.
+2. Copy real validation commands into `docs/current/TESTING.md`. If a command
+   is unknown, write `Needs audit` instead of guessing.
+3. Record deployment ownership, environments, secrets ownership, release
+   triggers, and rollback boundaries in `docs/current/OPERATIONS.md`.
+4. Move step-by-step deploy, rollback, monitor, and incident procedures into
+   `docs/05_RUNBOOK.md`.
+5. Use `docs/11_CI_CD.md` for guidance and
+   `docs/templates/CI_CD_TEMPLATE.md` as a worksheet when a migration packet or
+   single planning view is useful.
 
 ## Enforcement mechanisms
 

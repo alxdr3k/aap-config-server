@@ -115,6 +115,21 @@ No database or schema migration command is currently defined.
 - `go test -race ./... -timeout 60s`
 - `govulncheck`
 
+## CI / required checks
+
+| Check | Local command | CI workflow / job | Required? | Notes |
+|---|---|---|---|---|
+| lint | `make lint` | `.github/workflows/ci.yml` | yes | Uses `golangci-lint`. |
+| vet | `go vet ./...` | `.github/workflows/ci.yml` | yes | No separate Make target currently defined. |
+| race tests | `make test-race` | `.github/workflows/ci.yml` | yes | Main automated behavior gate. |
+| vuln scan | `govulncheck ./...` | `.github/workflows/ci.yml` | yes | Run via CI. |
+| docs freshness | n/a | `.github/workflows/doc-freshness.yml` | no | Soft warning only. |
+
+The active CI workflow runs on pull requests and direct pushes to `main` or
+`dev`.
+
+CI/CD design guidance lives in `docs/11_CI_CD.md`.
+
 ## Before opening a PR
 
 - Run `make test`.

@@ -12,6 +12,7 @@ See `docs/DOCUMENTATION.md` for the "what to update when" rules.
 - [ ] Updated PRD/HLD
 - [ ] Updated acceptance gates (`docs/06_ACCEPTANCE_TESTS.md`)
 - [ ] Updated current implementation docs (`docs/current/`)
+- [ ] Updated CI/CD docs or workflow files/examples (`docs/11_CI_CD.md`, `.github/workflows/*.yml*`)
 - [ ] Added/superseded ADR
 - [ ] Updated traceability
 - [ ] Regenerated `docs/generated/*` and committed the output
@@ -21,3 +22,4 @@ See `docs/DOCUMENTATION.md` for the "what to update when" rules.
 
 - [ ] Commands run:
 - [ ] Commands skipped and why:
+- [ ] CI/CD impact checked:

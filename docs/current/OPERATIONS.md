@@ -79,6 +79,17 @@ snapshot for serving reads.
   decision explicitly moves deployment ownership here.
 - Runtime network access should restrict unauthenticated config/env reads to trusted clients.
 
+### CI/CD ownership
+
+- Active CI workflow: `.github/workflows/ci.yml` on pull requests and
+  direct pushes to `main` or `dev`.
+- CD workflow: none active in this repo.
+- Release source: `dev` is the integration branch; promote `dev` to `main`
+  only through PR.
+- Deployment owner: external deployment repo/system per DEC-003 unless a future
+  decision moves manifests into this repo.
+- CD guidance: `docs/11_CI_CD.md`.
+
 ## Troubleshooting
 
 ### Degraded readiness
