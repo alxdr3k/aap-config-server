@@ -153,14 +153,38 @@ brief_run_id_file() {
   printf '%s\n' "$state_dir/dev-cycle-run-id"
 }
 
+brief_start_epoch_file() {
+  local state_dir="$1"
+  printf '%s\n' "$state_dir/dev-cycle-start-epoch"
+}
+
+format_duration() {
+  local total="$1" days hours minutes seconds parts
+  (( total < 0 )) && total=0
+  days=$((total / 86400))
+  hours=$(((total % 86400) / 3600))
+  minutes=$(((total % 3600) / 60))
+  seconds=$((total % 60))
+
+  parts=()
+  if (( days > 0 )); then parts+=("${days}d"); fi
+  if (( hours > 0 )); then parts+=("${hours}h"); fi
+  if (( minutes > 0 )); then parts+=("${minutes}m"); fi
+  if (( seconds > 0 || ${#parts[@]} == 0 )); then parts+=("${seconds}s"); fi
+  printf '%s\n' "${parts[*]}"
+}
+
 init_brief() {
-  local run_id state_dir log run_id_file
+  local run_id start_epoch state_dir log run_id_file start_epoch_file
   run_id="$(date -u +%Y%m%dT%H%M%SZ)"
+  start_epoch="$(date -u +%s)"
   state_dir="$(ensure_state_dir)"
   log="$state_dir/dev-cycle-briefs.md"
   run_id_file="$(brief_run_id_file "$state_dir")"
+  start_epoch_file="$(brief_start_epoch_file "$state_dir")"
   printf "# Dev Cycle Briefs %s\n\n" "$run_id" > "$log"
   printf '%s\n' "$run_id" > "$run_id_file"
+  printf '%s\n' "$start_epoch" > "$start_epoch_file"
   shell_export DEV_CYCLE_RUN_ID "$run_id"
   shell_export DEV_CYCLE_BRIEF_LOG "$log"
 }
@@ -280,10 +304,20 @@ EOF
 }
 
 summary() {
-  local context log
+  local context log state_dir start_epoch_file start_epoch now elapsed
   context="$(brief_context)"
   log="$(printf '%s\n' "$context" | sed -n '2p')"
   sed -n '1,120p' "$log"
+  state_dir="$(ensure_state_dir)"
+  start_epoch_file="$(brief_start_epoch_file "$state_dir")"
+  if [[ -f "$start_epoch_file" ]]; then
+    start_epoch="$(sed -n '1p' "$start_epoch_file")"
+    if [[ "$start_epoch" =~ ^[0-9]+$ ]]; then
+      now="$(date -u +%s)"
+      elapsed=$((now - start_epoch))
+      printf -- '- Elapsed: %s\n' "$(format_duration "$elapsed")"
+    fi
+  fi
 }
 
 usage() {
