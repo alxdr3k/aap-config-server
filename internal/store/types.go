@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/aap/config-server/internal/parser"
+	"github.com/aap/config-server/internal/secret"
 )
 
 // ServiceKey uniquely identifies a service.
@@ -43,8 +44,16 @@ type ChangeRequest struct {
 	Config map[string]any
 	// EnvVars replaces env_vars.yaml content (nil = no change).
 	EnvVars *parser.EnvVars
-	// Secrets will be handled in Phase 2.
+	// Secrets carries plaintext secret writes grouped by K8s Secret name.
+	Secrets map[string]SecretWrite
 	Message string
+}
+
+// SecretWrite carries plaintext values for one K8s Secret object. Values must
+// not be logged and are converted to SealedSecret manifests before Git writes.
+type SecretWrite struct {
+	Namespace string
+	Data      map[string]secret.Value
 }
 
 // ChangeResult is the response to a successful ChangeRequest.
@@ -52,6 +61,11 @@ type ChangeResult struct {
 	Version   string
 	UpdatedAt time.Time
 	Files     []string // files that were written
+
+	// ApplyFailed is set when the git commit/push succeeded but applying the
+	// SealedSecret manifest(s) to Kubernetes failed.
+	ApplyFailed bool
+	ApplyError  string
 
 	// ReloadFailed is set when the git commit/push succeeded but the in-memory
 	// snapshot could not be refreshed from the new HEAD. Callers must treat

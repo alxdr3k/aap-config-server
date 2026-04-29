@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aap/config-server/internal/apperror"
+	"github.com/aap/config-server/internal/gitops"
+	"github.com/aap/config-server/internal/secret"
 	"github.com/aap/config-server/internal/store"
 )
 
@@ -21,6 +25,37 @@ type fakeRepo struct {
 	commitHash      string
 	nextPullUpdated bool
 	pullCalls       int
+	afterCommit     func()
+}
+
+type fakeSealer struct {
+	requests []secret.SealRequest
+	err      error
+}
+
+func (f *fakeSealer) Seal(_ context.Context, req secret.SealRequest) (secret.SealedManifest, error) {
+	f.requests = append(f.requests, req)
+	if f.err != nil {
+		return secret.SealedManifest{}, f.err
+	}
+	return secret.SealedManifest{
+		Namespace: req.Namespace,
+		Name:      req.Name,
+		Path:      store.ServicePath(req.Org, req.Project, req.Service) + "/sealed-secrets/" + req.Namespace + "/" + req.Name + ".yaml",
+		YAML:      []byte("sealed-" + req.Name),
+	}, nil
+}
+
+type fakeApplier struct {
+	manifests []secret.SealedManifest
+	err       error
+	ctxErr    error
+}
+
+func (f *fakeApplier) ApplySealedSecret(ctx context.Context, manifest secret.SealedManifest) error {
+	f.manifests = append(f.manifests, manifest)
+	f.ctxErr = ctx.Err()
+	return f.err
 }
 
 func newFakeRepo() *fakeRepo {
@@ -42,12 +77,33 @@ func (f *fakeRepo) Pull(_ context.Context) (string, bool, error) {
 }
 
 func (f *fakeRepo) CommitAndPush(_ context.Context, _ string, files map[string][]byte) (string, error) {
+	return f.CommitAndPushFunc(context.Background(), "", func(gitops.FileReader) (map[string][]byte, error) {
+		return files, nil
+	})
+}
+
+func (f *fakeRepo) CommitAndPushFunc(_ context.Context, _ string, build gitops.CommitFileBuilder) (string, error) {
+	f.mu.Lock()
+	snap := make(map[string][]byte, len(f.files))
+	for k, v := range f.files {
+		snap[k] = append([]byte(nil), v...)
+	}
+	f.mu.Unlock()
+
+	files, err := build(mapFileReader{files: snap})
+	if err != nil {
+		return "", err
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for k, v := range files {
 		f.files[k] = v
 	}
 	f.commitHash = "newcommit"
+	if f.afterCommit != nil {
+		f.afterCommit()
+	}
 	return f.commitHash, nil
 }
 
@@ -55,7 +111,11 @@ func (f *fakeRepo) DeleteAndPush(_ context.Context, _ string, paths []string) (s
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, p := range paths {
-		delete(f.files, p)
+		for path := range f.files {
+			if path == p || strings.HasPrefix(path, p+"/") {
+				delete(f.files, path)
+			}
+		}
 	}
 	f.commitHash = "delcommit"
 	return f.commitHash, nil
@@ -66,9 +126,21 @@ func (f *fakeRepo) ReadFile(path string) ([]byte, error) {
 	defer f.mu.Unlock()
 	d, ok := f.files[path]
 	if !ok {
-		return nil, errors.New("file not found: " + path)
+		return nil, fmt.Errorf("file not found: %w", os.ErrNotExist)
 	}
 	return d, nil
+}
+
+type mapFileReader struct {
+	files map[string][]byte
+}
+
+func (r mapFileReader) ReadFile(path string) ([]byte, error) {
+	data, ok := r.files[path]
+	if !ok {
+		return nil, fmt.Errorf("file not found: %w", os.ErrNotExist)
+	}
+	return append([]byte(nil), data...), nil
 }
 
 // WalkConfigs copies the file map under the lock, then iterates the copy so
@@ -143,6 +215,20 @@ env_vars:
   secret_refs:
     API_KEY: "my-api-key"
 `)
+}
+
+func seedSecretFiles(f *fakeRepo, org, project, svc string) {
+	base := "configs/orgs/" + org + "/projects/" + project + "/services/" + svc
+	f.files[base+"/secrets.yaml"] = []byte(`version: "1"
+secrets:
+  - id: existing-api-key
+    description: ""
+    k8s_secret:
+      name: remote-secrets
+      namespace: ai-platform
+      key: api-key
+`)
+	f.files[base+"/sealed-secrets/ai-platform/remote-secrets.yaml"] = []byte("sealed-remote-secrets")
 }
 
 func TestStore_GetConfig_NotFound(t *testing.T) {
@@ -263,6 +349,290 @@ func TestStore_ApplyChanges(t *testing.T) {
 	}
 }
 
+func TestStore_ApplyChanges_WritesAndAppliesSecrets(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "svc")
+	sealer := &fakeSealer{}
+	applier := &fakeApplier{}
+	s := store.New(repo, store.WithSecretDependencies(secret.Dependencies{
+		Sealer:  sealer,
+		Applier: applier,
+	}))
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	result, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+		Org:     "myorg",
+		Project: "proj",
+		Service: "svc",
+		Secrets: map[string]store.SecretWrite{
+			"litellm-secrets": {
+				Namespace: "ai-platform",
+				Data: map[string]secret.Value{
+					"master-key":   secret.NewValue([]byte("top-secret")),
+					"database-url": secret.NewValue([]byte("postgres://secret")),
+				},
+			},
+		},
+		Message: "write secrets",
+	})
+	if err != nil {
+		t.Fatalf("ApplyChanges secrets: %v", err)
+	}
+
+	wantFiles := []string{
+		"secrets.yaml",
+		"sealed-secrets/ai-platform/litellm-secrets.yaml",
+	}
+	if fmt.Sprint(result.Files) != fmt.Sprint(wantFiles) {
+		t.Fatalf("written files: got %v want %v", result.Files, wantFiles)
+	}
+	if len(sealer.requests) != 1 {
+		t.Fatalf("sealer calls: got %d", len(sealer.requests))
+	}
+	if sealer.requests[0].Namespace != "ai-platform" || sealer.requests[0].Name != "litellm-secrets" {
+		t.Fatalf("seal target: %+v", sealer.requests[0])
+	}
+	if len(applier.manifests) != 1 {
+		t.Fatalf("applier calls: got %d", len(applier.manifests))
+	}
+
+	secretsPath := "configs/orgs/myorg/projects/proj/services/svc/secrets.yaml"
+	secretsYAML := string(repo.files[secretsPath])
+	if !strings.Contains(secretsYAML, `id: database-url`) ||
+		!strings.Contains(secretsYAML, `name: litellm-secrets`) ||
+		!strings.Contains(secretsYAML, `namespace: ai-platform`) {
+		t.Fatalf("secrets.yaml missing metadata:\n%s", secretsYAML)
+	}
+	if strings.Contains(secretsYAML, "top-secret") || strings.Contains(secretsYAML, "postgres://secret") {
+		t.Fatalf("secrets.yaml leaked plaintext:\n%s", secretsYAML)
+	}
+
+	sealedPath := "configs/orgs/myorg/projects/proj/services/svc/sealed-secrets/ai-platform/litellm-secrets.yaml"
+	if got := string(repo.files[sealedPath]); got != "sealed-litellm-secrets" {
+		t.Fatalf("sealed manifest: got %q", got)
+	}
+
+	d, err := s.GetConfig(ctx, "myorg", "proj", "svc")
+	if err != nil {
+		t.Fatalf("GetConfig after secret apply: %v", err)
+	}
+	if d.Secrets == nil || len(d.Secrets.Secrets) != 2 {
+		t.Fatalf("expected two secret metadata entries, got %+v", d.Secrets)
+	}
+}
+
+func TestStore_ApplyChanges_MergesSecretsFromCurrentRepo(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "svc")
+	sealer := &fakeSealer{}
+	applier := &fakeApplier{}
+	s := store.New(repo, store.WithSecretDependencies(secret.Dependencies{
+		Sealer:  sealer,
+		Applier: applier,
+	}))
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	// Simulate the local checkout being updated after the last in-memory
+	// reload. Secret metadata must merge from the post-pull checkout used for
+	// the commit rather than from the stale snapshot.
+	seedSecretFiles(repo, "myorg", "proj", "svc")
+
+	_, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+		Org:     "myorg",
+		Project: "proj",
+		Service: "svc",
+		Secrets: map[string]store.SecretWrite{
+			"litellm-secrets": {
+				Namespace: "ai-platform",
+				Data: map[string]secret.Value{
+					"master-key": secret.NewValue([]byte("top-secret")),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyChanges secrets: %v", err)
+	}
+
+	secretsPath := "configs/orgs/myorg/projects/proj/services/svc/secrets.yaml"
+	secretsYAML := string(repo.files[secretsPath])
+	if !strings.Contains(secretsYAML, "existing-api-key") {
+		t.Fatalf("existing repo secret metadata was lost:\n%s", secretsYAML)
+	}
+	if !strings.Contains(secretsYAML, "master-key") {
+		t.Fatalf("new secret metadata was not written:\n%s", secretsYAML)
+	}
+}
+
+func TestStore_ApplyChanges_SecretsRequireAdapters(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	_, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+		Org:     "myorg",
+		Project: "proj",
+		Service: "svc",
+		Secrets: map[string]store.SecretWrite{
+			"litellm-secrets": {
+				Namespace: "ai-platform",
+				Data: map[string]secret.Value{
+					"master-key": secret.NewValue([]byte("top-secret")),
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected missing adapter validation error")
+	}
+	var appErr *apperror.Error
+	if !errors.As(err, &appErr) || appErr.Code != apperror.CodeValidation {
+		t.Fatalf("expected CodeValidation, got %v", err)
+	}
+	if len(repo.files) != 0 {
+		t.Fatalf("secret adapter validation should happen before commit, got files %v", repo.files)
+	}
+}
+
+func TestStore_ApplyChanges_RejectsInvalidK8sSecretIdentity(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name    string
+		secrets map[string]store.SecretWrite
+	}{
+		{
+			name: "uppercase secret name",
+			secrets: map[string]store.SecretWrite{
+				"LiteLLM-Secrets": {
+					Namespace: "ai-platform",
+					Data:      map[string]secret.Value{"master-key": secret.NewValue([]byte("top-secret"))},
+				},
+			},
+		},
+		{
+			name: "underscore namespace",
+			secrets: map[string]store.SecretWrite{
+				"litellm-secrets": {
+					Namespace: "ai_platform",
+					Data:      map[string]secret.Value{"master-key": secret.NewValue([]byte("top-secret"))},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			s := store.New(repo)
+			if err := s.LoadFromRepo(ctx); err != nil {
+				t.Fatalf("LoadFromRepo: %v", err)
+			}
+
+			_, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+				Org:     "myorg",
+				Project: "proj",
+				Service: "svc",
+				Secrets: tc.secrets,
+			})
+			if err == nil {
+				t.Fatal("expected invalid Kubernetes secret identity error")
+			}
+			var appErr *apperror.Error
+			if !errors.As(err, &appErr) || appErr.Code != apperror.CodeValidation {
+				t.Fatalf("expected CodeValidation, got %v", err)
+			}
+			if len(repo.files) != 0 {
+				t.Fatalf("invalid Kubernetes secret identity should fail before commit, got files %v", repo.files)
+			}
+		})
+	}
+}
+
+func TestStore_ApplyChanges_ReportsSecretApplyFailure(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	sealer := &fakeSealer{}
+	applier := &fakeApplier{err: errors.New("apply boom")}
+	s := store.New(repo, store.WithSecretDependencies(secret.Dependencies{
+		Sealer:  sealer,
+		Applier: applier,
+	}))
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	result, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+		Org:     "myorg",
+		Project: "proj",
+		Service: "svc",
+		Secrets: map[string]store.SecretWrite{
+			"litellm-secrets": {
+				Namespace: "ai-platform",
+				Data: map[string]secret.Value{
+					"master-key": secret.NewValue([]byte("top-secret")),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyChanges should not roll back committed secret on apply failure: %v", err)
+	}
+	if !result.ApplyFailed || !strings.Contains(result.ApplyError, "apply sealed secret ai-platform/litellm-secrets") {
+		t.Fatalf("expected contextual apply failure, got %+v", result)
+	}
+}
+
+func TestStore_ApplyChanges_AppliesSecretsAfterRequestCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "svc")
+	repo.afterCommit = cancel
+	sealer := &fakeSealer{}
+	applier := &fakeApplier{}
+	s := store.New(repo, store.WithSecretDependencies(secret.Dependencies{
+		Sealer:  sealer,
+		Applier: applier,
+	}))
+	if err := s.LoadFromRepo(context.Background()); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	result, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+		Org:     "myorg",
+		Project: "proj",
+		Service: "svc",
+		Secrets: map[string]store.SecretWrite{
+			"litellm-secrets": {
+				Namespace: "ai-platform",
+				Data: map[string]secret.Value{
+					"master-key": secret.NewValue([]byte("top-secret")),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyChanges: %v", err)
+	}
+	if result.ApplyFailed {
+		t.Fatalf("apply should ignore request cancellation after commit: %+v", result)
+	}
+	if len(applier.manifests) != 1 {
+		t.Fatalf("applier calls: got %d", len(applier.manifests))
+	}
+	if applier.ctxErr != nil {
+		t.Fatalf("apply context should be detached from request cancellation, got %v", applier.ctxErr)
+	}
+}
+
 func TestStore_ApplyChanges_Validation(t *testing.T) {
 	ctx := context.Background()
 	s := store.New(newFakeRepo())
@@ -298,6 +668,7 @@ func TestStore_DeleteChanges(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
 	seedFakeRepo(repo, "myorg", "proj", "svc")
+	seedSecretFiles(repo, "myorg", "proj", "svc")
 
 	s := store.New(repo)
 	if err := s.LoadFromRepo(ctx); err != nil {
@@ -324,11 +695,19 @@ func TestStore_DeleteChanges(t *testing.T) {
 	if result.ReloadFailed {
 		t.Errorf("ReloadFailed should be false on success, got error: %s", result.ReloadError)
 	}
+	if !strings.Contains(fmt.Sprint(result.DeletedFiles), "sealed-secrets/") {
+		t.Fatalf("deleted files should include sealed-secret manifests, got %v", result.DeletedFiles)
+	}
 
 	// Service should be gone from memory (full reload sees deleted files).
 	_, err = s.GetConfig(ctx, "myorg", "proj", "svc")
 	if err == nil {
 		t.Error("expected not-found after delete")
+	}
+	for path := range repo.files {
+		if strings.Contains(path, "services/svc/") {
+			t.Fatalf("service file remained after delete: %s", path)
+		}
 	}
 }
 

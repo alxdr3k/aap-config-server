@@ -22,12 +22,13 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | API key auth (Authorization: Bearer, X-API-Key)    | Implemented |
 | Last-known-good snapshot on parse error            | Implemented |
 | `committed_but_reload_failed` post-commit signal   | Implemented |
+| `committed_but_apply_failed` secret apply signal   | Implemented |
 | `deleted_but_reload_failed` post-delete signal     | Implemented |
 | Degraded state exposed via `/readyz` and `/api/v1/status` | Implemented |
 | Secret metadata read (`GET .../secrets`)           | Implemented (auth-gated) |
-| Secret **write** via `secrets` field on POST       | **Not implemented** — rejected with 400 |
-| SealedSecret generation / kubeseal integration     | Internal deterministic YAML generator and Bitnami public-key encryption adapter implemented; admin write/runtime wiring not implemented |
-| K8s apply of SealedSecret objects                  | Internal dynamic-client adapter implemented; admin write/runtime wiring not implemented |
+| Secret **write** via `secrets` field on POST       | Implemented when Kubernetes SealedSecret adapters are configured |
+| SealedSecret generation / kubeseal integration     | Implemented with deterministic YAML generation and Bitnami public-key encryption |
+| K8s apply of SealedSecret objects                  | Implemented for admin secret writes |
 | Watch / stream endpoint                            | Not implemented |
 | History / revert endpoints                         | Not implemented |
 | Config Agent, registry webhook                     | Not implemented |
@@ -80,8 +81,8 @@ curl http://localhost:8080/api/v1/orgs
 | `ADDR`                       | no                       | `:8080`               | HTTP listen address.                                   |
 | `LOG_LEVEL`                  | no                       | `info`                | `debug`, `info`, `warn`, `error`.                     |
 | `SECRET_MOUNT_PATH`          | no                       | `/secrets`            | Absolute root for mounted K8s Secret volume reads.      |
-| `SEALED_SECRET_CONTROLLER_NAMESPACE` | no                | `kube-system`         | Namespace for SealedSecret controller public-key lookup and future admin write integration. |
-| `SEALED_SECRET_CONTROLLER_NAME` | no                    | `sealed-secrets-controller` | Controller service name for SealedSecret public-key lookup and future admin write integration. |
+| `SEALED_SECRET_CONTROLLER_NAMESPACE` | no                | `kube-system`         | Namespace for SealedSecret controller public-key lookup and admin write integration. |
+| `SEALED_SECRET_CONTROLLER_NAME` | no                    | `sealed-secrets-controller` | Controller service name for SealedSecret public-key lookup and admin write integration. |
 | `SEALED_SECRET_SCOPE`        | no                       | `strict`              | SealedSecret scope used by internal sealing adapters: `strict`, `namespace-wide`, or `cluster-wide`. |
 | `K8S_APPLY_TIMEOUT`          | no                       | `10s`                 | Timeout for SealedSecret apply adapter calls.          |
 | `SECRET_AUDIT_LOG_ENABLED`   | no                       | `true`                | Enables future non-sensitive secret audit logging.     |
@@ -159,6 +160,12 @@ curl -X POST http://localhost:8080/api/v1/admin/changes \
       "plain":       { "LOG_LEVEL": "INFO" },
       "secret_refs": { "API_KEY": "litellm-api-key" }
     },
+    "secrets": {
+      "litellm-secrets": {
+        "namespace": "ai-platform",
+        "data": { "api-key": "actual-secret-value" }
+      }
+    },
     "message": "bump retries"
   }'
 ```
@@ -170,7 +177,7 @@ Successful response:
   "status":     "committed",
   "version":    "<commit hash>",
   "updated_at": "2026-04-23T10:00:00Z",
-  "files":      ["config.yaml", "env_vars.yaml"]
+  "files":      ["config.yaml", "env_vars.yaml", "secrets.yaml", "sealed-secrets/ai-platform/litellm-secrets.yaml"]
 }
 ```
 
@@ -188,18 +195,19 @@ If the Git push succeeded but the in-memory snapshot could not be refreshed
 Operators should investigate before trusting subsequent reads — the serving
 snapshot is the last-known-good view, which may be stale.
 
+If the Git commit succeeded but applying a generated SealedSecret failed, the
+response is `503 committed_but_apply_failed` with `apply_error`. The encrypted
+manifest remains committed and should be reconciled or re-applied by an
+operator.
+
+Secret writes require the server to run with Kubernetes SealedSecret adapters
+configured. If they are unavailable, the request fails validation before any
+Git commit. Secret namespaces and K8s Secret object names are also validated
+against Kubernetes DNS naming rules before any Git write.
+
 #### Rejected fields
 
 The server refuses unknown JSON fields on admin endpoints (`DisallowUnknownFields`).
-In particular:
-
-```json
-{ "secrets": [ ... ] }        // 400
-```
-
-is rejected with a message explaining that secret writes are not part of
-Phase-1. This prevents silent data loss for clients that follow the PRD v2.1
-schema.
 
 ### Delete
 
@@ -216,7 +224,7 @@ Successful response:
 {
   "status":        "deleted",
   "version":       "<commit hash>",
-  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml"]
+  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml", "sealed-secrets/"]
 }
 ```
 
@@ -227,7 +235,7 @@ from the new HEAD, the response is `503` with:
 {
   "status":        "deleted_but_reload_failed",
   "version":       "<commit hash>",
-  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml"],
+  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml", "sealed-secrets/"],
   "reload_error":  "refusing to swap snapshot: 1 file(s) failed to parse: ..."
 }
 ```

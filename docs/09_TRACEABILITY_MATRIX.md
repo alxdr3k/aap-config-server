@@ -33,8 +33,9 @@ Question ↔ Decision ↔ Requirement ↔ Gate/Test ↔ Milestone/Track/Phase/Sl
 | `TRACE-018` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` / `internal/config/config_test.go`, `internal/secret/types_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.1` | Secret runtime config and adapter boundaries landed; full secret write/resolve gate remains defined. |
 | `TRACE-019` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` / `internal/secret/volume_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.2` | Mounted K8s Secret file reader and fsnotify refresh events landed; HTTP secret resolve remains planned. |
 | `TRACE-020` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` / `internal/secret/sealed_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.3` | Deterministic SealedSecret YAML generator landed as the encryption-boundary slice before public-key lookup and admin wiring. |
-| `TRACE-021` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` / `internal/secret/apply_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.4` | K8s dynamic-client SealedSecret create/update adapter landed; admin secret write integration remains planned. |
-| `TRACE-022` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` / `internal/secret/encrypt_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.5` | SealedSecret controller public-key lookup and Bitnami hybrid encryptor wiring landed; admin secret write integration remains planned. |
+| `TRACE-021` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` / `internal/secret/apply_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.4` | K8s dynamic-client SealedSecret create/update adapter landed before admin secret write integration. |
+| `TRACE-022` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` / `internal/secret/encrypt_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.5` | SealedSecret controller public-key lookup and Bitnami hybrid encryptor wiring landed before admin secret write integration. |
+| `TRACE-023` |  | `ADR-004` | `FR-4`, `FR-7`, `FR-17` | `AC-020` / `internal/store/store_test.go`, `internal/handler/handler_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.6` | Admin secret writes now commit secrets metadata plus SealedSecret manifests, apply them to Kubernetes, and report apply/reload outcomes explicitly. |
 
 ## Invariants
 

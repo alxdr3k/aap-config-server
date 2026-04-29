@@ -62,6 +62,14 @@ export ALLOW_UNAUTHENTICATED_DEV=true
 - Root-cause investigation: inspect newly committed YAML and any pre-existing malformed files on the branch.
 - Related: `AC-005`, `AC-007`.
 
+### Incident: Admin secret write committed but did not apply
+
+- Symptom: `POST /api/v1/admin/changes` returns `503 committed_but_apply_failed`.
+- Detection: response includes `version`, written SealedSecret file paths, and `apply_error`.
+- Mitigation: treat Git commit as already written; fix K8s access/controller issues, then re-apply the committed SealedSecret manifest or retry the admin write. Client disconnects after commit do not cancel the server-managed apply attempt.
+- Root-cause investigation: inspect Config Server service account RBAC, SealedSecret controller availability, and the committed encrypted manifest.
+- Related: `AC-020`, `TEST-020`.
+
 ### Incident: Dirty config checkout blocks snapshot
 
 - Symptom: reload fails with `configs/ worktree is dirty`.

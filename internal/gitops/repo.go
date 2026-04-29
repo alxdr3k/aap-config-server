@@ -50,6 +50,15 @@ const (
 // It is nil in production.
 var afterPullHook func(attempt int)
 
+// FileReader reads files relative to the repository root.
+type FileReader interface {
+	ReadFile(path string) ([]byte, error)
+}
+
+// CommitFileBuilder builds commit files after the repository has pulled the
+// latest remote state. It is retried after non-fast-forward push rejections.
+type CommitFileBuilder func(reader FileReader) (map[string][]byte, error)
+
 // GitRepo is the interface the store uses to interact with the git repository.
 // All path arguments are relative to the repository root.
 type GitRepo interface {
@@ -64,6 +73,10 @@ type GitRepo interface {
 	// Retries up to 3 times on non-fast-forward push rejection.
 	// Returns the new HEAD commit hash.
 	CommitAndPush(ctx context.Context, msg string, files map[string][]byte) (string, error)
+
+	// CommitAndPushFunc builds files from the current working tree after each
+	// pre-commit pull, then commits and pushes them.
+	CommitAndPushFunc(ctx context.Context, msg string, build CommitFileBuilder) (string, error)
 
 	// DeleteAndPush removes the listed paths, commits, and pushes.
 	// Returns the new HEAD commit hash.
@@ -225,6 +238,14 @@ func (r *Repo) pull(ctx context.Context) error {
 
 // CommitAndPush writes files, commits, and pushes with retry on rejection.
 func (r *Repo) CommitAndPush(ctx context.Context, msg string, files map[string][]byte) (string, error) {
+	return r.CommitAndPushFunc(ctx, msg, func(FileReader) (map[string][]byte, error) {
+		return files, nil
+	})
+}
+
+// CommitAndPushFunc writes files built from the post-pull working tree,
+// commits, and pushes with retry on rejection.
+func (r *Repo) CommitAndPushFunc(ctx context.Context, msg string, build CommitFileBuilder) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -235,6 +256,11 @@ func (r *Repo) CommitAndPush(ctx context.Context, msg string, files map[string][
 		}
 		if afterPullHook != nil {
 			afterPullHook(attempt)
+		}
+
+		files, err := build(localFileReader{root: r.localPath})
+		if err != nil {
+			return "", err
 		}
 
 		w, err := r.repo.Worktree()
@@ -289,6 +315,14 @@ func (r *Repo) CommitAndPush(ctx context.Context, msg string, files map[string][
 	return "", apperror.New(apperror.CodeGitPush, fmt.Sprintf("push failed after %d retries", maxPushRetries))
 }
 
+type localFileReader struct {
+	root string
+}
+
+func (r localFileReader) ReadFile(path string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(r.root, path))
+}
+
 // DeleteAndPush removes the listed paths, commits, and pushes.
 func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (string, error) {
 	r.mu.Lock()
@@ -308,14 +342,23 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (s
 		}
 
 		for _, path := range paths {
+			targets, err := removalTargets(r.localPath, path)
+			if err != nil {
+				return "", err
+			}
 			fullPath := filepath.Join(r.localPath, path)
 			if err := os.RemoveAll(fullPath); err != nil && !os.IsNotExist(err) {
 				return "", fmt.Errorf("remove %s: %w", path, err)
 			}
-			// go-git: Remove stages the deletion regardless of whether the file
-			// existed on disk.
-			if _, err := w.Remove(path); err != nil && !errors.Is(err, object.ErrEntryNotFound) {
-				slog.Debug("git remove warning (non-fatal)", "path", path, "err", err)
+			if len(targets) == 0 {
+				targets = []string{path}
+			}
+			for _, target := range targets {
+				// go-git: Remove stages the deletion regardless of whether the
+				// file existed on disk.
+				if _, err := w.Remove(target); err != nil && !errors.Is(err, object.ErrEntryNotFound) {
+					slog.Debug("git remove warning (non-fatal)", "path", target, "err", err)
+				}
 			}
 		}
 
@@ -350,6 +393,39 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (s
 	}
 
 	return "", apperror.New(apperror.CodeGitPush, fmt.Sprintf("push (delete) failed after %d retries", maxPushRetries))
+}
+
+func removalTargets(root, path string) ([]string, error) {
+	fullPath := filepath.Join(root, path)
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return []string{path}, nil
+	}
+
+	var targets []string
+	if err := filepath.WalkDir(fullPath, func(full string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, full)
+		if err != nil {
+			return err
+		}
+		targets = append(targets, filepath.ToSlash(rel))
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("walk %s: %w", path, err)
+	}
+	return targets, nil
 }
 
 // ReadFile reads a file from the current working tree.

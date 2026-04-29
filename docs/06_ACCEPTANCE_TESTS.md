@@ -27,7 +27,7 @@ Then  <기대 결과>
 | `AC-006` | `FR-16`, `FR-17` | Given protected endpoints, When credentials are missing or invalid, Then the server returns 401; valid Bearer or `X-API-Key` succeeds. | `TEST-006` | `passing` |
 | `AC-007` | `FR-1`, `FR-15` | Given a failed reload after a good snapshot, When readiness/status are queried, Then the server reports degraded while serving last-known-good data. | `TEST-007` | `passing` |
 | `AC-008` | `FR-1` | Given the local `configs/` worktree is dirty outside server writes, When snapshot reload runs, Then reload fails closed. | `TEST-008` | `passing` |
-| `AC-009` | `FR-4` | Given a Phase-1 admin write body includes `secrets`, When decoded, Then the request fails with 400 instead of silently dropping data. | `TEST-009` | `passing` |
+| `AC-009` | `FR-4` | Given an admin write body includes an unknown field, When decoded, Then the request fails with 400 instead of silently dropping data. | `TEST-009` | `passing` |
 | `AC-014` | Documentation migration | Given a new session, When it follows `AGENTS.md`, Then current status, code map, testing, runtime, and roadmap are discoverable from canonical docs. | manual link check + PR #10 CI | `passing` |
 | `AC-015` | Documentation workflow | Given a PR changes Go source/runtime paths, When doc freshness runs, Then it comments with matching doc update candidates without blocking merge. | workflow YAML parse + pattern review | `passing` |
 | `AC-020` | `FR-7`, `FR-17` | Secret write/resolve handles SealedSecret generation, K8s apply, no-store response, and audit logging. | `TEST-020` | `defined` |
@@ -62,8 +62,8 @@ staging / manual acceptance가 아직 실행되지 않은 상태인지 분리한
 | `TEST-006` | API key auth tests | `internal/handler/handler_test.go`, `internal/config/config_test.go` | `AC-006` |
 | `TEST-007` | Degraded/reload tests | `internal/store/store_test.go`, `internal/handler/handler_test.go` | `AC-007` |
 | `TEST-008` | Dirty checkout snapshot tests | `internal/gitops/repo_test.go` | `AC-008` |
-| `TEST-009` | Secret field rejection tests | `internal/handler/handler_test.go` | `AC-009` |
-| `TEST-020` | Secret write/resolve tests | `internal/config/config_test.go`, `internal/secret/types_test.go`, `internal/secret/volume_test.go`, `internal/secret/sealed_test.go`, `internal/secret/encrypt_test.go`, `internal/secret/apply_test.go`, future secret/store/handler tests | `AC-020` |
+| `TEST-009` | Unknown admin field rejection tests | `internal/handler/handler_test.go` | `AC-009` |
+| `TEST-020` | Secret write/resolve tests | `internal/config/config_test.go`, `internal/secret/types_test.go`, `internal/secret/volume_test.go`, `internal/secret/sealed_test.go`, `internal/secret/encrypt_test.go`, `internal/secret/apply_test.go`, `internal/store/store_test.go`, `internal/handler/handler_test.go`, future resolve tests | `AC-020` |
 | `TEST-021` | App Registry future tests | future registry/handler/status tests | `AC-021` |
 | `TEST-030` | Config Agent future tests | future agent/k8s/e2e tests | `AC-030` |
 | `TEST-040` | Console extension future tests | future watch/history/revert/inheritance tests | `AC-040` |

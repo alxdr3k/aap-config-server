@@ -24,6 +24,8 @@ type fakeStore struct {
 	failNextWrite          error
 	nextReloadFailed       bool
 	nextReloadErr          string
+	nextApplyFailed        bool
+	nextApplyErr           string
 	nextDeleteReloadFailed bool
 	nextDeleteReloadErr    string
 	degraded               bool
@@ -32,6 +34,7 @@ type fakeStore struct {
 	reloadUpdated          bool
 	reloadCalls            int
 	refreshCalls           int
+	lastChange             *store.ChangeRequest
 }
 
 func newFakeStore() *fakeStore {
@@ -95,6 +98,7 @@ func (f *fakeStore) ListServices(org, project string) []store.ServiceInfo {
 }
 
 func (f *fakeStore) ApplyChanges(_ context.Context, req *store.ChangeRequest) (*store.ChangeResult, error) {
+	f.lastChange = req
 	if f.failNextWrite != nil {
 		err := f.failNextWrite
 		f.failNextWrite = nil
@@ -109,6 +113,8 @@ func (f *fakeStore) ApplyChanges(_ context.Context, req *store.ChangeRequest) (*
 	return &store.ChangeResult{
 		Version:      f.version,
 		Files:        []string{"config.yaml"},
+		ApplyFailed:  f.nextApplyFailed,
+		ApplyError:   f.nextApplyErr,
 		ReloadFailed: f.nextReloadFailed,
 		ReloadError:  f.nextReloadErr,
 	}, nil
@@ -484,9 +490,9 @@ func TestAPIKeyAuth_BearerHeader(t *testing.T) {
 	})
 
 	cases := []struct {
-		name    string
-		header  string
-		value   string
+		name     string
+		header   string
+		value    string
 		wantCode int
 	}{
 		{"bearer correct", "Authorization", "Bearer secret-key", http.StatusOK},
@@ -510,30 +516,41 @@ func TestAPIKeyAuth_BearerHeader(t *testing.T) {
 	}
 }
 
-func TestPostChanges_RejectsSecretsField(t *testing.T) {
-	// PRD v2.1 describes a `secrets` field that is not implemented in Phase-1.
-	// Silently ignoring it would lose data; we require a loud 400 instead.
-	srv := newServer(t, newFakeStore())
+func TestPostChanges_AcceptsSecretsField(t *testing.T) {
+	st := newFakeStore()
+	srv := newServer(t, st)
 	defer srv.Close()
 
 	body := map[string]any{
 		"org": "o", "project": "p", "service": "s",
-		"config":  map[string]any{},
-		"secrets": []any{map[string]any{"id": "foo"}},
+		"config": map[string]any{},
+		"secrets": map[string]any{
+			"litellm-secrets": map[string]any{
+				"namespace": "ai-platform",
+				"data": map[string]any{
+					"master-key": "top-secret",
+				},
+			},
+		},
 	}
 	resp := postJSON(t, srv, "/api/v1/admin/changes", body)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("want 400 for unknown `secrets` field, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200 for accepted `secrets` field, got %d", resp.StatusCode)
 	}
-
-	var env map[string]any
-	decodeJSON(t, resp, &env)
-	errObj, ok := env["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected JSON error envelope, got %v", env)
+	if st.lastChange == nil {
+		t.Fatal("store did not receive change request")
 	}
-	if !strings.Contains(strings.ToLower(errObj["message"].(string)), "secrets") {
-		t.Errorf("error message should mention secrets, got %v", errObj["message"])
+	got := st.lastChange.Secrets["litellm-secrets"]
+	if got.Namespace != "ai-platform" {
+		t.Fatalf("secret namespace: got %q", got.Namespace)
+	}
+	if string(got.Data["master-key"].Bytes()) != "top-secret" {
+		t.Fatal("secret plaintext was not passed to store boundary")
+	}
+	value := got.Data["master-key"]
+	value.Destroy()
+	if string(value.Bytes()) != "" {
+		t.Fatal("secret boundary value should be destroyable")
 	}
 }
 
@@ -543,8 +560,8 @@ func TestPostChanges_RejectsUnknownField(t *testing.T) {
 
 	body := map[string]any{
 		"org": "o", "project": "p", "service": "s",
-		"config":  map[string]any{},
-		"bogus":   "value",
+		"config": map[string]any{},
+		"bogus":  "value",
 	}
 	resp := postJSON(t, srv, "/api/v1/admin/changes", body)
 	if resp.StatusCode != http.StatusBadRequest {
@@ -576,6 +593,37 @@ func TestPostChanges_ReloadFailedReported(t *testing.T) {
 	}
 	if body2["reload_error"] == nil || body2["reload_error"] == "" {
 		t.Errorf("reload_error missing: %v", body2)
+	}
+}
+
+func TestPostChanges_ApplyFailedReported(t *testing.T) {
+	st := newFakeStore()
+	st.nextApplyFailed = true
+	st.nextApplyErr = "apply sealed secret ai-platform/litellm-secrets: boom"
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	body := map[string]any{
+		"org": "o", "project": "p", "service": "s",
+		"secrets": map[string]any{
+			"litellm-secrets": map[string]any{
+				"namespace": "ai-platform",
+				"data":      map[string]any{"master-key": "top-secret"},
+			},
+		},
+	}
+	resp := postJSON(t, srv, "/api/v1/admin/changes", body)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d", resp.StatusCode)
+	}
+
+	var env map[string]any
+	decodeJSON(t, resp, &env)
+	if env["status"] != "committed_but_apply_failed" {
+		t.Fatalf("status: got %v", env["status"])
+	}
+	if !strings.Contains(env["apply_error"].(string), "apply sealed secret") {
+		t.Fatalf("missing apply_error context: %v", env["apply_error"])
 	}
 }
 
