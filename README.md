@@ -37,7 +37,7 @@ as planned design — the server will refuse requests that depend on them.
 
 ## Quickstart
 
-Prerequisites: Go 1.24+, a Git repo (SSH or HTTPS) that holds the config tree
+Prerequisites: Go 1.26+, a Git repo (SSH or HTTPS) that holds the config tree
 under `configs/orgs/<org>/projects/<proj>/services/<svc>/`.
 
 ```bash

@@ -50,9 +50,9 @@ Gate status:
 | `P0-M1` | Phase-1 Config Server MVP serves Git-backed config/env data and supports admin config/env writes. |  | `accepted` | `AC-001`~`AC-005` | `cmd/config-server`, `internal/*`, `README.md`, PR #10 CI | Existing implementation predates this ledger. |
 | `P0-M2` | Operational hardening for auth, degraded state, reload, dirty checkout safety, and unsupported secret writes. |  | `accepted` | `AC-006`~`AC-009` | `internal/store`, `internal/handler`, `internal/gitops`, PR #10 CI | Some PRD phase labels differ from actual landing order. |
 | `P0-M3` | Documentation system migrated to boilerplate structure. |  | `accepted` | `AC-014`, `AC-015` | `docs/00_*`, `docs/current/*`, `AGENTS.md`, `.github/`, PR #10 | Migration landed on main. |
-| `P1-M1` | Secret write/resolve with SealedSecret and K8s apply. |  | `planned` | `AC-020` | ADR-004 | Target design only. |
-| `P1-M2` | Config Agent rollout path. |  | `planned` | `AC-030` | ADR-001, ADR-002 | Target design only. |
-| `P1-M3` | Watch/history/revert/inheritance/metrics operational features. |  | `planned` | `AC-040` | `docs/01_PRD.md` | Target design only. |
+| `P1-M1` | Secret write/resolve with SealedSecret, K8s apply, and Console App Registry integration. |  | `planned` | `AC-020`, `AC-021` | ADR-004, `docs/01_PRD.md` | Leaf slices defined. |
+| `P1-M2` | Config Agent rollout path. |  | `planned` | `AC-030` | ADR-001, ADR-002 | Leaf slices defined. |
+| `P1-M3` | Console integration extensions and production hardening. |  | `planned` | `AC-040`~`AC-042` | `docs/01_PRD.md`, `DEC-003` | Leaf slices defined. |
 
 ## Tracks
 
@@ -62,8 +62,10 @@ Gate status:
 | `OPS` | Auth, readiness, degraded state, reload, CI/runtime operations. | `OPS-1A` | `accepted` | Runtime docs now live under `docs/current/`; CI passed on PR #10. |
 | `DOC` | Boilerplate documentation migration and status ledger. | `DOC-1A` | `accepted` | Landed through PR #10. |
 | `SECRET` | Secret write/resolve and SealedSecret integration. | `SECRET-1A` | `planned` | Planned. |
+| `REGISTRY` | AAP Console App Registry bootstrap and webhook cache. | `REGISTRY-1A` | `planned` | Planned. |
 | `AGENT` | Config Agent and rollout orchestration. | `AGENT-1A` | `planned` | Planned. |
-| `EXT` | Watch/history/revert/inheritance/metrics extensions. | `EXT-1A` | `planned` | Planned. |
+| `EXT` | Watch, history, revert, inheritance, batch, webhook, metrics, and HTTP response extensions. | `EXT-1A`~`EXT-1D` | `planned` | Planned. |
+| `HARDEN` | Schema validation, rate limiting, integration/load tests, and deployment handoff docs. | `HARDEN-1A` | `planned` | Planned. |
 
 ## Phases / Slices
 
@@ -80,9 +82,46 @@ Gate status:
 | `OPS-1A.4` | `P0-M2` | `OPS` | `OPS-1A` | Reject unsupported secret payloads in Phase-1 admin writes. | `CORE-1A.5` | `AC-009` / `TEST-009` | `passing` | `accepted` | `internal/handler`, PR #10 CI |  |
 | `DOC-1A.1` | `P0-M3` | `DOC` | `DOC-1A` | Add boilerplate docs and move PRD/HLD to numbered canonical files. |  | `AC-014` | `passing` | `accepted` | `docs/`, `AGENTS.md`, PR #10 |  |
 | `DOC-1A.2` | `P0-M3` | `DOC` | `DOC-1A` | Add PR template and doc freshness soft-check for Go source paths. | `DOC-1A.1` | `AC-015` | `passing` | `accepted` | `.github/pull_request_template.md`, `.github/workflows/doc-freshness.yml`, PR #10 |  |
-| `SECRET-1A.1` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement secret write acceptance and explicit value handling. | `OPS-1A.1` | `AC-020` | `defined` | `planned` | ADR-004 | Define implementation slices. |
-| `AGENT-1A.1` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement Config Agent polling/apply/restart path. | `SECRET-1A.1` | `AC-030` | `defined` | `planned` | ADR-001, ADR-002 | Define implementation slices. |
-| `EXT-1A.1` | `P1-M3` | `EXT` | `EXT-1A` | Implement watch/history/revert/inheritance/metrics backlog. | `CORE-1A` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` | Prioritize backlog. |
+| `SECRET-1A.1` | `P1-M1` | `SECRET` | `SECRET-1A` | Add secret runtime config, interfaces, and dependency boundaries for volume reads, sealing, K8s apply, and audit logging. | `OPS-1A.1` | `AC-020` | `defined` | `ready` | ADR-004 | Start here. |
+| `SECRET-1A.2` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement Volume Mount secret reader and fsnotify-backed refresh for mounted secret files. | `SECRET-1A.1` | `AC-020` | `defined` | `planned` | ADR-004 |  |
+| `SECRET-1A.3` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement SealedSecret generation adapter and deterministic YAML output for secret payloads. | `SECRET-1A.1` | `AC-020` | `defined` | `planned` | ADR-004 |  |
+| `SECRET-1A.4` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement K8s apply adapter for SealedSecret objects with context-aware error handling. | `SECRET-1A.3` | `AC-020` | `defined` | `planned` | ADR-004 |  |
+| `SECRET-1A.5` | `P1-M1` | `SECRET` | `SECRET-1A` | Accept `secrets` in admin writes, write metadata plus SealedSecret files in one Git commit, apply to K8s, and reload outcome explicitly. | `SECRET-1A.2`, `SECRET-1A.4`, `CORE-1A.5` | `AC-020` | `defined` | `planned` | ADR-004 |  |
+| `SECRET-1A.6` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement `resolve_secrets=true` for env var reads with auth, Volume Mount lookup, `Cache-Control: no-store`, and no ETag. | `SECRET-1A.2`, `SECRET-1A.5` | `AC-020` | `defined` | `planned` | ADR-004 |  |
+| `SECRET-1A.7` | `P1-M1` | `SECRET` | `SECRET-1A` | Add secret audit logging, no-plaintext log assertions, and best-effort memory cleanup for secret handling paths. | `SECRET-1A.5`, `SECRET-1A.6` | `AC-020` | `defined` | `planned` | ADR-004 |  |
+| `REGISTRY-1A.1` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | Add AAP Console API client, runtime config, startup registry load, and bounded exponential backoff. | `OPS-1A.1` | `AC-021` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `REGISTRY-1A.2` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | Add authenticated App Registry webhook endpoint and in-memory cache update semantics. | `REGISTRY-1A.1` | `AC-021` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `REGISTRY-1A.3` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | Integrate registry load/cache state into readiness, status, and operations docs. | `REGISTRY-1A.2`, `OPS-1A.2` | `AC-021` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `AGENT-1A.1` | `P1-M2` | `AGENT` | `AGENT-1A` | Add Config Agent binary, runtime config, Config Server API client, and local dry-run mode. | `SECRET-1A.6` | `AC-030` | `defined` | `planned` | ADR-001, ADR-002 |  |
+| `AGENT-1A.2` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement K8s Lease leader election with standby takeover behavior. | `AGENT-1A.1` | `AC-030` | `defined` | `planned` | ADR-002 |  |
+| `AGENT-1A.3` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement config/env fetch loop, version tracking, and retry/backoff behavior using read API polling. | `AGENT-1A.1` | `AC-030` | `defined` | `planned` | ADR-001, ADR-002 |  |
+| `AGENT-1A.4` | `P1-M2` | `AGENT` | `AGENT-1A` | Render native service config and `env.sh` payloads while preserving secret references in ConfigMaps. | `AGENT-1A.3` | `AC-030` | `defined` | `planned` | ADR-002 |  |
+| `AGENT-1A.5` | `P1-M2` | `AGENT` | `AGENT-1A` | Apply target ConfigMap and Secret resources with create/update/patch behavior constrained to configured resource names. | `AGENT-1A.4` | `AC-030` | `defined` | `planned` | ADR-002 |  |
+| `AGENT-1A.6` | `P1-M2` | `AGENT` | `AGENT-1A` | Patch target Deployment annotations to trigger controlled rolling restarts. | `AGENT-1A.5` | `AC-030` | `defined` | `planned` | ADR-002 |  |
+| `AGENT-1A.7` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement leading-edge debounce with cooldown, quiet period, and max-wait controls. | `AGENT-1A.6` | `AC-030` | `defined` | `planned` | ADR-001 |  |
+| `AGENT-1A.8` | `P1-M2` | `AGENT` | `AGENT-1A` | Add Config Agent image build, RBAC/deployment examples, and e2e smoke coverage with fake K8s/client dependencies. | `AGENT-1A.7` | `AC-030` | `defined` | `planned` | ADR-001, ADR-002, `DEC-003` |  |
+| `EXT-1A.1` | `P1-M3` | `EXT` | `EXT-1A` | Add store notification and version-wait primitive for long-poll watch endpoints. | `CORE-1A.3` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1A.2` | `P1-M3` | `EXT` | `EXT-1A` | Implement `config/watch` long-poll endpoint with timeout and version mismatch behavior. | `EXT-1A.1`, `CORE-1A.4` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1A.3` | `P1-M3` | `EXT` | `EXT-1A` | Implement `env_vars/watch` long-poll endpoint with timeout and independent change detection. | `EXT-1A.1`, `CORE-1A.4` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1B.1` | `P1-M3` | `EXT` | `EXT-1B` | Add Git history iterator and file-change classifier for service-scoped history. | `CORE-1A.3` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1B.2` | `P1-M3` | `EXT` | `EXT-1B` | Implement history API with `file`, `limit`, and `before` filtering. | `EXT-1B.1`, `CORE-1A.4` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1B.3` | `P1-M3` | `EXT` | `EXT-1B` | Add versioned config/env reads from historical Git commits. | `EXT-1B.1`, `CORE-1A.4` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1B.4` | `P1-M3` | `EXT` | `EXT-1B` | Validate revert targets and restore service files from a selected commit without mutating history. | `EXT-1B.3`, `CORE-1A.5` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1B.5` | `P1-M3` | `EXT` | `EXT-1B` | Implement revert commit/push/reload flow, including SealedSecret rollback apply when secret files are restored. | `EXT-1B.4`, `SECRET-1A.4` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1C.1` | `P1-M3` | `EXT` | `EXT-1C` | Parse global/org/project `_defaults/common.yaml` files and expose inherited source metadata for tests. | `CORE-1A.2` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1C.2` | `P1-M3` | `EXT` | `EXT-1C` | Implement deep merge with scalar override, recursive map merge, array replacement, and null deletion. | `EXT-1C.1` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1C.3` | `P1-M3` | `EXT` | `EXT-1C` | Apply `inherit=true/false` query semantics to config and env var read paths. | `EXT-1C.2`, `CORE-1A.4` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1C.4` | `P1-M3` | `EXT` | `EXT-1C` | Preserve service-level admin write behavior while inherited reads are enabled, with docs and regression tests. | `EXT-1C.3`, `CORE-1A.5` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1D.1` | `P1-M3` | `EXT` | `EXT-1D` | Add ETag and `If-None-Match` support for non-secret config/env responses. | `CORE-1A.4`, `SECRET-1A.6` | `AC-041` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1D.2` | `P1-M3` | `EXT` | `EXT-1D` | Add gzip response compression for eligible read APIs. | `EXT-1D.1` | `AC-041` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1D.3` | `P1-M3` | `EXT` | `EXT-1D` | Implement batch config/env read API for multiple services. | `EXT-1C.3`, `CORE-1A.4` | `AC-041` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1D.4` | `P1-M3` | `EXT` | `EXT-1D` | Add Prometheus metrics for reloads, Git operations, API latency, watch waits, and degraded state. | `OPS-1A.2`, `EXT-1A.3` | `AC-041` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1D.5` | `P1-M3` | `EXT` | `EXT-1D` | Add authenticated Git webhook trigger for immediate refresh after config repo changes. | `OPS-1A.1`, `OPS-1A.2` | `AC-041` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `HARDEN-1A.1` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add explicit schema validation layer for config, env vars, defaults, and secret metadata files. | `EXT-1C.1`, `SECRET-1A.5` | `AC-042` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `HARDEN-1A.2` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add configurable rate limiting for admin, secret resolve, watch, and batch endpoints. | `OPS-1A.1`, `EXT-1D.3` | `AC-042` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `HARDEN-1A.3` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Build integration test harness with fake Git, fake K8s, and fake Console dependencies. | `SECRET-1A.7`, `REGISTRY-1A.3`, `AGENT-1A.8` | `AC-042` | `defined` | `planned` | `docs/development-process.md` |  |
+| `HARDEN-1A.4` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add load/concurrency test profiles for admin writes, watch waits, and Config Agent polling. | `HARDEN-1A.3`, `EXT-1A.3` | `AC-042` | `defined` | `planned` | `docs/development-process.md` |  |
+| `HARDEN-1A.5` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Finalize deployment handoff docs for image, env vars, network policy expectations, and external manifest ownership. | `HARDEN-1A.4`, `DEC-003` | `AC-042` | `defined` | `planned` | `docs/05_RUNBOOK.md`, `docs/current/OPERATIONS.md` |  |
 
 ## Gates / Acceptance
 
@@ -101,7 +140,8 @@ Gate status:
 
 - External systems: Git repository referenced by `GIT_URL`.
 - Libraries / vendors: `go-git`, `yaml.v3`, Go standard library HTTP stack.
-- Planned: Kubernetes API, Bitnami SealedSecrets, Config Agent runtime.
+- Planned: AAP Console API, Kubernetes API, Bitnami SealedSecrets,
+  Config Agent runtime, Prometheus metrics, and optional fsnotify support.
 
 ## Risks (open)
 

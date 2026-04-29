@@ -57,3 +57,12 @@ Each todo must be small enough that its execution won't approach response or con
 - **Project conventions**: respect `CLAUDE.md`, `.claude/rules/**`, and existing code style. If a review item conflicts with a project rule, flag it and follow the rule.
 - **Commits**: do not commit unless the review or project workflow explicitly requests it. If commits are expected, pair test + implementation per the project's TDD rules.
 - **Secrets / destructive ops**: never fix a review item by weakening a security check, skipping hooks, or force-pushing.
+
+## Branching
+
+- Primary integration branch: `dev`.
+- Feature work flows `feat/*` -> `dev` -> `main`.
+- Create feature branches from `dev`, and open PRs back to `dev`.
+- Promote `dev` to `main` only through a PR.
+- Never push to `main` directly.
+- Never force-push.

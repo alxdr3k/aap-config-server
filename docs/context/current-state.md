@@ -18,7 +18,7 @@ from an atomically swapped in-memory snapshot.
 - active phase: none
 - active slice: none
 - last accepted gate: `AC-014` / `AC-015` via PR #10
-- next gate: none assigned
+- next gate: `P1-M1` / `AC-020`, `AC-021`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
 
 ## Implemented
@@ -38,9 +38,10 @@ from an atomically swapped in-memory snapshot.
 ## Planned
 
 - SealedSecret generation, K8s apply, and secret value resolve.
-- Config Agent and registry webhook.
-- Watch/history/revert endpoints.
-- Config inheritance and additional operational hardening.
+- App Registry bootstrap and webhook cache.
+- Config Agent rollout path.
+- Watch/history/revert endpoints, config inheritance, response optimizations,
+  metrics, schema validation, rate limiting, and integration/load validation.
 
 ## Explicit non-goals
 
@@ -50,13 +51,14 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-No active follow-up decision remains assigned. Pick the next planned milestone
-or slice before implementation.
+1. Start `SECRET-1A.1` when implementation resumes.
+2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
+3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
 ## Current risks / unknowns
 
 - No open migration decision questions in `docs/07_QUESTIONS_REGISTER.md`;
-  audit items below remain.
+  roadmap leaf slices are defined through `P1-M3`.
 
 ## Current validation
 
@@ -64,7 +66,7 @@ or slice before implementation.
 - Acceptance gates are listed in `docs/06_ACCEPTANCE_TESTS.md`.
 - PR #10 established `AC-014` / `AC-015`; subsequent dev-cycle PRs use the
   repo `check`, `lint`, `scan`, and `test` checks before merge.
-- Repo-local Go 1.24.7 is available through `scripts/dev-env.sh`.
+- Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`, `make test-race`, and `make build` pass in this workspace.
 
 ## Needs audit
