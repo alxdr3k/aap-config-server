@@ -38,10 +38,12 @@ from an atomically swapped in-memory snapshot.
   reads, SealedSecret sealing, K8s apply, and audit logging.
 - Mounted secret file reader with fsnotify-backed refresh events under
   `internal/secret`; env var secret resolve is still not wired to HTTP.
+- Deterministic SealedSecret YAML generator with injected encryption boundary;
+  public-key lookup and K8s apply are still not wired.
 
 ## Planned
 
-- SealedSecret generation, K8s apply, and secret value resolve.
+- SealedSecret public-key encryption wiring, K8s apply, and secret value resolve.
 - App Registry bootstrap and webhook cache.
 - Config Agent rollout path.
 - Watch/history/revert endpoints, config inheritance, response optimizations,
@@ -55,7 +57,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Continue `SECRET-1A` with `SECRET-1A.3`.
+1. Continue `SECRET-1A` with `SECRET-1A.4`.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 

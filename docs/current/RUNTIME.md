@@ -47,6 +47,9 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 - `internal/secret.FileVolumeReader` can read mounted K8s Secret files and
   refresh cached values from fsnotify events; HTTP `resolve_secrets=true` is
   still planned.
+- `internal/secret.DeterministicSealer` can generate stable Bitnami
+  SealedSecret YAML from an injected encryptor; controller public-key lookup
+  and K8s apply are still planned.
 - `POST /api/v1/admin/changes` will eventually accept secret values, generate SealedSecrets, commit encrypted manifests, apply them to Kubernetes, and support secret resolution.
 - Config Agent, registry webhook, watch/history/revert, and inheritance are target design only.
 
@@ -67,6 +70,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 | Unknown admin JSON field | Request fails with `400 invalid_body`. |
 | `secrets` field on admin write | Explicitly rejected in Phase-1 with 400. |
 | Unsafe mounted secret reference | Volume reader rejects it before filesystem access. |
+| Invalid SealedSecret generation input | Sealer rejects missing path identity, namespace/name/data, or path-unsafe keys before emitting YAML. |
 
 ## Debug path
 
