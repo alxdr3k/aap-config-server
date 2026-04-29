@@ -36,6 +36,8 @@ from an atomically swapped in-memory snapshot.
 - Degraded state through `/readyz` and `/api/v1/status`.
 - Secret runtime boundary settings and adapter interfaces for future volume
   reads, SealedSecret sealing, K8s apply, and audit logging.
+- Mounted secret file reader with fsnotify-backed refresh events under
+  `internal/secret`; env var secret resolve is still not wired to HTTP.
 
 ## Planned
 
@@ -53,7 +55,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Continue `SECRET-1A` with `SECRET-1A.2`.
+1. Continue `SECRET-1A` with `SECRET-1A.3`.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 

@@ -58,6 +58,28 @@ type VolumeReader interface {
 	Read(ctx context.Context, ref Reference) (Value, error)
 }
 
+// VolumeOp identifies the kind of mounted secret file change.
+type VolumeOp string
+
+const (
+	VolumeOpWrite  VolumeOp = "write"
+	VolumeOpRemove VolumeOp = "remove"
+)
+
+// VolumeEvent reports that a mounted secret file was refreshed or removed.
+type VolumeEvent struct {
+	Reference Reference
+	Path      string
+	Op        VolumeOp
+	Err       error
+}
+
+// VolumeWatcher watches mounted K8s Secret files and refreshes reader state
+// when kubelet updates the projected files.
+type VolumeWatcher interface {
+	Watch(ctx context.Context, refs []Reference) (<-chan VolumeEvent, error)
+}
+
 // SealRequest is the plaintext input to a SealedSecret adapter. Data values
 // are plaintext and must not be logged.
 type SealRequest struct {
@@ -113,10 +135,11 @@ func (NoopAuditor) Record(context.Context, AuditEvent) error { return nil }
 // Dependencies groups secret adapters so higher-level services can be wired
 // explicitly and tested with fakes.
 type Dependencies struct {
-	VolumeReader VolumeReader
-	Sealer       Sealer
-	Applier      Applier
-	Auditor      Auditor
+	VolumeReader  VolumeReader
+	VolumeWatcher VolumeWatcher
+	Sealer        Sealer
+	Applier       Applier
+	Auditor       Auditor
 }
 
 // WithDefaults fills optional adapters with no-op implementations.
