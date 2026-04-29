@@ -75,6 +75,9 @@ snapshot.
 - Admin secret writes merge existing `secrets.yaml` metadata with new plaintext
   values, commit metadata plus SealedSecret manifests together, and never write
   plaintext values to Git.
+- Resolved env var reads map `env_vars.secret_refs` IDs through `secrets.yaml`
+  metadata and refresh mounted files through `secret.VolumeReader`; responses
+  are no-store and omit ETag.
 - Invalid YAML or missing required fields fail reload closed.
 
 ## Lifecycle states
@@ -89,4 +92,4 @@ snapshot.
 ## Needs audit
 
 - No generated reference docs currently exist under `docs/generated/`.
-- Planned secret resolution and Config Agent data models are target design only.
+- Planned Config Agent data models are target design only.

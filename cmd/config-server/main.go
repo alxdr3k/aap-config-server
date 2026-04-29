@@ -64,14 +64,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	st := store.New(repo, store.WithSecretDependencies(configureSecretDependencies(secretCfg)))
+	secretDeps := configureSecretDependencies(secretCfg)
+	st := store.New(repo, store.WithSecretDependencies(secretDeps))
 	if err := st.LoadFromRepo(ctx); err != nil {
 		slog.Error("initial config load", "err", err)
 		os.Exit(1)
 	}
 
 	probe := &server.ReadinessProbe{}
-	h := handler.New(st, probe, cfg.APIKey)
+	h := handler.New(st, probe, cfg.APIKey, handler.WithSecretDependencies(secretDeps))
 
 	mux := http.NewServeMux()
 	h.Routes(mux)
@@ -88,21 +89,29 @@ func main() {
 }
 
 func configureSecretDependencies(cfg secret.RuntimeConfig) secret.Dependencies {
+	deps := secret.Dependencies{}
+	volumeReader, err := secret.NewFileVolumeReader(cfg.MountPath)
+	if err != nil {
+		slog.Error("configure mounted secret reader", "err", err)
+	} else {
+		deps.VolumeReader = volumeReader
+	}
+
 	k8sConfig, err := rest.InClusterConfig()
 	if err != nil {
 		slog.Warn("kubernetes secret write adapters disabled; secret writes will be rejected", "err", err)
-		return secret.Dependencies{}
+		return deps
 	}
 
 	kubeClient, err := kubernetes.NewForConfig(k8sConfig)
 	if err != nil {
 		slog.Error("create kubernetes client for secret writes", "err", err)
-		return secret.Dependencies{}
+		return deps
 	}
 	dynamicClient, err := dynamic.NewForConfig(k8sConfig)
 	if err != nil {
 		slog.Error("create kubernetes dynamic client for secret writes", "err", err)
-		return secret.Dependencies{}
+		return deps
 	}
 
 	sealer, err := secret.NewControllerPublicKeySealer(
@@ -113,18 +122,17 @@ func configureSecretDependencies(cfg secret.RuntimeConfig) secret.Dependencies {
 	)
 	if err != nil {
 		slog.Error("configure sealed secret sealer", "err", err)
-		return secret.Dependencies{}
+		return deps
 	}
 	applier, err := secret.NewDynamicApplier(dynamicClient, cfg.K8sApplyTimeout)
 	if err != nil {
 		slog.Error("configure sealed secret applier", "err", err)
-		return secret.Dependencies{}
+		return deps
 	}
 
-	return secret.Dependencies{
-		Sealer:  sealer,
-		Applier: applier,
-	}
+	deps.Sealer = sealer
+	deps.Applier = applier
+	return deps
 }
 
 func pollLoop(ctx context.Context, st *store.Store, interval time.Duration) {

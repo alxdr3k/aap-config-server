@@ -29,6 +29,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Secret **write** via `secrets` field on POST       | Implemented when Kubernetes SealedSecret adapters are configured |
 | SealedSecret generation / kubeseal integration     | Implemented with deterministic YAML generation and Bitnami public-key encryption |
 | K8s apply of SealedSecret objects                  | Implemented for admin secret writes |
+| Secret value resolve (`env_vars?resolve_secrets=true`) | Implemented with API key auth, mounted secret refresh, and `Cache-Control: no-store` |
 | Watch / stream endpoint                            | Not implemented |
 | History / revert endpoints                         | Not implemented |
 | Config Agent, registry webhook                     | Not implemented |
@@ -142,6 +143,7 @@ GET /api/v1/orgs/{org}/projects/{project}/services
 # Per-service reads
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/config
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars
+GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars?resolve_secrets=true   # auth required, no-store
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/secrets   # auth required
 ```
 

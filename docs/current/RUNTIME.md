@@ -28,6 +28,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 - `GET /api/v1/orgs/{org}/projects/{project}/services`
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config`
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars`
+  (`resolve_secrets=true` requires auth and returns `Cache-Control: no-store`)
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/secrets`
 - `POST /api/v1/admin/changes`
 - `DELETE /api/v1/admin/changes`
@@ -37,7 +38,10 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 
 - Admin endpoints require `Authorization: Bearer <API_KEY>` or `X-API-Key`.
 - Secret metadata read also requires auth.
-- Config/env var reads are currently unauthenticated; deployment must restrict network access.
+- Env var reads with `resolve_secrets=true` require auth because they return
+  plaintext secret values.
+- Config reads and unresolved env var reads are currently unauthenticated;
+  deployment must restrict network access.
 - Empty `API_KEY` is only allowed with explicit `ALLOW_UNAUTHENTICATED_DEV=true`.
 
 ## Planned flow
@@ -45,8 +49,8 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 - `internal/secret` now defines adapter-neutral boundaries for mounted volume
   reads, SealedSecret sealing, K8s apply, and non-sensitive audit logging.
 - `internal/secret.FileVolumeReader` can read mounted K8s Secret files and
-  refresh cached values from fsnotify events; HTTP `resolve_secrets=true` is
-  still planned.
+  refresh cached values from fsnotify events; HTTP `resolve_secrets=true`
+  uses it to resolve env var secret refs.
 - `internal/secret.DeterministicSealer` can generate stable Bitnami
   SealedSecret YAML from an injected encryptor.
 - `internal/secret.ControllerPublicKeyProvider` and
@@ -58,7 +62,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 - `POST /api/v1/admin/changes` accepts secret values when secret adapters are
   configured, generates SealedSecrets, commits encrypted manifests with
   metadata, applies them to Kubernetes, and reports apply/reload failures
-  explicitly. HTTP `resolve_secrets=true` is still planned.
+  explicitly.
 - Config Agent, registry webhook, watch/history/revert, and inheritance are target design only.
 
 ## Failure modes
@@ -77,6 +81,9 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 | Admin delete succeeds but reload fails | Response is `503 deleted_but_reload_failed`; Git delete remains. |
 | Dirty `configs/` worktree during snapshot | Reload fails closed to avoid serving data not represented by HEAD. |
 | Unknown admin JSON field | Request fails with `400 invalid_body`. |
+| `resolve_secrets=true` without valid API key | Request fails with `401 unauthorized`. |
+| Resolved env var secret response | Mounted secret files are refreshed before response; response includes `Cache-Control: no-store` and omits `ETag`. |
+| Duplicate `secrets.yaml` IDs during resolve | Request fails instead of choosing an ambiguous mounted secret value. |
 | `secrets` field on admin write without configured adapters | Request fails validation before Git commit. |
 | Unsafe mounted secret reference | Volume reader rejects it before filesystem access. |
 | Invalid SealedSecret generation input | Store/sealer reject missing path identity, Kubernetes-incompatible namespace/name, missing data, or path-unsafe keys before emitting YAML or committing Git files. |

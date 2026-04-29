@@ -44,7 +44,7 @@ Status: active.
 | `internal/secret/*_test.go` | Secret boundary value/default behavior, mounted secret reader/watch behavior, deterministic SealedSecret YAML generation, public-key encryption wiring, and K8s apply adapter behavior. |
 | `internal/store/*_test.go` | Snapshot reload, config/env/secret apply, delete, degraded behavior, concurrency. |
 | `internal/gitops/*_test.go` | Local Git clone/pull/commit/delete/snapshot behavior. |
-| `internal/handler/*_test.go` | HTTP routes, auth, admin write response shape, secret write input, reload/degraded status. |
+| `internal/handler/*_test.go` | HTTP routes, auth, admin write response shape, secret write input, resolved env var secret reads, reload/degraded status. |
 
 ## Needs audit
 
