@@ -465,6 +465,40 @@ func TestGetEnvVars_ResolveSecretsRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestGetEnvVars_ResolveSecretsRejectsDuplicateSecretIDs(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			SecretRefs: map[string]string{"API_KEY": "dup-id"},
+		}},
+		Secrets: &parser.SecretsConfig{
+			Secrets: []parser.SecretEntry{
+				{
+					ID:        "dup-id",
+					K8sSecret: parser.K8sSecret{Namespace: "ns-a", Name: "secret-a", Key: "api-key"},
+				},
+				{
+					ID:        "dup-id",
+					K8sSecret: parser.K8sSecret{Namespace: "ns-b", Name: "secret-b", Key: "api-key"},
+				},
+			},
+		},
+	}
+	reader := &fakeVolumeReader{values: map[secret.Reference]string{}}
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithSecretDependencies(secret.Dependencies{
+		VolumeReader: reader,
+	}))
+	defer srv.Close()
+
+	resp := getWithBearer(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true", "secret-key")
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d", resp.StatusCode)
+	}
+	if len(reader.refreshRequests) != 0 {
+		t.Fatalf("duplicate secret IDs should fail before reading mounted values, got %+v", reader.refreshRequests)
+	}
+}
+
 func TestGetEnvVars_ResolveSecretsRejectsInvalidQuery(t *testing.T) {
 	srv := newServer(t, newFakeStore())
 	defer srv.Close()

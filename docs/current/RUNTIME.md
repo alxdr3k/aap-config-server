@@ -83,6 +83,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 | Unknown admin JSON field | Request fails with `400 invalid_body`. |
 | `resolve_secrets=true` without valid API key | Request fails with `401 unauthorized`. |
 | Resolved env var secret response | Mounted secret files are refreshed before response; response includes `Cache-Control: no-store` and omits `ETag`. |
+| Duplicate `secrets.yaml` IDs during resolve | Request fails instead of choosing an ambiguous mounted secret value. |
 | `secrets` field on admin write without configured adapters | Request fails validation before Git commit. |
 | Unsafe mounted secret reference | Volume reader rejects it before filesystem access. |
 | Invalid SealedSecret generation input | Store/sealer reject missing path identity, Kubernetes-incompatible namespace/name, missing data, or path-unsafe keys before emitting YAML or committing Git files. |

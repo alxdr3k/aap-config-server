@@ -318,6 +318,10 @@ func (h *Handler) resolveEnvSecrets(ctx context.Context, d *store.ServiceData) (
 
 	byID := make(map[string]parser.SecretEntry, len(d.Secrets.Secrets))
 	for _, entry := range d.Secrets.Secrets {
+		if _, exists := byID[entry.ID]; exists {
+			return nil, apperror.New(apperror.CodeInternal,
+				"secret metadata contains duplicate id")
+		}
 		byID[entry.ID] = entry
 	}
 
