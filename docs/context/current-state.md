@@ -62,8 +62,8 @@ or slice before implementation.
 
 - Commands are listed in `docs/current/TESTING.md`.
 - Acceptance gates are listed in `docs/06_ACCEPTANCE_TESTS.md`.
-- PR #10 established `AC-014` / `AC-015`; PRs #11, #12, and #13 GitHub
-  `check`, `lint`, `scan`, and `test` checks passed before merge.
+- PR #10 established `AC-014` / `AC-015`; subsequent dev-cycle PRs use the
+  repo `check`, `lint`, `scan`, and `test` checks before merge.
 - Repo-local Go 1.24.7 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`, `make test-race`, and `make build` pass in this workspace.
 
