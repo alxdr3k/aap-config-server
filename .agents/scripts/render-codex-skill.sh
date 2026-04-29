@@ -47,6 +47,30 @@ sha_stdin() {
   shasum -a 256 | awk '{print $1}'
 }
 
+trim_trailing_blank_lines() {
+  awk '
+    { lines[NR] = $0 }
+    END {
+      n = NR
+      while (n > 0 && lines[n] ~ /^[[:space:]]*$/) n--
+      for (i = 1; i <= n; i++) print lines[i]
+    }
+  ' "$1"
+}
+
+trim_edge_blank_lines() {
+  awk '
+    { lines[NR] = $0 }
+    END {
+      first = 1
+      last = NR
+      while (first <= last && lines[first] ~ /^[[:space:]]*$/) first++
+      while (last >= first && lines[last] ~ /^[[:space:]]*$/) last--
+      for (i = first; i <= last; i++) print lines[i]
+    }
+  ' "$1"
+}
+
 has_nonempty_overlay() {
   [[ -f "$overlay" ]] && grep -q '[^[:space:]]' "$overlay"
 }
@@ -106,22 +130,23 @@ tmp_header="$(mktemp)"
 tmp_current="$(mktemp)"
 trap 'rm -f "$tmp_body" "$tmp_header" "$tmp_current"' EXIT
 
-cp "$base" "$tmp_body"
-
 empty_sha="$(printf '' | sha_stdin)"
 base_sha="$(sha_file "$base")"
 overlay_sha="$empty_sha"
 
 if has_nonempty_overlay; then
+  trim_trailing_blank_lines "$base" > "$tmp_body"
   overlay_sha="$(sha_file "$overlay")"
   {
-    printf '\n\n## Repo Overlay\n\n'
+    printf '\n## Repo Overlay\n\n'
     printf 'The following instructions are maintained in `.codex/skill-overrides/%s.md` for this repo.\n\n' "$skill"
-    cat "$overlay"
-    printf '\n'
+    trim_edge_blank_lines "$overlay"
   } >> "$tmp_body"
-elif [[ -f "$overlay" ]]; then
-  overlay_sha="$(sha_file "$overlay")"
+else
+  cp "$base" "$tmp_body"
+  if [[ -f "$overlay" ]]; then
+    overlay_sha="$(sha_file "$overlay")"
+  fi
 fi
 
 output_sha="$(sha_file "$tmp_body")"

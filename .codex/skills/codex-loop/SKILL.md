@@ -4,9 +4,9 @@ description: 현재 PR의 codex 리뷰를 기다리고 코멘트 수정 후 push
 ---
 <!-- my-skill:generated
 skill: codex-loop
-base-sha256: 1ac03cfb986c00ef8111e04c8c92dbd1581d37e259dc3a31498fd486e0469f3e
+base-sha256: 90aa303001e7be2eb547282a329cb30f18d0efc554a9851f3c8d22a2adda77bc
 overlay-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-output-sha256: 1ac03cfb986c00ef8111e04c8c92dbd1581d37e259dc3a31498fd486e0469f3e
+output-sha256: 90aa303001e7be2eb547282a329cb30f18d0efc554a9851f3c8d22a2adda77bc
 do-not-edit: edit .codex/skill-overrides/codex-loop.md instead
 -->
 
@@ -46,7 +46,7 @@ bash "$CODEX_REVIEW_HELPER"
 | ---- | ---- | --------- |
 | 0 | Codex pass reaction 감지 | checks 확인 후 PR merge |
 | 1 | 새 comment/review가 stdout에 출력됨 | 분석 -> 수정 -> commit -> push -> 스크립트 재실행 |
-| 2 | timeout | 사용자에게 타임아웃 보고 |
+| 2 | 두 번째 timeout 또는 review 요청 미확인 | loop 종료, 사용자에게 타임아웃 보고 |
 | 3 | PR 감지 실패 | PR 번호 또는 URL 요청 후 스크립트 인자로 재실행 |
 | 4 | 영구 API 오류 | 인증/권한 문제 보고 |
 
@@ -54,6 +54,17 @@ bash "$CODEX_REVIEW_HELPER"
 `CODEX_INITIAL_EMPTY_DELAY`초, 기본 300초를 쉰 뒤 기존 `CODEX_POLL_INTERVAL`로
 계속 조회한다. PR 생성 직후 Codex/GitHub 쪽 초기 처리 지연 때문에 빈 PR을 너무 촘촘하게
 polling하지 않기 위한 동작이다.
+
+각 polling iter에서 helper는 PR 본문 reaction과 인증 사용자 comment의 reaction을
+확인한다.
+
+- `eyes` reaction이 PR 본문 또는 내 comment에 있으면 계속 대기한다.
+- `eyes` reaction이 없고 아직 review 요청을 남기지 않았으면 PR에 `@codex review`
+  comment를 1회 남긴다.
+- review 요청 comment 자체는 새 feedback으로 처리하지 않는다.
+- comment를 남긴 뒤 다음 3번의 polling iter 안에 PR 본문 또는 내 comment에 `eyes`
+  reaction이 생기지 않으면 exit 2로 종료한다.
+- 일반 polling timeout은 한 번 더 대기하고, 두 번째 timeout에서 exit 2로 종료한다.
 
 인자 형식:
 

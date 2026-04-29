@@ -37,11 +37,19 @@ bash "$CODEX_REVIEW_HELPER"
    |------|------|-----------|
    | 0 | codex가 👍 reaction 추가 — 리뷰 통과 | check 확인 후 PR merge |
    | 1 | 새 코멘트/리뷰가 stdout에 출력됨 | 분석 → 코드 수정 → commit → push → 1번부터 재시도 |
-   | 2 | 타임아웃 (default 10분) | 사용자에게 보고 |
+   | 2 | 두 번째 타임아웃 또는 review 요청 미확인 | loop 종료, 사용자에게 보고 |
    | 3 | PR 감지 실패 | 첫 인자로 PR 번호 또는 URL 전달 |
    | 4 | 영구 API 에러 (401/403/404) | 사용자에게 인증·권한 점검 요청 |
 
 4. exit 1 후 push가 끝나면 다시 1번부터.
+
+각 polling iter에서 helper는 PR 본문 reaction과 인증 사용자 comment의 reaction을 확인한다.
+
+- `eyes` reaction이 PR 본문 또는 내 comment에 있으면 계속 대기한다.
+- `eyes` reaction이 없고 아직 review 요청을 남기지 않았으면 PR에 `@codex review` comment를 1회 남긴다.
+- review 요청 comment 자체는 새 feedback으로 처리하지 않는다.
+- comment를 남긴 뒤 다음 3번의 polling iter 안에 PR 본문 또는 내 comment에 `eyes` reaction이 생기지 않으면 exit 2로 종료한다.
+- 일반 polling timeout은 한 번 더 대기하고, 두 번째 timeout에서 exit 2로 종료한다.
 
 ## Merge 처리
 
@@ -80,6 +88,7 @@ branch protection, merge queue, required check pending 때문에 즉시 merge가
 | `CODEX_REPO` | (auto) | fork 워크플로 시 base repo 명시 (`owner/repo`) |
 | `CODEX_PASS_ACTOR` | `chatgpt-codex-connector[bot]` | 통과 reaction을 다는 봇 login |
 | `CODEX_PASS_REACTION` | `+1` | 통과를 의미하는 reaction content |
+| `CODEX_REVIEW_REQUEST_BODY` | `@codex review` | `eyes` acknowledgement가 없을 때 1회 남기는 comment |
 
 ## 인자 형식
 

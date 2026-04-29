@@ -261,21 +261,9 @@ Next action: $next_action" 2>"$issue_err")"; then
     else
       issue_msg="$(sed -n '1p' "$issue_err" 2>/dev/null || true)"
       rm -f "$issue_err"
-      result="blocked"
       review_ship="$review_ship; risk issue creation failed"
-      risk="$risk (issue creation failed${issue_msg:+: $issue_msg})"
-      brief="$(cat <<EOF
-## Cycle $cycle
-- Result: $result
-- Work: $work
-- Verification: $verification
-- Review/Ship: $review_ship
-- Risk: $risk
-EOF
-)"
-      printf '%s\n\n' "$brief" | tee -a "$log"
-      echo "Risk issue creation failed; brief recorded as blocked" >&2
-      return 1
+      risk="$risk (issue creation failed${issue_msg:+: $issue_msg}; next action: $next_action)"
+      echo "Risk issue creation failed; brief recorded without issue link" >&2
     fi
     brief="$(cat <<EOF
 ## Cycle $cycle
