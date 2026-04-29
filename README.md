@@ -5,7 +5,7 @@ the single source of truth. The server clones the config repo at startup, loads
 every `config.yaml` / `env_vars.yaml` / `secrets.yaml` into an in-memory
 snapshot, and swaps the snapshot atomically when the repo changes.
 
-> **Status:** Phase-1 MVP. The [PRD](docs/PRD.md) and [HLD](docs/HLD.md) describe a
+> **Status:** Phase-1 MVP. The [PRD](docs/01_PRD.md) and [HLD](docs/02_HLD.md) describe a
 > larger target architecture (Config Agent, SealedSecret controller, registry
 > webhook, history/revert, watch). Those are **not** implemented yet — see the
 > feature matrix below.
@@ -303,8 +303,8 @@ internal/parser/       # YAML types + parsers
 internal/handler/      # HTTP handlers, auth middleware, JSON error envelope
 internal/server/       # http.Server lifecycle + readiness probe
 internal/apperror/     # typed domain errors → HTTP status mapping
-docs/                  # PRD, HLD, ADRs, development process
+docs/                  # numbered project docs, current implementation docs, ADRs
 ```
 
-See [docs/PRD.md](docs/PRD.md) and [docs/HLD.md](docs/HLD.md) for the target
+See [docs/01_PRD.md](docs/01_PRD.md) and [docs/02_HLD.md](docs/02_HLD.md) for the target
 architecture (not all of which is implemented yet — see the feature matrix).
