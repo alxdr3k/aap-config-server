@@ -11,4 +11,4 @@ Before using archived design for implementation, check:
 3. `docs/01_PRD.md`
 4. `docs/02_HLD.md`
 5. relevant ADRs
-6. current code/tests/migrations once implementation exists
+6. current code/tests once implementation exists

@@ -66,9 +66,9 @@ from an atomically swapped in-memory snapshot.
 
 ## Needs audit
 
-- PRD milestone checkboxes still describe target phases and are not the status ledger.
 - HLD package list includes planned packages not present in the current code.
 - CI claims in README should be kept aligned with `.github/workflows/ci.yml`.
+- Decide whether `FR-*` should remain canonical or gain `REQ-*` aliases.
 
 ## Links
 

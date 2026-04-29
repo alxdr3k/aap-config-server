@@ -1,6 +1,6 @@
 # Generated Docs
 
-Generated docs are derived from code, schema, migrations, configs, or specs.
+Generated docs are derived from code, parser types, configs, or specs.
 
 **Do not edit generated docs by hand.** If a generated doc is wrong, fix
 the generator (or the underlying source); do not patch the output.
@@ -17,10 +17,10 @@ Add rows as generators are wired in.
 
 Common candidates worth generating once the project has the matching source:
 
-- DB schema reference (from migrations / ORM schema file)
+- API / schema reference (from route handlers, parser types, or generated specs)
 - API / route reference (from routes config or framework introspection)
 - Provider / adapter capabilities (from typed adapter modules)
-- Enum / reference docs (from migration constraints or type definitions)
+- Enum / reference docs (from type definitions)
 - Module graph (from compiler output or import walker)
 - Eval report summaries (from eval harness output)
 

@@ -63,5 +63,5 @@ snapshot.
 
 ## Needs audit
 
-- No generated schema docs currently exist under `docs/generated/`.
+- No generated reference docs currently exist under `docs/generated/`.
 - Planned SealedSecret and Config Agent data models are target design only.

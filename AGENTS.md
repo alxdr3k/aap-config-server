@@ -15,7 +15,8 @@ Do not read archived design docs by default.
 
 ## Source of truth
 
-- Code, tests, and generated docs are authoritative for implemented behavior once implementation exists.
+- Code and tests are authoritative for implemented behavior once implementation exists.
+- Generated docs are derived references; fix the generator or source rather than hand-editing generated output.
 - `docs/context/current-state.md` is the compressed current state.
 - `docs/04_IMPLEMENTATION_PLAN.md` owns roadmap / status ledger: milestone, track, phase, slice, gate, evidence, and next work.
 - `docs/01_PRD.md` owns product scope.

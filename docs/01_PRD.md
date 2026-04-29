@@ -1318,13 +1318,13 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 
 ## 7. 기술 스택
 
-**Go Module**: `github.com/aap/config-server` (Go 1.22+)
+**Go Module**: `github.com/aap/config-server` (Go 1.24+)
 
 | 구성 요소 | 기술 | 선택 이유 |
 |-----------|------|-----------|
-| 언어 | **Go 1.22+** | 고성능 HTTP 서버, 단일 바이너리, 낮은 메모리, K8s 생태계 친화 |
+| 언어 | **Go 1.24+** | 고성능 HTTP 서버, 단일 바이너리, 낮은 메모리, K8s 생태계 친화 |
 | HTTP 서버 | `net/http` (stdlib) | 외부 의존성 최소화, HTTP/2 기본 지원 |
-| Router | stdlib `mux` (Go 1.22+ `http.NewServeMux` enhanced routing) | 외부 의존성 zero, 메서드+패턴 라우팅 지원 |
+| Router | stdlib `mux` (Go 1.24+ `http.NewServeMux` enhanced routing) | 외부 의존성 zero, 메서드+패턴 라우팅 지원 |
 | Git 연동 | `go-git` 또는 shell exec `git` | in-process git 조작 |
 | YAML 파싱 | `gopkg.in/yaml.v3` | 표준 YAML 라이브러리 |
 | 파일 감시 | `fsnotify` | Volume Mount 변경 감지 |
@@ -1344,76 +1344,70 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 
 ---
 
-## 9. 마일스톤
+## 9. Phase Scope
+
+이 섹션은 제품/기술 scope를 phase 단위로 묶어 보여준다. 현재 구현 상태,
+gate 상태, evidence, next work의 canonical ledger는
+[`04_IMPLEMENTATION_PLAN.md`](./04_IMPLEMENTATION_PLAN.md)이다.
 
 ### Phase 1: Core (MVP) — `[FR-1]` `[FR-2]` `[FR-3]` `[FR-4]` `[FR-5]` `[FR-15]`
 
-- [ ] Go 프로젝트 구조 세팅 (`go mod init`, `cmd/`, `internal/` 디렉토리 — [HLD 섹션 11.1](./02_HLD.md#111-프로젝트-구조) 참조)
-- [ ] 서버 자체 설정 로딩 (`internal/config` — 환경변수 + 플래그)
-- [ ] 커스텀 에러 타입 정의 (`internal/apperror` — [HLD 섹션 11.4](./02_HLD.md#114-에러-처리) 참조)
-- [ ] `[FR-1]` `aap-helm-charts` 저장소 clone/pull 및 `configs/` 하위 설정 파일 파싱 (`config.yaml`, `env_vars.yaml`, `secrets.yaml`)
-- [ ] `[FR-1]` In-memory config store 구현 (COW 패턴, interface 기반 DI)
-- [ ] `[FR-2]` REST API: 설정 조회 (`GET /api/v1/.../config`)
-- [ ] `[FR-3]` REST API: 환경변수 조회 (`GET /api/v1/.../env_vars`)
-- [ ] `[FR-4]` Admin API: 설정/시크릿 일괄 변경 (`POST /api/v1/admin/changes`) — 스키마 검증 + 단일 Git commit & push (시크릿 처리는 Phase 2)
-- [ ] `[FR-5]` Admin API: 설정/시크릿 일괄 삭제 (`DELETE /api/v1/admin/changes`) — Git에서 파일 삭제 + commit & push
-
-- [ ] `[FR-1]` 주기적 Git poll 기반 설정 갱신
-- [ ] `[FR-15]` Health check 엔드포인트 (`/healthz`, `/readyz`)
-- [ ] Graceful shutdown (`signal.NotifyContext` + `http.Server.Shutdown`)
-- [ ] Dockerfile 및 기본 K8s manifests
+- Go 프로젝트 구조, 서버 설정 로딩, 커스텀 에러 타입
+- `aap-helm-charts` 저장소 clone/pull 및 `configs/` 하위 설정 파일 파싱
+- In-memory config store
+- 설정/환경변수 조회 API
+- Admin write/delete API for config/env vars
+- 주기적 Git poll 기반 설정 갱신
+- Health/readiness/status API
+- Graceful shutdown
+- Docker image build
 
 ### Phase 2: Secrets — `[FR-7]` `[FR-8]`
 
-- [ ] `[FR-7]` Volume Mount 기반 시크릿 로딩
-- [ ] `[FR-7]` `secrets.yaml` 파싱 및 시크릿 참조 resolve (env_vars API의 `resolve_secrets=true`)
-- [ ] `[FR-7]` SealedSecret 생성 (kubeseal 암호화)
-- [ ] `[FR-7]` SealedSecret YAML Git commit & push
-- [ ] `[FR-7]` SealedSecret K8s API apply (client-go)
-- [ ] `[FR-4]` `[FR-7]` `POST /admin/changes`의 `secrets` 필드 처리 → kubeseal 암호화 + SealedSecret apply
-- [ ] `[FR-8]` AAP Console App Registry 연동 (시작 시 전체 로드 + webhook push 수신)
-- [ ] `[FR-7]` `resolve_secrets` 쿼리 파라미터 구현
-- [ ] `[FR-17]` 시크릿 포함 응답에 `Cache-Control: no-store` 헤더 적용
-- [ ] `[FR-17]` 시크릿 접근 감사 로깅
+- Volume Mount 기반 시크릿 로딩
+- `secrets.yaml` 파싱 및 시크릿 참조 resolve
+- SealedSecret 생성 및 Git commit/push
+- SealedSecret K8s API apply
+- `POST /admin/changes`의 `secrets` 필드 처리
+- AAP Console App Registry 연동
+- `resolve_secrets` 쿼리 파라미터
+- 시크릿 응답 보안 헤더 및 감사 로깅
 
 ### Phase 3: Config Agent (중앙 집중형) — `[FR-9]`
 
-- [ ] `[FR-9]` Config Agent Deployment 구현 (long polling loop)
-- [ ] `[FR-9]` K8s Lease 기반 leader election 구현 (replica=2, 이중 적용 방지)
-- [ ] `[FR-9]` Config Server API fetch 로직 (resolve_secrets=true)
-- [ ] `[FR-9]` 서비스별 네이티브 설정 파일 생성 (litellm proxy_config 형식 등)
-- [ ] `[FR-9]` K8s client-go 연동: ConfigMap 생성/업데이트
-- [ ] `[FR-9]` K8s client-go 연동: Secret 생성/업데이트 (시크릿 포함 환경변수)
-- [ ] `[FR-9]` 변경 감지 후 ConfigMap/Secret 업데이트 → Deployment annotation 패치 → rolling restart
-- [ ] `[FR-9]` RBAC 설정 (ServiceAccount, Role, RoleBinding)
-- [ ] `[FR-9]` Config Agent Docker 이미지 빌드
+- Config Agent Deployment
+- K8s Lease 기반 leader election
+- Config Server API fetch 로직
+- 서비스별 네이티브 설정 파일 생성
+- K8s ConfigMap/Secret 업데이트
+- Deployment annotation 패치 및 rolling restart
+- RBAC 및 Config Agent image build
 
 ### Phase 4: Auth & Security — `[FR-16]` `[FR-17]`
 
-- [ ] `[FR-16]` API Key Bearer 인증 미들웨어 (`Authorization: Bearer <key>` → 환경변수 비교)
-- [ ] `[FR-16]` API Key 환경변수 설정 (`API_KEY`) + Helm values 연동
-- [ ] `[FR-17]` K8s Network Policy 설정 (Config Server 접근 제어)
-- [ ] `[FR-17]` 시크릿 메모리 제로화
-- [ ] `[FR-17]` 보안 헤더 설정 (`Cache-Control: no-store` 등)
+- API Key Bearer 인증
+- API Key 환경변수/Helm values 연동
+- K8s Network Policy
+- 시크릿 메모리 제로화
+- 보안 헤더
 
-### Phase 5: Console 연동 & Operations — `[FR-6]` `[FR-10]` `[FR-11]` `[FR-12]` `[FR-13]` `[FR-14]`
+### Phase 5: Console Integration & Operations — `[FR-6]` `[FR-10]` `[FR-11]` `[FR-12]` `[FR-13]` `[FR-14]`
 
-- [ ] `[FR-11]` 서비스 탐색 API (`GET /api/v1/orgs`, `projects`, `services`)
-- [ ] `[FR-12]` 시크릿 메타데이터 조회 API (`GET /api/v1/.../secrets`)
-- [ ] `[FR-13]` 변경 이력 조회 API (`GET /api/v1/.../history`)
-- [ ] `[FR-13]` 특정 버전 설정 조회 (`?version=` 파라미터)
-- [ ] `[FR-14]` 버전 롤백 API (`POST /api/v1/admin/changes/revert`)
-- [ ] `[FR-1]` ETag / If-None-Match 지원
-- [ ] `[FR-1]` gzip 응답 압축
-- [ ] `[FR-15]` Prometheus 메트릭 export
-- [ ] `[FR-1]` Git webhook 수신 엔드포인트
-- [ ] `[FR-6]` Config watch (long polling) API (`config/watch` + `env_vars/watch`)
-- [ ] Batch 조회 API
-- [ ] `[FR-10]` 설정 상속 (계층적 _defaults merge)
+- 서비스 탐색 API
+- 시크릿 메타데이터 조회 API
+- 변경 이력 및 특정 버전 조회
+- 설정 롤백 API
+- ETag / If-None-Match
+- gzip 응답 압축
+- Prometheus metrics
+- Git webhook
+- Config watch API
+- Batch 조회 API
+- 설정 상속
 
 ### Phase 6: Hardening
 
-- [ ] 설정 파일 스키마 검증
-- [ ] Rate limiting
-- [ ] 통합 테스트 / 부하 테스트
-- [ ] Helm chart (Config Server + Config Agent Deployment)
+- 설정 파일 스키마 검증
+- Rate limiting
+- 통합 테스트 / 부하 테스트
+- Helm chart / K8s deployment manifests

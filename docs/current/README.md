@@ -4,7 +4,7 @@ These docs help humans and AI agents understand the implemented state quickly.
 
 They are thin navigation docs.
 
-They do not replace code, tests, migrations, or generated schema.
+They do not replace code, tests, or generated references.
 
 They also do not own roadmap / status inventory. Use
 `docs/04_IMPLEMENTATION_PLAN.md` for milestone, track, phase, slice, gate,

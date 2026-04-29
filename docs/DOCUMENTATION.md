@@ -7,12 +7,13 @@ from implementation-stage current state.
 
 ## Source-of-truth hierarchy
 
-1. Code, tests, migrations, generated schemas once implementation exists
+1. Code and tests once implementation exists
 2. Roadmap / status ledger in `docs/04_IMPLEMENTATION_PLAN.md`
 3. Thin current-state docs under `docs/context/` and `docs/current/`
 4. PRD/HLD/spec/runbook/acceptance docs
 5. ADRs and Decision Register
-6. Discovery and archived design notes
+6. Generated docs under `docs/generated/` as derived references
+7. Discovery and archived design notes
 
 ## Rules
 
@@ -118,8 +119,8 @@ every thin doc. Most current-state docs do not need it.
 
 ### Generated docs
 
-`docs/generated/` holds outputs derived from code, schema, migrations, or
-config. This project currently has no active generated-doc command. When one
+`docs/generated/` holds outputs derived from code, parser types, config, or
+specs. This project currently has no active generated-doc command. When one
 is added, pair each generated file with a generator script committed in the
 project.
 

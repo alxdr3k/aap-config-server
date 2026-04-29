@@ -4,8 +4,7 @@
 
 # Documentation impact
 
-See [`docs/DOCUMENTATION.md`](../docs/DOCUMENTATION.md) for the
-"what to update when" rules.
+See `docs/DOCUMENTATION.md` for the "what to update when" rules.
 
 - [ ] No doc impact
 - [ ] Updated roadmap / status ledger (`docs/04_IMPLEMENTATION_PLAN.md`)

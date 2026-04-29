@@ -68,6 +68,7 @@ staging / manual acceptance가 아직 실행되지 않은 상태인지 분리한
 | `STATIC-001` | `git diff --check` | whitespace / patch hygiene | passing locally |
 | `STATIC-002` | `ruby -e 'require "yaml"; ARGV.each { \|f\| YAML.load_file(f) }' .github/workflows/ci.yml .github/workflows/doc-freshness.yml` | workflow YAML parse | passing locally |
 | `STATIC-003` | `rg` placeholder/stale-link checks | documentation migration sanity | passing locally |
+| `STATIC-004` | local Ruby markdown-link existence check | relative documentation links | passing locally |
 
 ## Definition of Done
 
