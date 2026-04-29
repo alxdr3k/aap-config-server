@@ -92,7 +92,7 @@ make coverage
 
 Generates `coverage.out` and `coverage.html`.
 
-## DB / migration checks
+## Persistence checks
 
 No database or schema migration command is currently defined.
 
