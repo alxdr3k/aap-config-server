@@ -134,20 +134,51 @@ func (h *Handler) readyz(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	si := h.store.StatusInfo()
+	registryStatus := h.appRegistry.Status()
+	degradedComponents := make([]string, 0, 2)
 	resp := map[string]any{
 		"status":          "ok",
 		"version":         si.Version,
 		"services_loaded": si.ServicesLoaded,
+		"app_registry":    registryStatusBody(registryStatus),
 	}
 	if !si.LastReloadAt.IsZero() {
 		resp["last_reload_at"] = si.LastReloadAt.UTC().Format(time.RFC3339)
 	}
 	if si.IsDegraded {
-		resp["status"] = "degraded"
-		resp["is_degraded"] = true
+		degradedComponents = append(degradedComponents, "store")
 		resp["last_reload_error"] = si.LastReloadError
 	}
+	if registryStatus.IsDegraded {
+		degradedComponents = append(degradedComponents, "app_registry")
+	}
+	if len(degradedComponents) > 0 {
+		resp["status"] = "degraded"
+		resp["is_degraded"] = true
+		resp["degraded_components"] = degradedComponents
+	}
 	respondJSON(w, http.StatusOK, resp)
+}
+
+func registryStatusBody(status registry.Status) map[string]any {
+	state := status.State
+	if state == "" {
+		state = "not_configured"
+	}
+	body := map[string]any{
+		"status":      state,
+		"apps_loaded": status.AppsLoaded,
+	}
+	if !status.LastLoadedAt.IsZero() {
+		body["last_loaded_at"] = status.LastLoadedAt.UTC().Format(time.RFC3339)
+	}
+	if !status.LastUpdatedAt.IsZero() {
+		body["last_updated_at"] = status.LastUpdatedAt.UTC().Format(time.RFC3339)
+	}
+	if status.LastLoadError != "" {
+		body["last_load_error"] = status.LastLoadError
+	}
+	return body
 }
 
 // adminReload force-reloads the store from the repo. It pulls any remote

@@ -40,7 +40,7 @@ export ALLOW_UNAUTHENTICATED_DEV=true
 
 - Liveness: `GET /healthz`
 - Readiness: `GET /readyz`
-- Operational status: `GET /api/v1/status`
+- Operational status: `GET /api/v1/status`, including `app_registry` cache/load state.
 - Logs: JSON `slog` output on stdout.
 - Metrics: no Prometheus endpoint currently implemented.
 
@@ -69,6 +69,14 @@ export ALLOW_UNAUTHENTICATED_DEV=true
 - Mitigation: treat Git commit as already written; fix K8s access/controller issues, then re-apply the committed SealedSecret manifest or retry the admin write. Client disconnects after commit do not cancel the server-managed apply attempt.
 - Root-cause investigation: inspect Config Server service account RBAC, SealedSecret controller availability, and the committed encrypted manifest.
 - Related: `AC-020`, `TEST-020`.
+
+### Incident: App Registry load degraded
+
+- Symptom: `/readyz` returns 200 but `/api/v1/status` reports `degraded_components: ["app_registry"]`.
+- Detection: `app_registry.status` is `degraded` and `app_registry.last_load_error` explains the Console load failure.
+- Mitigation: restore AAP Console API reachability; Console webhook retries can update changed records, and a Config Server restart reloads the full registry.
+- Root-cause investigation: inspect `CONSOLE_API_URL`, network policy, API auth, and Config Server logs for `app registry bootstrap failed`.
+- Related: `AC-021`, `TEST-021`.
 
 ### Incident: Dirty config checkout blocks snapshot
 

@@ -7,12 +7,15 @@ Status: active.
 1. `cmd/config-server/main.go` loads runtime config from env/flags.
 2. Startup validates required config, including `GIT_URL`, secret runtime
    boundary settings, and `API_KEY` unless `ALLOW_UNAUTHENTICATED_DEV=true`.
-3. `gitops.Repo` opens or clones the configured Git repo/branch.
-4. `store.LoadFromRepo` performs one startup pull, then snapshots `configs/`.
-5. The store parses `config.yaml`, `env_vars.yaml`, and `secrets.yaml` files under `configs/orgs/{org}/projects/{project}/services/{service}/`.
-6. If all parsed files are valid, the store atomically swaps the serving snapshot.
-7. HTTP handlers serve reads from memory and admin writes through the store.
-8. A background poll loop calls `RefreshFromRepo` at `GIT_POLL_INTERVAL`.
+3. If `CONSOLE_API_URL` is configured, startup attempts the AAP Console App
+   Registry bootstrap with bounded retry; failure is recorded but does not
+   abort startup.
+4. `gitops.Repo` opens or clones the configured Git repo/branch.
+5. `store.LoadFromRepo` performs one startup pull, then snapshots `configs/`.
+6. The store parses `config.yaml`, `env_vars.yaml`, and `secrets.yaml` files under `configs/orgs/{org}/projects/{project}/services/{service}/`.
+7. If all parsed files are valid, the store atomically swaps the serving snapshot.
+8. HTTP handlers serve reads from memory and admin writes through the store.
+9. A background poll loop calls `RefreshFromRepo` at `GIT_POLL_INTERVAL`.
 
 Admin writes, deletes, background refreshes, and Git worktree mutations are
 serialized globally in Phase-1. `ADR-005` records this as the accepted current
@@ -33,6 +36,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 - `POST /api/v1/admin/changes`
 - `DELETE /api/v1/admin/changes`
 - `POST /api/v1/admin/reload`
+- `POST /api/v1/admin/app-registry/webhook`
 
 ## Auth boundary
 
@@ -74,6 +78,14 @@ implementation; `ADR-003` remains the future service-level mutex target design.
   Registry cache with authenticated create/update/upsert/delete notifications;
   each event must include RFC3339 `updated_at` so stale async retries are
   ignored, including older upserts that arrive after a newer delete.
+- `/api/v1/status` exposes App Registry state under `app_registry` with
+  `status`, `apps_loaded`, `last_loaded_at`, `last_updated_at`, and
+  `last_load_error` when present. Registry-only load failure is reported as a
+  degraded component, but `/readyz` remains tied to process/store readiness so
+  Config Server can serve Git-backed config even when Console is temporarily
+  unavailable. If startup bootstrap is not configured, webhook updates can
+  change `apps_loaded` and `last_updated_at`, but the status remains
+  `not_configured` to show that no full Console snapshot was loaded.
 - Config Agent, watch/history/revert, and inheritance are target design only.
 
 ## Failure modes
@@ -89,7 +101,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 | Degraded store | `/readyz` returns 503 and `/api/v1/status` reports `is_degraded`. |
 | Admin write succeeds but reload fails | Response is `503 committed_but_reload_failed`; Git commit remains. |
 | Admin secret write succeeds but SealedSecret apply fails | Response is `503 committed_but_apply_failed`; encrypted Git commit remains and `apply_error` is returned. |
-| App Registry startup load fails after configured attempts | Startup continues with the existing registry cache and logs the final error. |
+| App Registry startup load fails after configured attempts | Startup continues with the existing registry cache, `/api/v1/status` reports `app_registry.status=degraded`, and `/readyz` remains 200 when the store is otherwise ready. |
 | App Registry webhook without valid API key | Request fails with `401 unauthorized`; cache is unchanged. |
 | Admin delete succeeds but reload fails | Response is `503 deleted_but_reload_failed`; Git delete remains. |
 | Dirty `configs/` worktree during snapshot | Reload fails closed to avoid serving data not represented by HEAD. |
@@ -108,7 +120,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 
 1. Check `/healthz` for process liveness.
 2. Check `/readyz` for readiness/degraded state.
-3. Check `/api/v1/status` for `version`, `services_loaded`, `last_reload_at`, and `last_reload_error`.
+3. Check `/api/v1/status` for `version`, `services_loaded`, `last_reload_at`, `last_reload_error`, and `app_registry`.
 4. Inspect logs for git pull/push/reload errors.
 5. Validate the config repo `configs/` tree against parser expectations.
 6. Use `POST /api/v1/admin/reload` after fixing malformed YAML or dirty checkout drift.

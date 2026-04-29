@@ -86,7 +86,7 @@ snapshot.
   responses for authenticated `resolve_secrets=true` calls.
 - App Registry startup load replaces the in-memory registry cache from Console
   API data. Final bootstrap failure records the error but preserves the
-  existing cache.
+  existing cache and is visible through `/api/v1/status`.
 - App Registry webhook updates perform per-app upsert or idempotent delete
   against the same in-memory cache; Console remains the source of truth.
   Webhook events require RFC3339 `updated_at`, and stale events older than the
@@ -99,6 +99,7 @@ snapshot.
 |---|---|---|
 | Store snapshot | loaded, stale-last-known-good | Reload only swaps on full parse success. |
 | Store status | ready, degraded | Degraded means the latest reload failed but the previous snapshot remains available. |
+| App Registry cache | not_configured, ok, degraded | `ok` means a full Console snapshot loaded. `not_configured` is preserved when only webhook updates arrive without startup bootstrap. Degraded means the last Console full load failed; webhook updates still record `last_updated_at`, while the load failure remains visible until a later full load succeeds. `/readyz` is not failed for registry-only degradation. |
 | Admin write | committed, committed_but_apply_failed, committed_but_reload_failed, committed_but_apply_and_reload_failed | Non-committed validation/sealing failures happen before Git writes; post-commit apply/reload failures are explicit. |
 | Admin delete | deleted, deleted_but_reload_failed | The second state means Git delete succeeded but memory reload failed. |
 

@@ -63,7 +63,8 @@ func TestBootstrap_RetriesWithBoundedBackoffAndLoadsCache(t *testing.T) {
 		t.Fatalf("cached apps: %+v", apps)
 	}
 	status := cache.Status()
-	if status.AppsLoaded != 1 || !status.LastLoadedAt.Equal(now) || status.LastLoadError != "" {
+	if status.AppsLoaded != 1 || !status.LastLoadedAt.Equal(now) || status.LastLoadError != "" ||
+		status.State != "ok" || status.IsDegraded {
 		t.Fatalf("status: %+v", status)
 	}
 }
@@ -88,7 +89,7 @@ func TestBootstrap_FinalFailureKeepsEmptyCache(t *testing.T) {
 	if apps := cache.List(); len(apps) != 0 {
 		t.Fatalf("expected empty cache, got %+v", apps)
 	}
-	if status := cache.Status(); status.LastLoadError == "" {
+	if status := cache.Status(); status.LastLoadError == "" || status.State != "degraded" || !status.IsDegraded {
 		t.Fatalf("expected last load error, got %+v", status)
 	}
 }

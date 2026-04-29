@@ -6,8 +6,8 @@ every `config.yaml` / `env_vars.yaml` / `secrets.yaml` into an in-memory
 snapshot, and swaps the snapshot atomically when the repo changes.
 
 > **Status:** Phase-1 MVP. The [PRD](docs/01_PRD.md) and [HLD](docs/02_HLD.md) describe a
-> larger target architecture (Config Agent, SealedSecret controller, registry
-> webhook, history/revert, watch). Those are **not** implemented yet — see the
+> larger target architecture (Config Agent, history/revert, watch, inheritance,
+> and related production extensions). Those are **not** implemented yet — see the
 > feature matrix below.
 
 ## Feature matrix
@@ -33,6 +33,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Secret audit logging                               | Implemented for admin secret writes and resolved env var secret reads |
 | App Registry startup bootstrap                     | Implemented when `CONSOLE_API_URL` is set |
 | App Registry webhook                               | Implemented (auth-gated cache upsert/delete) |
+| App Registry state in `/api/v1/status`             | Implemented |
 | Watch / stream endpoint                            | Not implemented |
 | History / revert endpoints                         | Not implemented |
 | Config Agent                                      | Not implemented |
@@ -278,6 +279,14 @@ curl -X POST http://localhost:8080/api/v1/admin/reload \
     balancer rotation until the underlying YAML is fixed.
   - `/api/v1/status` returns `"status": "degraded"` with `is_degraded: true`
     and `last_reload_error` describing the parse failure.
+- **App Registry status.** `/api/v1/status` includes `app_registry.status`,
+  `apps_loaded`, `last_loaded_at`, `last_updated_at`, and `last_load_error`
+  when present. A registry-only load failure is reported in
+  `degraded_components` but does not make `/readyz` fail; Config Server keeps
+  serving Git-backed config so Console and Config Server do not deadlock on
+  startup order. If `CONSOLE_API_URL` is unset, webhook updates can change
+  `apps_loaded` and `last_updated_at`, but `app_registry.status` stays
+  `not_configured` because no full Console snapshot was loaded.
 - **Post-commit reload.** `ApplyChanges` commits and pushes before reloading.
   A successful commit with a failed reload produces the `committed_but_reload_failed`
   response documented above rather than a bare `200`. Similarly,
