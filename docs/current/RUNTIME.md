@@ -1,0 +1,66 @@
+# Runtime Flow
+
+Status: active.
+
+## Current implemented flow
+
+1. `cmd/config-server/main.go` loads runtime config from env/flags.
+2. Startup validates required config, including `GIT_URL` and `API_KEY` unless `ALLOW_UNAUTHENTICATED_DEV=true`.
+3. `gitops.Repo` opens or clones the configured Git repo/branch.
+4. `store.LoadFromRepo` performs one startup pull, then snapshots `configs/`.
+5. The store parses `config.yaml`, `env_vars.yaml`, and `secrets.yaml` files under `configs/orgs/{org}/projects/{project}/services/{service}/`.
+6. If all parsed files are valid, the store atomically swaps the serving snapshot.
+7. HTTP handlers serve reads from memory and admin writes through the store.
+8. A background poll loop calls `RefreshFromRepo` at `GIT_POLL_INTERVAL`.
+
+## Implemented API surface
+
+- `GET /healthz`
+- `GET /readyz`
+- `GET /api/v1/status`
+- `GET /api/v1/orgs`
+- `GET /api/v1/orgs/{org}/projects`
+- `GET /api/v1/orgs/{org}/projects/{project}/services`
+- `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config`
+- `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars`
+- `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/secrets`
+- `POST /api/v1/admin/changes`
+- `DELETE /api/v1/admin/changes`
+- `POST /api/v1/admin/reload`
+
+## Auth boundary
+
+- Admin endpoints require `Authorization: Bearer <API_KEY>` or `X-API-Key`.
+- Secret metadata read also requires auth.
+- Config/env var reads are currently unauthenticated; deployment must restrict network access.
+- Empty `API_KEY` is only allowed with explicit `ALLOW_UNAUTHENTICATED_DEV=true`.
+
+## Planned flow
+
+- `POST /api/v1/admin/changes` will eventually accept secret values, generate SealedSecrets, commit encrypted manifests, apply them to Kubernetes, and support secret resolution.
+- Config Agent, registry webhook, watch/history/revert, and inheritance are target design only.
+
+## Failure modes
+
+| Failure | Expected handling |
+|---|---|
+| Missing `GIT_URL` | Startup fails during config validation. |
+| Missing `API_KEY` without dev opt-in | Startup fails closed. |
+| Non-positive `GIT_POLL_INTERVAL` | Startup fails validation. |
+| Startup pull transient failure | Warning logged; on-disk checkout is parsed. |
+| YAML parse/validation failure during reload | Snapshot is not swapped; last-known-good snapshot keeps serving. |
+| Degraded store | `/readyz` returns 503 and `/api/v1/status` reports `is_degraded`. |
+| Admin write succeeds but reload fails | Response is `503 committed_but_reload_failed`; Git commit remains. |
+| Admin delete succeeds but reload fails | Response is `503 deleted_but_reload_failed`; Git delete remains. |
+| Dirty `configs/` worktree during snapshot | Reload fails closed to avoid serving data not represented by HEAD. |
+| Unknown admin JSON field | Request fails with `400 invalid_body`. |
+| `secrets` field on admin write | Explicitly rejected in Phase-1 with 400. |
+
+## Debug path
+
+1. Check `/healthz` for process liveness.
+2. Check `/readyz` for readiness/degraded state.
+3. Check `/api/v1/status` for `version`, `services_loaded`, `last_reload_at`, and `last_reload_error`.
+4. Inspect logs for git pull/push/reload errors.
+5. Validate the config repo `configs/` tree against parser expectations.
+6. Use `POST /api/v1/admin/reload` after fixing malformed YAML or dirty checkout drift.

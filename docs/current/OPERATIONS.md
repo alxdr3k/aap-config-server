@@ -1,0 +1,113 @@
+# Operations
+
+Status: active.
+
+## Local run
+
+Required local inputs:
+
+- A Git repository containing `configs/orgs/{org}/projects/{project}/services/{service}/`.
+- Git auth through SSH key or HTTPS BasicAuth.
+- An `API_KEY`, unless explicitly opting into unauthenticated local dev.
+
+Example:
+
+```bash
+export GIT_URL=git@github.com:myorg/aap-helm-charts.git
+export GIT_SSH_KEY=$HOME/.ssh/id_ed25519
+export API_KEY=$(openssl rand -hex 32)
+export GIT_POLL_INTERVAL=30s
+
+make build
+./bin/config-server -addr :8080
+```
+
+Dev-only unauthenticated startup:
+
+```bash
+export ALLOW_UNAUTHENTICATED_DEV=true
+```
+
+Do not use that flag in production.
+
+## Environment variables
+
+| Name | Required | Default | Notes |
+|---|---|---|---|
+| `GIT_URL` | yes |  | Remote config repo URL. |
+| `GIT_BRANCH` | no | `main` | Branch to clone/pull/push. |
+| `GIT_LOCAL_PATH` | no | `/tmp/aap-helm-charts` | Local clone path. |
+| `GIT_POLL_INTERVAL` | no | `30s` | Must be greater than zero. |
+| `GIT_SSH_KEY` | no |  | SSH private key path. Mutually exclusive with BasicAuth. |
+| `GIT_USERNAME` | no |  | HTTPS BasicAuth username. Must pair with `GIT_PASSWORD`. |
+| `GIT_PASSWORD` | no |  | HTTPS BasicAuth password/token. Env-only. |
+| `API_KEY` | prod yes |  | Required unless dev opt-in is set. |
+| `ALLOW_UNAUTHENTICATED_DEV` | no | `false` | Local/test escape hatch only. |
+| `ADDR` | no | `:8080` | HTTP listen address. |
+| `LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, `error`. |
+| `SECRET_MOUNT_PATH` | no | `/secrets` | Reserved for planned secret logic. |
+| `CONSOLE_API_URL` | no |  | Reserved. |
+
+## Database
+
+No database is used. Git is the source of truth; the server keeps an in-memory
+snapshot for serving reads.
+
+## Logs / observability
+
+- Logs use structured JSON through `log/slog`.
+- No Prometheus metrics endpoint is currently implemented.
+- Operational state is exposed through `/readyz` and `/api/v1/status`.
+
+## Background jobs
+
+- A background git poll loop calls `RefreshFromRepo` every `GIT_POLL_INTERVAL`.
+- The poll path only reloads when HEAD moved.
+- `POST /api/v1/admin/reload` force-reloads even when HEAD did not move.
+
+## Deployment
+
+- Container build is defined by `Dockerfile`.
+- This repo does not currently contain Helm chart or Kubernetes manifest ownership.
+- Runtime network access should restrict unauthenticated config/env reads to trusted clients.
+
+## Troubleshooting
+
+### Degraded readiness
+
+Symptom:
+
+- `/readyz` returns 503 `degraded`.
+- `/api/v1/status` returns `is_degraded: true`.
+
+Action:
+
+1. Read `last_reload_error` from `/api/v1/status`.
+2. Fix malformed YAML, schema errors, or dirty `configs/` checkout drift.
+3. Call `POST /api/v1/admin/reload` with API key.
+4. Confirm `/readyz` returns 200.
+
+### Post-commit reload failure
+
+Symptom:
+
+- `POST /api/v1/admin/changes` returns `503 committed_but_reload_failed`.
+
+Action:
+
+1. Treat the Git commit as already written.
+2. Inspect `reload_error`.
+3. Fix the offending config repo state.
+4. Force reload.
+
+### Auth failure
+
+Symptom:
+
+- Admin or secret metadata endpoint returns `401 unauthorized`.
+
+Action:
+
+1. Send `Authorization: Bearer <API_KEY>` or `X-API-Key`.
+2. Confirm the server and client are using the same key.
+3. Do not disable auth outside local dev/test.

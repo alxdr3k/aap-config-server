@@ -1,0 +1,139 @@
+name: Doc Freshness
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute changed paths vs base
+        id: diff
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$PR_BASE_REF"
+          CHANGED=$(git diff --name-only "origin/${PR_BASE_REF}...HEAD")
+          {
+            echo "changed<<EOF"
+            echo "$CHANGED"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Detect documentation freshness risks
+        id: detect
+        env:
+          CHANGED: ${{ steps.diff.outputs.changed }}
+        run: |
+          set -euo pipefail
+          missing=()
+
+          touched_src=$(printf '%s\n' "$CHANGED" | grep -E '^(cmd|internal)/|^(Dockerfile|Makefile|go\.mod|go\.sum)$' || true)
+          touched_tests=$(printf '%s\n' "$CHANGED" | grep -E '(^|/)[^/]+_test\.go$|^Makefile$|^\.github/workflows/ci\.yml$' || true)
+          touched_runtime=$(printf '%s\n' "$CHANGED" | grep -E '^(cmd|internal/(config|server|handler|store|gitops))/|^Dockerfile$' || true)
+          touched_data=$(printf '%s\n' "$CHANGED" | grep -E '^internal/(parser|store)/|^go\.mod$|^go\.sum$' || true)
+
+          touched_any_thin_doc=$(printf '%s\n' "$CHANGED" | grep -E '^docs/current/(RUNTIME|CODE_MAP|DATA_MODEL|TESTING|OPERATIONS)\.md$' || true)
+          touched_code_map=$(printf '%s\n' "$CHANGED" | grep -E '^docs/current/CODE_MAP\.md$' || true)
+          touched_testing_doc=$(printf '%s\n' "$CHANGED" | grep -E '^docs/current/TESTING\.md$' || true)
+          touched_runtime_doc=$(printf '%s\n' "$CHANGED" | grep -E '^docs/current/(RUNTIME|OPERATIONS)\.md$' || true)
+          touched_data_doc=$(printf '%s\n' "$CHANGED" | grep -E '^docs/current/DATA_MODEL\.md$' || true)
+          touched_roadmap_doc=$(printf '%s\n' "$CHANGED" | grep -E '^docs/04_IMPLEMENTATION_PLAN\.md$' || true)
+          touched_current_state=$(printf '%s\n' "$CHANGED" | grep -E '^docs/context/current-state\.md$' || true)
+          touched_acceptance_doc=$(printf '%s\n' "$CHANGED" | grep -E '^docs/06_ACCEPTANCE_TESTS\.md$' || true)
+          touched_traceability=$(printf '%s\n' "$CHANGED" | grep -E '^docs/09_TRACEABILITY_MATRIX\.md$' || true)
+          touched_generated=$(printf '%s\n' "$CHANGED" | grep -E '^docs/generated/' || true)
+          touched_adr=$(printf '%s\n' "$CHANGED" | grep -E '^docs/adr/' || true)
+
+          if [ -n "$touched_src" ] &&
+             [ -z "$touched_any_thin_doc" ] &&
+             [ -z "$touched_roadmap_doc" ] &&
+             [ -z "$touched_current_state" ] &&
+             [ -z "$touched_acceptance_doc" ] &&
+             [ -z "$touched_traceability" ] &&
+             [ -z "$touched_adr" ]; then
+            missing+=("Source/runtime files changed -> update matching docs: \`docs/current/\`, \`docs/04_IMPLEMENTATION_PLAN.md\`, \`docs/context/current-state.md\`, \`docs/06_ACCEPTANCE_TESTS.md\`, \`docs/09_TRACEABILITY_MATRIX.md\`, or add/supersede an ADR.")
+          fi
+
+          if [ -n "$touched_runtime" ] && [ -z "$touched_runtime_doc" ] && [ -z "$touched_adr" ]; then
+            missing+=("Runtime-affecting files changed -> consider \`docs/current/RUNTIME.md\` or \`docs/current/OPERATIONS.md\`.")
+          fi
+
+          if [ -n "$touched_data" ] && [ -z "$touched_data_doc" ] && [ -z "$touched_generated" ] && [ -z "$touched_adr" ]; then
+            missing+=("Parser/store/data files changed -> consider \`docs/current/DATA_MODEL.md\` and generated docs if a generator exists.")
+          fi
+
+          if [ -n "$touched_tests" ] && [ -z "$touched_testing_doc" ] && [ -z "$touched_acceptance_doc" ]; then
+            missing+=("Tests, CI, or Makefile changed -> consider \`docs/current/TESTING.md\` and \`docs/06_ACCEPTANCE_TESTS.md\`.")
+          fi
+
+          if [ -n "$touched_src" ] && [ -z "$touched_code_map" ] && [ -z "$touched_adr" ]; then
+            missing+=("Source layout changed -> consider \`docs/current/CODE_MAP.md\`.")
+          fi
+
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "missing=" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "missing<<EOF"
+              for m in "${missing[@]}"; do
+                echo "- $m"
+              done
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Comment on PR if docs may be stale
+        if: steps.detect.outputs.missing != ''
+        uses: actions/github-script@v7
+        env:
+          MISSING: ${{ steps.detect.outputs.missing }}
+        with:
+          script: |
+            const missing = process.env.MISSING || '';
+            const marker = '<!-- doc-freshness-check -->';
+            const body = [
+              marker,
+              '### Doc freshness check',
+              '',
+              'Code changes were detected that may require roadmap/status, gate, traceability, thin-doc, generated-doc, or ADR updates.',
+              '',
+              missing,
+              '',
+              'Policy: `docs/DOCUMENTATION.md`. This is a soft warning. If the change is intentional, check "No doc impact" in the PR template and add a brief reason.',
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
