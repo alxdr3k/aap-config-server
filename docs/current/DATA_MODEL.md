@@ -36,6 +36,7 @@ snapshot.
 | `SecretsConfig` | Parsed `secrets.yaml` metadata; no secret plaintext. | `internal/parser/types.go` |
 | `secret.RuntimeConfig` | Runtime knobs for future secret mount, SealedSecret, K8s apply, and audit adapters. | `internal/secret/types.go` |
 | `secret.Reference` / `secret.Value` | Boundary types for future plaintext secret reads; values are copied and can be best-effort zeroed. | `internal/secret/types.go` |
+| `secret.FileVolumeReader` | Mounted K8s Secret file reader/cache with fsnotify refresh events. | `internal/secret/volume.go` |
 | `ChangeRequest` | Internal representation of admin write input. | `internal/store/types.go` |
 | `DeleteRequest` | Internal representation of admin delete input. | `internal/store/types.go` |
 | `StoreStatus` | Runtime status exposed through `/api/v1/status`. | `internal/store/types.go` |
@@ -52,6 +53,8 @@ snapshot.
 
 - `config.yaml` and `env_vars.yaml` require `metadata.service`, `metadata.org`, and `metadata.project`.
 - `secrets.yaml` entries require `id` and a complete `k8s_secret` pointer: `name`, `namespace`, and `key`.
+- Mounted secret reads reject empty or path-unsafe reference segments before
+  resolving `{SECRET_MOUNT_PATH}/{namespace}/{name}/{key}`.
 - Invalid YAML or missing required fields fail reload closed.
 
 ## Lifecycle states

@@ -25,7 +25,7 @@ Status: active.
 |---|---|
 | `internal/store/` | In-memory service snapshot, Git-backed reload, apply/delete operations, degraded status. |
 | `internal/parser/` | YAML structs/parsers/validation for config, env vars, secrets, and defaults. |
-| `internal/secret/` | Secret runtime boundary types and interfaces for future volume reads, SealedSecret sealing, K8s apply, and audit logging. |
+| `internal/secret/` | Secret runtime boundary types, mounted K8s Secret file reader/watch support, and future SealedSecret/K8s/audit interfaces. |
 
 ## Data / Persistence
 
@@ -41,7 +41,7 @@ Status: active.
 | `internal/config/*_test.go` | Runtime config validation. |
 | `internal/apperror/*_test.go` | Error wrapping and `errors.As` behavior. |
 | `internal/parser/*_test.go` | YAML parser happy-path and validation failures. |
-| `internal/secret/*_test.go` | Secret boundary value/default behavior. |
+| `internal/secret/*_test.go` | Secret boundary value/default behavior and mounted secret reader/watch behavior. |
 | `internal/store/*_test.go` | Snapshot reload, apply/delete, degraded behavior, concurrency. |
 | `internal/gitops/*_test.go` | Local Git clone/pull/commit/delete/snapshot behavior. |
 | `internal/handler/*_test.go` | HTTP routes, auth, response shape, reload/degraded status. |

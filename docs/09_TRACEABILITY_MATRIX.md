@@ -31,6 +31,7 @@ Question ↔ Decision ↔ Requirement ↔ Gate/Test ↔ Milestone/Track/Phase/Sl
 | `TRACE-016` |  |  | Operational extensions | `AC-041` / `TEST-041` | `P1-M3` | `EXT` | `EXT-1D` | `EXT-1D.1`~`EXT-1D.5` | Leaf-planned ETag, gzip, batch, metrics, and Git webhook work. |
 | `TRACE-017` | `Q-003` | `DEC-003` | Production hardening | `AC-042` / `TEST-042` | `P1-M3` | `HARDEN` | `HARDEN-1A` | `HARDEN-1A.1`~`HARDEN-1A.5` | Leaf-planned schema, rate, integration/load, and deployment handoff work. |
 | `TRACE-018` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` / `internal/config/config_test.go`, `internal/secret/types_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.1` | Secret runtime config and adapter boundaries landed; full secret write/resolve gate remains defined. |
+| `TRACE-019` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` / `internal/secret/volume_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.2` | Mounted K8s Secret file reader and fsnotify refresh events landed; HTTP secret resolve remains planned. |
 
 ## Invariants
 

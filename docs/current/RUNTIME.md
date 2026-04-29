@@ -44,6 +44,9 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 
 - `internal/secret` now defines adapter-neutral boundaries for future volume
   reads, SealedSecret sealing, K8s apply, and non-sensitive audit logging.
+- `internal/secret.FileVolumeReader` can read mounted K8s Secret files and
+  refresh cached values from fsnotify events; HTTP `resolve_secrets=true` is
+  still planned.
 - `POST /api/v1/admin/changes` will eventually accept secret values, generate SealedSecrets, commit encrypted manifests, apply them to Kubernetes, and support secret resolution.
 - Config Agent, registry webhook, watch/history/revert, and inheritance are target design only.
 
@@ -63,6 +66,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 | Dirty `configs/` worktree during snapshot | Reload fails closed to avoid serving data not represented by HEAD. |
 | Unknown admin JSON field | Request fails with `400 invalid_body`. |
 | `secrets` field on admin write | Explicitly rejected in Phase-1 with 400. |
+| Unsafe mounted secret reference | Volume reader rejects it before filesystem access. |
 
 ## Debug path
 

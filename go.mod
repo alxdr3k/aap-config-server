@@ -5,6 +5,7 @@ go 1.26.0
 toolchain go1.26.2
 
 require (
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-git/go-git/v5 v5.18.0
 	golang.org/x/crypto v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
