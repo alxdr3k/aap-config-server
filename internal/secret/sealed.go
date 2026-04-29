@@ -132,8 +132,8 @@ type keyValue struct {
 
 func encodeSealedSecretYAML(namespace, name, scope string, encrypted []keyValue) ([]byte, error) {
 	metadata := []*yaml.Node{
-		scalar("name"), scalar(name),
-		scalar("namespace"), scalar(namespace),
+		scalar("name"), quotedScalar(name),
+		scalar("namespace"), quotedScalar(namespace),
 	}
 	if annotations := scopeAnnotations(scope); len(annotations) > 0 {
 		metadata = append(metadata, scalar("annotations"), mapping(annotations...))
@@ -141,7 +141,7 @@ func encodeSealedSecretYAML(namespace, name, scope string, encrypted []keyValue)
 
 	encryptedNodes := make([]*yaml.Node, 0, len(encrypted)*2)
 	for _, kv := range encrypted {
-		encryptedNodes = append(encryptedNodes, scalar(kv.key), scalar(kv.value))
+		encryptedNodes = append(encryptedNodes, scalar(kv.key), quotedScalar(kv.value))
 	}
 
 	root := mapping(
@@ -152,8 +152,8 @@ func encodeSealedSecretYAML(namespace, name, scope string, encrypted []keyValue)
 			scalar("encryptedData"), mapping(encryptedNodes...),
 			scalar("template"), mapping(
 				scalar("metadata"), mapping(
-					scalar("name"), scalar(name),
-					scalar("namespace"), scalar(namespace),
+					scalar("name"), quotedScalar(name),
+					scalar("namespace"), quotedScalar(namespace),
 				),
 				scalar("type"), scalar(sealedSecretTypeOpaque),
 			),

@@ -27,7 +27,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Secret metadata read (`GET .../secrets`)           | Implemented (auth-gated) |
 | Secret **write** via `secrets` field on POST       | **Not implemented** — rejected with 400 |
 | SealedSecret generation / kubeseal integration     | Internal deterministic YAML generator implemented; public-key encryption adapter wiring not implemented |
-| K8s apply of SealedSecret objects                  | Not implemented |
+| K8s apply of SealedSecret objects                  | Internal dynamic-client adapter implemented; admin write/runtime wiring not implemented |
 | Watch / stream endpoint                            | Not implemented |
 | History / revert endpoints                         | Not implemented |
 | Config Agent, registry webhook                     | Not implemented |
@@ -83,7 +83,7 @@ curl http://localhost:8080/api/v1/orgs
 | `SEALED_SECRET_CONTROLLER_NAMESPACE` | no                | `kube-system`         | Namespace for future SealedSecret public-key/apply integration. |
 | `SEALED_SECRET_CONTROLLER_NAME` | no                    | `sealed-secrets-controller` | Controller service name for future SealedSecret integration. |
 | `SEALED_SECRET_SCOPE`        | no                       | `strict`              | Future SealedSecret scope: `strict`, `namespace-wide`, or `cluster-wide`. |
-| `K8S_APPLY_TIMEOUT`          | no                       | `10s`                 | Timeout for future K8s apply calls.                    |
+| `K8S_APPLY_TIMEOUT`          | no                       | `10s`                 | Timeout for SealedSecret apply adapter calls.          |
 | `SECRET_AUDIT_LOG_ENABLED`   | no                       | `true`                | Enables future non-sensitive secret audit logging.     |
 | `CONSOLE_API_URL`            | no                       | —                     | Reserved.                                              |
 

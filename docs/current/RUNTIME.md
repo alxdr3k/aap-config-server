@@ -48,8 +48,11 @@ implementation; `ADR-003` remains the future service-level mutex target design.
   refresh cached values from fsnotify events; HTTP `resolve_secrets=true` is
   still planned.
 - `internal/secret.DeterministicSealer` can generate stable Bitnami
-  SealedSecret YAML from an injected encryptor; controller public-key lookup
-  and K8s apply are still planned.
+  SealedSecret YAML from an injected encryptor; controller public-key lookup is
+  still planned.
+- `internal/secret.DynamicApplier` can create/update Bitnami SealedSecret
+  objects through a Kubernetes dynamic client; admin write wiring is still
+  planned.
 - `POST /api/v1/admin/changes` will eventually accept secret values, generate SealedSecrets, commit encrypted manifests, apply them to Kubernetes, and support secret resolution.
 - Config Agent, registry webhook, watch/history/revert, and inheritance are target design only.
 
@@ -71,6 +74,8 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 | `secrets` field on admin write | Explicitly rejected in Phase-1 with 400. |
 | Unsafe mounted secret reference | Volume reader rejects it before filesystem access. |
 | Invalid SealedSecret generation input | Sealer rejects missing path identity, namespace/name/data, or path-unsafe keys before emitting YAML. |
+| Invalid SealedSecret apply manifest | Applier rejects missing YAML, wrong kind, or name/namespace mismatches before K8s API calls. |
+| K8s SealedSecret apply failure | Applier returns context-rich get/create/update errors and respects apply timeout/cancellation. |
 
 ## Debug path
 
