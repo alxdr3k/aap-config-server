@@ -110,7 +110,8 @@ No database or schema migration command is currently defined.
 
 `.github/workflows/ci.yml` runs:
 
-- `golangci/golangci-lint-action`
+- `golangci-lint run ./...` using `golangci-lint v2.11.4` built by the
+  workflow Go toolchain
 - `go vet ./...`
 - `go test -race ./... -timeout 60s`
 - `govulncheck`
