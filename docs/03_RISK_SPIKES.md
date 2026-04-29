@@ -43,8 +43,8 @@ service-level concurrency is needed.
 - Hypothesis: Deployment manifests may belong in the Helm/config repo rather than this binary repo.
 - Owner: maintainers
 - Time-box: 0.5 day
-- Start / End: not scheduled
-- Status: open
+- Start / End: 2026-04-29
+- Status: resolved
 
 **Experiment**
 
@@ -53,9 +53,11 @@ Helm/K8s manifests or only publish image/runtime docs.
 
 **Result**
 
-Pending.
+`DEC-003` keeps this repo focused on the binary, Docker image build, runtime
+configuration, and runbook guidance. Helm/Kubernetes manifests remain in the
+owning deployment repo/system unless a future decision moves ownership here.
 
 **Decision / Next Step**
 
-- Decision: pending `Q-003`.
-- Follow-up: update `docs/current/OPERATIONS.md` and implementation plan.
+- Decision: `DEC-003`.
+- Follow-up: update this decision if deployment ownership changes.

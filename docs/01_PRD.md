@@ -1412,4 +1412,4 @@ gate 상태, evidence, next work의 canonical ledger는
 - 설정 파일 스키마 검증
 - Rate limiting
 - 통합 테스트 / 부하 테스트
-- Helm chart / K8s deployment manifests
+- Helm chart / K8s deployment manifests (outside this repo unless `DEC-003` changes)

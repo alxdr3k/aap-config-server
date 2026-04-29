@@ -298,6 +298,9 @@ make lint           # golangci-lint (if installed)
 make docker-build   # build the container image
 ```
 
+Container image build support does not include Helm/Kubernetes manifest
+ownership; see `docs/current/OPERATIONS.md`.
+
 The CI pipeline (`.github/workflows/ci.yml`) runs `go vet`, race tests, and
 `govulncheck` on every push to or pull request targeting `main`.
 

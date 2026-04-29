@@ -13,8 +13,10 @@ make docker-build
 ```
 
 - Prerequisites: Go 1.24+, access to the config Git repository, and required runtime env vars.
-- Rollback method: roll back the deployed image or Git config repo commit through the owning deployment system.
-- Open question: deployment manifest ownership is tracked by `Q-003`.
+- Rollback method: roll back the deployed image or Git config repo commit
+  through the owning deployment system.
+- Deployment manifests: Helm/Kubernetes manifests remain outside this repo by
+  `DEC-003`.
 
 ## How to Run Locally
 

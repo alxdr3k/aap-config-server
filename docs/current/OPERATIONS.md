@@ -68,7 +68,10 @@ snapshot for serving reads.
 ## Deployment
 
 - Container build is defined by `Dockerfile`.
-- This repo does not currently contain Helm chart or Kubernetes manifest ownership.
+- This repo owns the Config Server binary, Docker image build, runtime
+  configuration docs, and runbook guidance.
+- Helm charts and Kubernetes manifests remain outside this repo unless a future
+  decision explicitly moves deployment ownership here.
 - Runtime network access should restrict unauthenticated config/env reads to trusted clients.
 
 ## Troubleshooting

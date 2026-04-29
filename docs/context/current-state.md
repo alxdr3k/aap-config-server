@@ -14,11 +14,11 @@ from an atomically swapped in-memory snapshot.
 ## Current roadmap position
 
 - current milestone: `P0-M3` documentation boilerplate migration accepted
-- active tracks: none; follow-up planning is focused on open questions
-- active phase: follow-up planning from open questions
+- active tracks: none
+- active phase: none
 - active slice: none
 - last accepted gate: `AC-014` / `AC-015` via PR #10
-- next gate: resolve `Q-003`
+- next gate: none assigned
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
 
 ## Implemented
@@ -50,11 +50,13 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Decide deployment manifest ownership (`Q-003`).
+No active follow-up decision remains assigned. Pick the next planned milestone
+or slice before implementation.
 
 ## Current risks / unknowns
 
-- `Q-003`: Exact deployment owner for Helm/K8s manifests is not represented in this repo.
+- No open migration decision questions in `docs/07_QUESTIONS_REGISTER.md`;
+  audit items below remain.
 
 ## Current validation
 
