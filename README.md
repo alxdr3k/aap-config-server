@@ -185,6 +185,9 @@ App Registry webhook:
 POST /api/v1/admin/app-registry/webhook   # auth required
 ```
 
+Webhook events must include `updated_at` (RFC3339) so delayed async retries
+cannot overwrite newer cache state.
+
 Successful response:
 
 ```json

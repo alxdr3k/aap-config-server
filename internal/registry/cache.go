@@ -55,6 +55,9 @@ func (c *Cache) Upsert(app App, updatedAt time.Time) (App, bool, error) {
 	if err != nil {
 		return App{}, false, err
 	}
+	if normalized.UpdatedAt == "" {
+		return App{}, false, fmt.Errorf("updated_at is required")
+	}
 	if _, _, err := parseEventTime(normalized.UpdatedAt); err != nil {
 		return App{}, false, err
 	}
@@ -89,6 +92,9 @@ func (c *Cache) Delete(app App, updatedAt time.Time) (Key, bool, error) {
 	normalized, err := normalizeApp(app)
 	if err != nil {
 		return Key{}, false, err
+	}
+	if normalized.UpdatedAt == "" {
+		return Key{}, false, fmt.Errorf("updated_at is required")
 	}
 	if _, _, err := parseEventTime(normalized.UpdatedAt); err != nil {
 		return Key{}, false, err

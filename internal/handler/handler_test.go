@@ -746,9 +746,10 @@ func TestAppRegistryWebhook_UpsertAndDelete(t *testing.T) {
 	upsertBody := map[string]any{
 		"action": "upsert",
 		"app": map[string]any{
-			"org":     "myorg",
-			"project": "ai",
-			"name":    "litellm",
+			"org":        "myorg",
+			"project":    "ai",
+			"name":       "litellm",
+			"updated_at": "2026-04-29T10:00:00Z",
 		},
 	}
 	resp := postJSONWithBearer(t, srv, "/api/v1/admin/app-registry/webhook", upsertBody, "secret-key")
@@ -761,10 +762,11 @@ func TestAppRegistryWebhook_UpsertAndDelete(t *testing.T) {
 	}
 
 	deleteBody := map[string]any{
-		"action":  "delete",
-		"org":     "myorg",
-		"project": "ai",
-		"service": "litellm",
+		"action":     "delete",
+		"org":        "myorg",
+		"project":    "ai",
+		"service":    "litellm",
+		"updated_at": "2026-04-29T10:01:00Z",
 	}
 	resp = postJSONWithBearer(t, srv, "/api/v1/admin/app-registry/webhook", deleteBody, "secret-key")
 	if resp.StatusCode != http.StatusOK {
@@ -783,9 +785,10 @@ func TestAppRegistryWebhook_RequiresAuth(t *testing.T) {
 	resp := postJSON(t, srv, "/api/v1/admin/app-registry/webhook", map[string]any{
 		"action": "upsert",
 		"app": map[string]any{
-			"org":     "myorg",
-			"project": "ai",
-			"name":    "litellm",
+			"org":        "myorg",
+			"project":    "ai",
+			"name":       "litellm",
+			"updated_at": "2026-04-29T10:00:00Z",
 		},
 	})
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -804,6 +807,25 @@ func TestAppRegistryWebhook_RejectsInvalidAction(t *testing.T) {
 	resp := postJSONWithBearer(t, srv, "/api/v1/admin/app-registry/webhook", map[string]any{
 		"action": "bogus",
 		"app": map[string]any{
+			"org":        "myorg",
+			"project":    "ai",
+			"name":       "litellm",
+			"updated_at": "2026-04-29T10:00:00Z",
+		},
+	}, "secret-key")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestAppRegistryWebhook_RequiresUpdatedAt(t *testing.T) {
+	cache := registry.NewCache()
+	srv := newServerWithAPIKey(t, newFakeStore(), "secret-key", handler.WithAppRegistry(cache))
+	defer srv.Close()
+
+	resp := postJSONWithBearer(t, srv, "/api/v1/admin/app-registry/webhook", map[string]any{
+		"action": "upsert",
+		"app": map[string]any{
 			"org":     "myorg",
 			"project": "ai",
 			"name":    "litellm",
@@ -811,6 +833,9 @@ func TestAppRegistryWebhook_RejectsInvalidAction(t *testing.T) {
 	}, "secret-key")
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+	if apps := cache.List(); len(apps) != 0 {
+		t.Fatalf("missing updated_at should not update cache: %+v", apps)
 	}
 }
 

@@ -71,7 +71,9 @@ implementation; `ADR-003` remains the future service-level mutex target design.
   cache using bounded exponential backoff. Final failure is logged and the
   process continues with the existing cache.
 - `POST /api/v1/admin/app-registry/webhook` lets AAP Console update the App
-  Registry cache with authenticated create/update/upsert/delete notifications.
+  Registry cache with authenticated create/update/upsert/delete notifications;
+  each event must include RFC3339 `updated_at` so stale async retries are
+  ignored.
 - Config Agent, watch/history/revert, and inheritance are target design only.
 
 ## Failure modes

@@ -39,7 +39,7 @@ Question ↔ Decision ↔ Requirement ↔ Gate/Test ↔ Milestone/Track/Phase/Sl
 | `TRACE-024` |  | `ADR-004` | `FR-3`, `FR-7`, `FR-17` | `AC-020` / `internal/handler/handler_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.7` | `resolve_secrets=true` env var reads now require auth, read mounted K8s Secret values, and return no-store responses without ETag. |
 | `TRACE-025` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` / `internal/store/store_test.go`, `internal/handler/handler_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.8` | Non-sensitive secret audit logging now covers admin secret writes and resolved env var reads; tests assert audit logs do not include plaintext and secret values are best-effort cleaned up. |
 | `TRACE-026` |  |  | `FR-8` | `AC-021` / `internal/registry/*_test.go`, `internal/config/config_test.go` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | `REGISTRY-1A.1` | AAP Console App Registry startup bootstrap now has runtime config, HTTP client decoding, in-memory cache replacement, and bounded exponential backoff with graceful final failure. |
-| `TRACE-027` |  |  | `FR-8` | `AC-021` / `internal/handler/handler_test.go`, `internal/registry/*_test.go` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | `REGISTRY-1A.2` | Authenticated App Registry webhook now supports Console-driven cache create/update/upsert and idempotent delete semantics. |
+| `TRACE-027` |  |  | `FR-8` | `AC-021` / `internal/handler/handler_test.go`, `internal/registry/*_test.go` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | `REGISTRY-1A.2` | Authenticated App Registry webhook now supports Console-driven cache create/update/upsert and idempotent delete semantics with `updated_at` stale-event guards. |
 
 ## Invariants
 
