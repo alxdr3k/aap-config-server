@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 	"sort"
+	"time"
 )
 
 // App is one Console-owned service registration cached by Config Server.
@@ -61,6 +62,11 @@ func normalizeApp(app App) (App, error) {
 	}
 	if app.Service == "" {
 		return App{}, fmt.Errorf("service or name is required")
+	}
+	if app.UpdatedAt != "" {
+		if _, err := time.Parse(time.RFC3339Nano, app.UpdatedAt); err != nil {
+			return App{}, fmt.Errorf("updated_at must be RFC3339: %w", err)
+		}
 	}
 	return app, nil
 }

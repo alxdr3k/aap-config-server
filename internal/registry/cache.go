@@ -181,7 +181,7 @@ func shouldApplyEvent(current, incoming App) (bool, error) {
 	}
 	currentAt, hasCurrentAt, err := parseEventTime(current.UpdatedAt)
 	if err != nil {
-		return true, nil
+		return false, fmt.Errorf("current cache updated_at is invalid: %w", err)
 	}
 	if !hasCurrentAt {
 		return true, nil
