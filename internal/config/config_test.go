@@ -142,6 +142,18 @@ func TestValidate_AppliesSecretRuntimeDefaults(t *testing.T) {
 	if !c.SecretAuditEnabled() {
 		t.Error("SecretAuditLogEnabled default should be true")
 	}
+	if c.ConsoleAPITimeout != 5*time.Second {
+		t.Errorf("ConsoleAPITimeout default: got %s", c.ConsoleAPITimeout)
+	}
+	if c.ConsoleRegistryBootstrapAttempts != 5 {
+		t.Errorf("ConsoleRegistryBootstrapAttempts default: got %d", c.ConsoleRegistryBootstrapAttempts)
+	}
+	if c.ConsoleRegistryBootstrapInitialBackoff != time.Second {
+		t.Errorf("ConsoleRegistryBootstrapInitialBackoff default: got %s", c.ConsoleRegistryBootstrapInitialBackoff)
+	}
+	if c.ConsoleRegistryBootstrapMaxBackoff != 30*time.Second {
+		t.Errorf("ConsoleRegistryBootstrapMaxBackoff default: got %s", c.ConsoleRegistryBootstrapMaxBackoff)
+	}
 }
 
 func TestValidate_PreservesExplicitSecretAuditDisabled(t *testing.T) {
@@ -195,6 +207,42 @@ func TestValidate_SecretRuntimeValidation(t *testing.T) {
 				c.K8sApplyTimeout = -time.Second
 			},
 			want: "K8S_APPLY_TIMEOUT",
+		},
+		{
+			name: "bad console api url",
+			mutate: func(c *config.ServerConfig) {
+				c.ConsoleAPIURL = "ftp://console.example"
+			},
+			want: "CONSOLE_API_URL",
+		},
+		{
+			name: "negative console api timeout",
+			mutate: func(c *config.ServerConfig) {
+				c.ConsoleAPITimeout = -time.Second
+			},
+			want: "CONSOLE_API_TIMEOUT",
+		},
+		{
+			name: "negative registry bootstrap attempts",
+			mutate: func(c *config.ServerConfig) {
+				c.ConsoleRegistryBootstrapAttempts = -1
+			},
+			want: "CONSOLE_REGISTRY_BOOTSTRAP_ATTEMPTS",
+		},
+		{
+			name: "negative registry bootstrap initial backoff",
+			mutate: func(c *config.ServerConfig) {
+				c.ConsoleRegistryBootstrapInitialBackoff = -time.Second
+			},
+			want: "CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF",
+		},
+		{
+			name: "registry bootstrap max below initial",
+			mutate: func(c *config.ServerConfig) {
+				c.ConsoleRegistryBootstrapInitialBackoff = 2 * time.Second
+				c.ConsoleRegistryBootstrapMaxBackoff = time.Second
+			},
+			want: "CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF",
 		},
 	}
 	for _, tc := range tests {

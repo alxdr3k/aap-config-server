@@ -41,6 +41,8 @@ snapshot.
 | `secret.ControllerPublicKeyProvider` / `secret.PublicKeyEncryptor` | Controller certificate lookup and Bitnami hybrid encryption for SealedSecret data items. | `internal/secret/encrypt.go` |
 | `secret.DynamicApplier` | Adapter that creates or updates Bitnami SealedSecret objects through a Kubernetes dynamic client. | `internal/secret/apply.go` |
 | `secret.AuditEvent` / `secret.SlogAuditor` | Non-sensitive audit event boundary and slog-backed implementation for secret write/resolve activity. | `internal/secret/types.go`, `internal/secret/audit.go` |
+| `registry.App` / `registry.Cache` | Console-owned app registration record and in-memory registry snapshot. | `internal/registry/types.go`, `internal/registry/cache.go` |
+| `registry.ConsoleClient` | HTTP client that loads `GET /api/v1/apps?all=true` from AAP Console. | `internal/registry/client.go` |
 | `store.SecretWrite` | Admin write boundary for plaintext secret values grouped by K8s Secret name before sealing. | `internal/store/types.go` |
 | `ChangeRequest` | Internal representation of admin write input. | `internal/store/types.go` |
 | `DeleteRequest` | Internal representation of admin delete input. | `internal/store/types.go` |
@@ -82,6 +84,9 @@ snapshot.
 - Secret audit events carry action, result, service identity, and secret IDs
   only. Plaintext values remain confined to `secret.Value` boundaries and HTTP
   responses for authenticated `resolve_secrets=true` calls.
+- App Registry startup load replaces the in-memory registry cache from Console
+  API data. Final bootstrap failure records the error but preserves the
+  existing cache.
 - Invalid YAML or missing required fields fail reload closed.
 
 ## Lifecycle states

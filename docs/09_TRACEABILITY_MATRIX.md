@@ -24,7 +24,7 @@ Question ↔ Decision ↔ Requirement ↔ Gate/Test ↔ Milestone/Track/Phase/Sl
 | `TRACE-009` | `Q-001` | `DEC-001`, `DEC-002` | Documentation migration | `AC-014` | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.1` | Boilerplate docs adopted; `FR-*` remains canonical. |
 | `TRACE-010` |  | `DEC-001` | Documentation workflow | `AC-015` | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.2` | PR template and doc freshness soft-check. |
 | `TRACE-011` | `Q-003` | `DEC-003` | Deployment ownership | operations/runbook docs | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.1` | Repo owns binary/image/runtime docs; Helm/K8s manifests remain external. |
-| `TRACE-012` |  |  | `FR-8` | `AC-021` / `TEST-021` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | `REGISTRY-1A.1`~`REGISTRY-1A.3` | Leaf-planned Console App Registry bootstrap and webhook cache. |
+| `TRACE-012` |  |  | `FR-8` | `AC-021` / `TEST-021` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | `REGISTRY-1A.1`~`REGISTRY-1A.3` | Console App Registry bootstrap, webhook cache, and readiness/status track. |
 | `TRACE-013` |  |  | `FR-6` | `AC-040` / `TEST-040` | `P1-M3` | `EXT` | `EXT-1A` | `EXT-1A.1`~`EXT-1A.3` | Leaf-planned config/env watch APIs. |
 | `TRACE-014` |  |  | `FR-13`, `FR-14` | `AC-040` / `TEST-040` | `P1-M3` | `EXT` | `EXT-1B` | `EXT-1B.1`~`EXT-1B.5` | Leaf-planned history, versioned reads, and revert path. |
 | `TRACE-015` |  |  | `FR-10` | `AC-040` / `TEST-040` | `P1-M3` | `EXT` | `EXT-1C` | `EXT-1C.1`~`EXT-1C.4` | Leaf-planned inheritance and merge semantics. |
@@ -38,6 +38,7 @@ Question ↔ Decision ↔ Requirement ↔ Gate/Test ↔ Milestone/Track/Phase/Sl
 | `TRACE-023` |  | `ADR-004` | `FR-4`, `FR-7`, `FR-17` | `AC-020` / `internal/store/store_test.go`, `internal/handler/handler_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.6` | Admin secret writes now commit secrets metadata plus SealedSecret manifests, apply them to Kubernetes, and report apply/reload outcomes explicitly. |
 | `TRACE-024` |  | `ADR-004` | `FR-3`, `FR-7`, `FR-17` | `AC-020` / `internal/handler/handler_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.7` | `resolve_secrets=true` env var reads now require auth, read mounted K8s Secret values, and return no-store responses without ETag. |
 | `TRACE-025` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` / `internal/store/store_test.go`, `internal/handler/handler_test.go` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.8` | Non-sensitive secret audit logging now covers admin secret writes and resolved env var reads; tests assert audit logs do not include plaintext and secret values are best-effort cleaned up. |
+| `TRACE-026` |  |  | `FR-8` | `AC-021` / `internal/registry/*_test.go`, `internal/config/config_test.go` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | `REGISTRY-1A.1` | AAP Console App Registry startup bootstrap now has runtime config, HTTP client decoding, in-memory cache replacement, and bounded exponential backoff with graceful final failure. |
 
 ## Invariants
 
