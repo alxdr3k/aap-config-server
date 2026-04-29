@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -46,31 +47,50 @@ func (c *Cache) Replace(apps []App, loadedAt time.Time) {
 	c.lastLoadErr = nil
 }
 
-// Upsert inserts or replaces one app registration.
-func (c *Cache) Upsert(app App, updatedAt time.Time) (App, error) {
+// Upsert inserts or replaces one app registration. If app.UpdatedAt is set
+// and the existing cache entry has a newer UpdatedAt, the stale event is
+// ignored.
+func (c *Cache) Upsert(app App, updatedAt time.Time) (App, bool, error) {
 	normalized, err := normalizeApp(app)
 	if err != nil {
-		return App{}, err
+		return App{}, false, err
+	}
+	if _, _, err := parseEventTime(normalized.UpdatedAt); err != nil {
+		return App{}, false, err
 	}
 	if c == nil {
-		return normalized, nil
+		return normalized, false, nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.apps == nil {
 		c.apps = map[Key]App{}
 	}
-	c.apps[keyFor(normalized)] = normalized
+	key := keyFor(normalized)
+	if current, ok := c.apps[key]; ok {
+		apply, err := shouldApplyEvent(current, normalized)
+		if err != nil {
+			return App{}, false, err
+		}
+		if !apply {
+			return current, false, nil
+		}
+	}
+	c.apps[key] = normalized
 	c.lastLoaded = updatedAt.UTC()
 	c.lastLoadErr = nil
-	return normalized, nil
+	return normalized, true, nil
 }
 
 // Delete removes one app registration. Missing entries are treated as
-// successful idempotent deletes.
+// successful idempotent deletes. If app.UpdatedAt is older than the current
+// cache entry, the stale delete is ignored.
 func (c *Cache) Delete(app App, updatedAt time.Time) (Key, bool, error) {
 	normalized, err := normalizeApp(app)
 	if err != nil {
+		return Key{}, false, err
+	}
+	if _, _, err := parseEventTime(normalized.UpdatedAt); err != nil {
 		return Key{}, false, err
 	}
 	key := keyFor(normalized)
@@ -79,7 +99,16 @@ func (c *Cache) Delete(app App, updatedAt time.Time) (Key, bool, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, existed := c.apps[key]
+	current, existed := c.apps[key]
+	if existed {
+		apply, err := shouldApplyEvent(current, normalized)
+		if err != nil {
+			return Key{}, false, err
+		}
+		if !apply {
+			return key, false, nil
+		}
+	}
 	delete(c.apps, key)
 	c.lastLoaded = updatedAt.UTC()
 	c.lastLoadErr = nil
@@ -134,4 +163,33 @@ func (c *Cache) Status() Status {
 		status.LastLoadError = c.lastLoadErr.Error()
 	}
 	return status
+}
+
+func shouldApplyEvent(current, incoming App) (bool, error) {
+	incomingAt, hasIncomingAt, err := parseEventTime(incoming.UpdatedAt)
+	if err != nil {
+		return false, err
+	}
+	if !hasIncomingAt {
+		return true, nil
+	}
+	currentAt, hasCurrentAt, err := parseEventTime(current.UpdatedAt)
+	if err != nil {
+		return true, nil
+	}
+	if !hasCurrentAt {
+		return true, nil
+	}
+	return !incomingAt.Before(currentAt), nil
+}
+
+func parseEventTime(raw string) (time.Time, bool, error) {
+	if raw == "" {
+		return time.Time{}, false, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("updated_at must be RFC3339: %w", err)
+	}
+	return parsed, true, nil
 }

@@ -199,7 +199,7 @@ func (h *Handler) appRegistryWebhook(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	switch action {
 	case "create", "update", "upsert":
-		if _, err := h.appRegistry.Upsert(app, now); err != nil {
+		if _, _, err := h.appRegistry.Upsert(app, now); err != nil {
 			respondErrorCode(w, http.StatusBadRequest, "validation", err.Error())
 			return
 		}
