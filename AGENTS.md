@@ -61,6 +61,15 @@ Current local caveat: some workspaces may not have Go installed. In that case,
 run the static documentation checks you can, leave gate status as `not_run`,
 and report the missing `go` binary explicitly.
 
+## Branching
+
+- Primary integration branch: `dev`.
+- Feature work flows `feat/*` -> `dev` -> `main`.
+- Create feature branches from `dev`, and open PRs back to `dev`.
+- Promote `dev` to `main` only through a PR.
+- Never push to `main` directly.
+- Never force-push.
+
 ## Extraction tasks
 
 When asked to prepare external knowledge-base extraction (e.g. for a personal
