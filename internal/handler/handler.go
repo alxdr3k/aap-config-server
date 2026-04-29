@@ -76,6 +76,9 @@ func New(st ConfigStore, ready Readiness, apiKey string, opts ...Option) *Handle
 		opt(h)
 	}
 	h.secretDeps = h.secretDeps.WithDefaults()
+	if h.appRegistry == nil {
+		h.appRegistry = registry.NewCache()
+	}
 	return h
 }
 
@@ -106,6 +109,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/admin/changes", h.requireKey(h.postChanges))
 	mux.HandleFunc("DELETE /api/v1/admin/changes", h.requireKey(h.deleteChanges))
 	mux.HandleFunc("POST /api/v1/admin/reload", h.requireKey(h.adminReload))
+	mux.HandleFunc("POST /api/v1/admin/app-registry/webhook", h.requireKey(h.appRegistryWebhook))
 }
 
 // ---- health ----
@@ -168,6 +172,77 @@ func (h *Handler) adminReload(w http.ResponseWriter, r *http.Request) {
 		"updated": updated,
 		"version": h.store.HeadVersion(),
 	})
+}
+
+type appRegistryWebhookRequest struct {
+	Action    string        `json:"action"`
+	App       *registry.App `json:"app"`
+	Org       string        `json:"org"`
+	Project   string        `json:"project"`
+	Service   string        `json:"service"`
+	Name      string        `json:"name"`
+	UpdatedAt string        `json:"updated_at"`
+}
+
+func (h *Handler) appRegistryWebhook(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body appRegistryWebhookRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_body", h.explainDecodeError(err))
+		return
+	}
+
+	action := strings.ToLower(strings.TrimSpace(body.Action))
+	app := body.registryApp()
+	now := time.Now().UTC()
+	switch action {
+	case "create", "update", "upsert":
+		if _, _, err := h.appRegistry.Upsert(app, now); err != nil {
+			respondErrorCode(w, http.StatusBadRequest, "validation", err.Error())
+			return
+		}
+	case "delete":
+		if _, _, err := h.appRegistry.Delete(app, now); err != nil {
+			respondErrorCode(w, http.StatusBadRequest, "validation", err.Error())
+			return
+		}
+	default:
+		respondErrorCode(w, http.StatusBadRequest, "validation",
+			"action must be one of create, update, upsert, or delete")
+		return
+	}
+
+	status := h.appRegistry.Status()
+	respondJSON(w, http.StatusOK, map[string]any{
+		"status":      "ok",
+		"action":      action,
+		"apps_loaded": status.AppsLoaded,
+	})
+}
+
+func (r appRegistryWebhookRequest) registryApp() registry.App {
+	app := registry.App{}
+	if r.App != nil {
+		app = *r.App
+	}
+	if app.Org == "" {
+		app.Org = r.Org
+	}
+	if app.Project == "" {
+		app.Project = r.Project
+	}
+	if app.Service == "" {
+		app.Service = r.Service
+	}
+	if app.Name == "" {
+		app.Name = r.Name
+	}
+	if app.UpdatedAt == "" {
+		app.UpdatedAt = r.UpdatedAt
+	}
+	return app
 }
 
 // ---- service discovery ----

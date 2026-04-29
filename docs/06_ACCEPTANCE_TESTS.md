@@ -64,7 +64,7 @@ staging / manual acceptance가 아직 실행되지 않은 상태인지 분리한
 | `TEST-008` | Dirty checkout snapshot tests | `internal/gitops/repo_test.go` | `AC-008` |
 | `TEST-009` | Unknown admin field rejection tests | `internal/handler/handler_test.go` | `AC-009` |
 | `TEST-020` | Secret write/resolve tests | `internal/config/config_test.go`, `internal/secret/types_test.go`, `internal/secret/volume_test.go`, `internal/secret/sealed_test.go`, `internal/secret/encrypt_test.go`, `internal/secret/apply_test.go`, `internal/store/store_test.go`, `internal/handler/handler_test.go` | `AC-020` |
-| `TEST-021` | App Registry tests | `internal/registry/*_test.go`, future handler/status tests | `AC-021` |
+| `TEST-021` | App Registry tests | `internal/registry/*_test.go`, `internal/handler/handler_test.go`, future status tests | `AC-021` |
 | `TEST-030` | Config Agent future tests | future agent/k8s/e2e tests | `AC-030` |
 | `TEST-040` | Console extension future tests | future watch/history/revert/inheritance tests | `AC-040` |
 | `TEST-041` | Operational extension future tests | future HTTP/metrics/webhook tests | `AC-041` |

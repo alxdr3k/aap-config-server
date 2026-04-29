@@ -52,10 +52,12 @@ from an atomically swapped in-memory snapshot.
 - AAP Console App Registry startup bootstrap client/cache under
   `internal/registry`, wired through `CONSOLE_API_URL` with bounded
   exponential backoff and graceful empty-cache startup on final failure.
+- Auth-gated App Registry webhook endpoint for Console-driven cache upsert and
+  delete updates.
 
 ## Planned
 
-- App Registry webhook cache updates and readiness/status integration.
+- App Registry readiness/status integration.
 - Config Agent rollout path.
 - Watch/history/revert endpoints, config inheritance, response optimizations,
   metrics, schema validation, rate limiting, and integration/load validation.
@@ -68,7 +70,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Continue `REGISTRY-1A` with `REGISTRY-1A.2` App Registry webhook cache updates.
+1. Continue `REGISTRY-1A` with `REGISTRY-1A.3` App Registry readiness/status integration.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 

@@ -103,6 +103,25 @@ func TestConsoleClient_LoadAppsRejectsOversizedResponse(t *testing.T) {
 	}
 }
 
+func TestConsoleClient_LoadAppsRejectsInvalidUpdatedAt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"org":"myorg","project":"ai","service":"litellm","updated_at":"not-a-time"}]`))
+	}))
+	defer srv.Close()
+
+	client, err := registry.NewConsoleClient(registry.ClientOptions{
+		BaseURL:    srv.URL,
+		HTTPClient: srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewConsoleClient: %v", err)
+	}
+	_, err = client.LoadApps(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "updated_at") {
+		t.Fatalf("expected updated_at error, got %v", err)
+	}
+}
+
 func TestNewConsoleClientRejectsInvalidBaseURL(t *testing.T) {
 	for _, raw := range []string{"", "://bad", "ftp://console.example", "http:///missing-host"} {
 		t.Run(raw, func(t *testing.T) {

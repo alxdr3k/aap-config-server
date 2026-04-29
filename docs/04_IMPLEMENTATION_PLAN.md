@@ -62,7 +62,7 @@ Gate status:
 | `OPS` | Auth, readiness, degraded state, reload, CI/runtime operations. | `OPS-1A` | `accepted` | Runtime docs now live under `docs/current/`; CI passed on PR #10. |
 | `DOC` | Boilerplate documentation migration and status ledger. | `DOC-1A` | `accepted` | Landed through PR #10. |
 | `SECRET` | Secret write/resolve and SealedSecret integration. | `SECRET-1A` | `accepted` | Runtime boundaries, volume reader, deterministic SealedSecret YAML generation, public-key encryption, admin secret writes, K8s apply, secret value resolve, and audit hardening landed. |
-| `REGISTRY` | AAP Console App Registry bootstrap and webhook cache. | `REGISTRY-1A` | `in_progress` | Startup bootstrap landed; `REGISTRY-1A.2` is ready next. |
+| `REGISTRY` | AAP Console App Registry bootstrap and webhook cache. | `REGISTRY-1A` | `in_progress` | Startup bootstrap and webhook cache updates landed; `REGISTRY-1A.3` is ready next. |
 | `AGENT` | Config Agent and rollout orchestration. | `AGENT-1A` | `planned` | Planned. |
 | `EXT` | Watch, history, revert, inheritance, batch, webhook, metrics, and HTTP response extensions. | `EXT-1A`~`EXT-1D` | `planned` | Planned. |
 | `HARDEN` | Schema validation, rate limiting, integration/load tests, and deployment handoff docs. | `HARDEN-1A` | `planned` | Planned. |
@@ -91,8 +91,8 @@ Gate status:
 | `SECRET-1A.7` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement `resolve_secrets=true` for env var reads with auth, Volume Mount lookup, `Cache-Control: no-store`, and no ETag. | `SECRET-1A.2`, `SECRET-1A.6` | `AC-020` | `passing` | `landed` | `internal/handler`, `cmd/config-server` |  |
 | `SECRET-1A.8` | `P1-M1` | `SECRET` | `SECRET-1A` | Add secret audit logging, no-plaintext log assertions, and best-effort memory cleanup for secret handling paths. | `SECRET-1A.6`, `SECRET-1A.7` | `AC-020` | `passing` | `landed` | `internal/secret/audit.go`, `internal/store`, `internal/handler` |  |
 | `REGISTRY-1A.1` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | Add AAP Console API client, runtime config, startup registry load, and bounded exponential backoff. | `OPS-1A.1` | `AC-021` | `defined` | `landed` | `internal/registry`, `internal/config`, `cmd/config-server` |  |
-| `REGISTRY-1A.2` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | Add authenticated App Registry webhook endpoint and in-memory cache update semantics. | `REGISTRY-1A.1` | `AC-021` | `defined` | `ready` | `docs/01_PRD.md` | Start here next. |
-| `REGISTRY-1A.3` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | Integrate registry load/cache state into readiness, status, and operations docs. | `REGISTRY-1A.2`, `OPS-1A.2` | `AC-021` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `REGISTRY-1A.2` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | Add authenticated App Registry webhook endpoint and in-memory cache update semantics. | `REGISTRY-1A.1` | `AC-021` | `defined` | `landed` | `internal/handler`, `internal/registry` |  |
+| `REGISTRY-1A.3` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | Integrate registry load/cache state into readiness, status, and operations docs. | `REGISTRY-1A.2`, `OPS-1A.2` | `AC-021` | `defined` | `ready` | `docs/01_PRD.md` | Start here next. |
 | `AGENT-1A.1` | `P1-M2` | `AGENT` | `AGENT-1A` | Add Config Agent binary, runtime config, Config Server API client, and local dry-run mode. | `SECRET-1A.7` | `AC-030` | `defined` | `planned` | ADR-001, ADR-002 |  |
 | `AGENT-1A.2` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement K8s Lease leader election with standby takeover behavior. | `AGENT-1A.1` | `AC-030` | `defined` | `planned` | ADR-002 |  |
 | `AGENT-1A.3` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement config/env fetch loop, version tracking, and retry/backoff behavior using read API polling. | `AGENT-1A.1` | `AC-030` | `defined` | `planned` | ADR-001, ADR-002 |  |
