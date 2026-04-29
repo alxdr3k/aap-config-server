@@ -13,9 +13,9 @@ from an atomically swapped in-memory snapshot.
 
 ## Current roadmap position
 
-- current milestone: `P0-M3` documentation boilerplate migration accepted
-- active tracks: none
-- active phase: none
+- current milestone: `P1-M1` secret write/resolve path started
+- active tracks: `SECRET`
+- active phase: `SECRET-1A`
 - active slice: none
 - last accepted gate: `AC-014` / `AC-015` via PR #10
 - next gate: `P1-M1` / `AC-020`, `AC-021`
@@ -34,6 +34,8 @@ from an atomically swapped in-memory snapshot.
 - Auth-gated admin write/delete/reload endpoints.
 - Auth-gated secret metadata read; secret value write/resolve is not implemented.
 - Degraded state through `/readyz` and `/api/v1/status`.
+- Secret runtime boundary settings and adapter interfaces for future volume
+  reads, SealedSecret sealing, K8s apply, and audit logging.
 
 ## Planned
 
@@ -51,7 +53,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `SECRET-1A.1` when implementation resumes.
+1. Continue `SECRET-1A` with `SECRET-1A.2`.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 

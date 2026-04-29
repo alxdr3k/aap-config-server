@@ -79,7 +79,12 @@ curl http://localhost:8080/api/v1/orgs
 | `ALLOW_UNAUTHENTICATED_DEV`  | no                       | `false`               | Set to `true` to boot without an API key — dev/test only. |
 | `ADDR`                       | no                       | `:8080`               | HTTP listen address.                                   |
 | `LOG_LEVEL`                  | no                       | `info`                | `debug`, `info`, `warn`, `error`.                     |
-| `SECRET_MOUNT_PATH`          | no                       | `/secrets`            | Reserved for future secret-mount logic.                |
+| `SECRET_MOUNT_PATH`          | no                       | `/secrets`            | Absolute root for future K8s Secret volume reads.      |
+| `SEALED_SECRET_CONTROLLER_NAMESPACE` | no                | `kube-system`         | Namespace for future SealedSecret public-key/apply integration. |
+| `SEALED_SECRET_CONTROLLER_NAME` | no                    | `sealed-secrets-controller` | Controller service name for future SealedSecret integration. |
+| `SEALED_SECRET_SCOPE`        | no                       | `strict`              | Future SealedSecret scope: `strict`, `namespace-wide`, or `cluster-wide`. |
+| `K8S_APPLY_TIMEOUT`          | no                       | `10s`                 | Timeout for future K8s apply calls.                    |
+| `SECRET_AUDIT_LOG_ENABLED`   | no                       | `true`                | Enables future non-sensitive secret audit logging.     |
 | `CONSOLE_API_URL`            | no                       | —                     | Reserved.                                              |
 
 ### Auth: fail-closed by default

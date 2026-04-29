@@ -12,6 +12,7 @@ import (
 	"github.com/aap/config-server/internal/config"
 	"github.com/aap/config-server/internal/gitops"
 	"github.com/aap/config-server/internal/handler"
+	"github.com/aap/config-server/internal/secret"
 	"github.com/aap/config-server/internal/server"
 	"github.com/aap/config-server/internal/store"
 )
@@ -28,6 +29,21 @@ func main() {
 	if cfg.APIKey == "" && cfg.AllowUnauthenticatedDev {
 		slog.Warn("admin API authentication is DISABLED (ALLOW_UNAUTHENTICATED_DEV=true). Never use this in production.")
 	}
+	secretCfg := secret.RuntimeConfig{
+		MountPath:                       cfg.SecretMountPath,
+		SealedSecretControllerNamespace: cfg.SealedSecretControllerNamespace,
+		SealedSecretControllerName:      cfg.SealedSecretControllerName,
+		SealedSecretScope:               cfg.SealedSecretScope,
+		K8sApplyTimeout:                 cfg.K8sApplyTimeout,
+		AuditLogEnabled:                 cfg.SecretAuditEnabled(),
+	}
+	slog.Info("secret runtime boundary configured",
+		"mount_path", secretCfg.MountPath,
+		"sealed_secret_controller_namespace", secretCfg.SealedSecretControllerNamespace,
+		"sealed_secret_controller_name", secretCfg.SealedSecretControllerName,
+		"sealed_secret_scope", secretCfg.SealedSecretScope,
+		"k8s_apply_timeout", secretCfg.K8sApplyTimeout,
+		"audit_log_enabled", secretCfg.AuditLogEnabled)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

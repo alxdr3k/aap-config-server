@@ -114,3 +114,101 @@ func TestValidate_HappyPathBasicAuth(t *testing.T) {
 		t.Fatalf("validate: %v", err)
 	}
 }
+
+func TestValidate_AppliesSecretRuntimeDefaults(t *testing.T) {
+	c := &config.ServerConfig{
+		GitURL:          "git@host:repo.git",
+		GitPollInterval: 30 * time.Second,
+		APIKey:          "k",
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if c.SecretMountPath != "/secrets" {
+		t.Errorf("SecretMountPath default: want /secrets, got %q", c.SecretMountPath)
+	}
+	if c.SealedSecretControllerNamespace != "kube-system" {
+		t.Errorf("controller namespace default: got %q", c.SealedSecretControllerNamespace)
+	}
+	if c.SealedSecretControllerName != "sealed-secrets-controller" {
+		t.Errorf("controller name default: got %q", c.SealedSecretControllerName)
+	}
+	if c.SealedSecretScope != "strict" {
+		t.Errorf("scope default: got %q", c.SealedSecretScope)
+	}
+	if c.K8sApplyTimeout != 10*time.Second {
+		t.Errorf("K8sApplyTimeout default: got %s", c.K8sApplyTimeout)
+	}
+	if !c.SecretAuditEnabled() {
+		t.Error("SecretAuditLogEnabled default should be true")
+	}
+}
+
+func TestValidate_PreservesExplicitSecretAuditDisabled(t *testing.T) {
+	disabled := false
+	c := &config.ServerConfig{
+		GitURL:                     "git@host:repo.git",
+		GitPollInterval:            30 * time.Second,
+		APIKey:                     "k",
+		SecretAuditLogEnabled:      &disabled,
+		SecretMountPath:            "/custom-secrets",
+		SealedSecretScope:          "namespace-wide",
+		SealedSecretControllerName: "sealed-secrets-controller",
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if c.SecretAuditEnabled() {
+		t.Fatal("explicit audit disabled setting should be preserved")
+	}
+	if c.K8sApplyTimeout != 10*time.Second {
+		t.Errorf("partial runtime config should default K8sApplyTimeout, got %s", c.K8sApplyTimeout)
+	}
+	if c.SealedSecretControllerNamespace != "kube-system" {
+		t.Errorf("partial runtime config should default controller namespace, got %q", c.SealedSecretControllerNamespace)
+	}
+}
+
+func TestValidate_SecretRuntimeValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*config.ServerConfig)
+		want   string
+	}{
+		{
+			name: "relative mount path",
+			mutate: func(c *config.ServerConfig) {
+				c.SecretMountPath = "secrets"
+			},
+			want: "SECRET_MOUNT_PATH",
+		},
+		{
+			name: "bad sealed secret scope",
+			mutate: func(c *config.ServerConfig) {
+				c.SealedSecretScope = "wide"
+			},
+			want: "SEALED_SECRET_SCOPE",
+		},
+		{
+			name: "negative k8s apply timeout",
+			mutate: func(c *config.ServerConfig) {
+				c.K8sApplyTimeout = -time.Second
+			},
+			want: "K8S_APPLY_TIMEOUT",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &config.ServerConfig{
+				GitURL:          "git@host:repo.git",
+				GitPollInterval: 30 * time.Second,
+				APIKey:          "k",
+			}
+			tc.mutate(c)
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %s error, got %v", tc.want, err)
+			}
+		})
+	}
+}

@@ -6,26 +6,46 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
+)
+
+const (
+	defaultSecretMountPath                 = "/secrets"
+	defaultSealedSecretControllerNamespace = "kube-system"
+	defaultSealedSecretControllerName      = "sealed-secrets-controller"
+	defaultSealedSecretScope               = "strict"
+	defaultK8sApplyTimeout                 = 10 * time.Second
+	defaultSecretAuditLogEnabled           = true
+	sealedSecretScopeStrict                = "strict"
+	sealedSecretScopeNamespaceWide         = "namespace-wide"
+	sealedSecretScopeClusterWide           = "cluster-wide"
 )
 
 // ServerConfig holds all runtime configuration for the Config Server.
 // Values are sourced from environment variables (primary) with flag fallbacks.
 // Helm values → K8s env vars → this struct.
 type ServerConfig struct {
-	Addr                     string
-	GitURL                   string
-	GitBranch                string
-	GitLocalPath             string
-	GitPollInterval          time.Duration
-	GitSSHKeyPath            string
-	GitUsername              string
-	GitPassword              string
-	APIKey                   string
-	AllowUnauthenticatedDev  bool
-	SecretMountPath          string
-	ConsoleAPIURL            string
-	LogLevel                 string
+	Addr                            string
+	GitURL                          string
+	GitBranch                       string
+	GitLocalPath                    string
+	GitPollInterval                 time.Duration
+	GitSSHKeyPath                   string
+	GitUsername                     string
+	GitPassword                     string
+	APIKey                          string
+	AllowUnauthenticatedDev         bool
+	SecretMountPath                 string
+	SealedSecretControllerNamespace string
+	SealedSecretControllerName      string
+	SealedSecretScope               string
+	K8sApplyTimeout                 time.Duration
+	SecretAuditLogEnabled           *bool
+	ConsoleAPIURL                   string
+	LogLevel                        string
+
+	k8sApplyTimeoutExplicit bool
 }
 
 // Load reads configuration from environment variables and command-line flags,
@@ -42,7 +62,13 @@ func Load() (*ServerConfig, error) {
 	flag.DurationVar(&cfg.GitPollInterval, "git-poll-interval", envDuration("GIT_POLL_INTERVAL", 30*time.Second), "Git poll interval (must be > 0)")
 	flag.StringVar(&cfg.GitSSHKeyPath, "git-ssh-key", env("GIT_SSH_KEY", ""), "Path to SSH private key for git auth")
 	flag.StringVar(&cfg.GitUsername, "git-username", env("GIT_USERNAME", ""), "Username for HTTPS BasicAuth (use with GIT_PASSWORD)")
-	flag.StringVar(&cfg.SecretMountPath, "secret-mount-path", env("SECRET_MOUNT_PATH", "/secrets"), "Volume mount path for K8s secrets")
+	flag.StringVar(&cfg.SecretMountPath, "secret-mount-path", env("SECRET_MOUNT_PATH", defaultSecretMountPath), "Volume mount path for K8s secrets")
+	flag.StringVar(&cfg.SealedSecretControllerNamespace, "sealed-secret-controller-namespace", env("SEALED_SECRET_CONTROLLER_NAMESPACE", defaultSealedSecretControllerNamespace), "Namespace of the SealedSecret controller service")
+	flag.StringVar(&cfg.SealedSecretControllerName, "sealed-secret-controller-name", env("SEALED_SECRET_CONTROLLER_NAME", defaultSealedSecretControllerName), "Name of the SealedSecret controller service")
+	flag.StringVar(&cfg.SealedSecretScope, "sealed-secret-scope", env("SEALED_SECRET_SCOPE", defaultSealedSecretScope), "SealedSecret scope: strict, namespace-wide, or cluster-wide")
+	flag.DurationVar(&cfg.K8sApplyTimeout, "k8s-apply-timeout", envDuration("K8S_APPLY_TIMEOUT", defaultK8sApplyTimeout), "Timeout for future Kubernetes apply calls")
+	secretAuditLogEnabled := envBool("SECRET_AUDIT_LOG_ENABLED", defaultSecretAuditLogEnabled)
+	flag.BoolVar(&secretAuditLogEnabled, "secret-audit-log-enabled", secretAuditLogEnabled, "Enable audit logs for future secret reads/writes")
 	flag.StringVar(&cfg.ConsoleAPIURL, "console-api-url", env("CONSOLE_API_URL", ""), "AAP Console API URL")
 	flag.StringVar(&cfg.LogLevel, "log-level", env("LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 
@@ -52,6 +78,13 @@ func Load() (*ServerConfig, error) {
 	cfg.AllowUnauthenticatedDev = envBool("ALLOW_UNAUTHENTICATED_DEV", false)
 
 	flag.Parse()
+	cfg.SecretAuditLogEnabled = &secretAuditLogEnabled
+	cfg.k8sApplyTimeoutExplicit = os.Getenv("K8S_APPLY_TIMEOUT") != ""
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "k8s-apply-timeout" {
+			cfg.k8sApplyTimeoutExplicit = true
+		}
+	})
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -63,6 +96,8 @@ func Load() (*ServerConfig, error) {
 // Validate enforces required fields and sane values. Kept on the struct so
 // tests can construct a ServerConfig directly and re-use the same rules.
 func (c *ServerConfig) Validate() error {
+	c.applyDefaults()
+
 	if c.GitURL == "" {
 		return errors.New("GIT_URL is required (set via env or -git-url flag)")
 	}
@@ -78,7 +113,57 @@ func (c *ServerConfig) Validate() error {
 	if (c.GitUsername != "") != (c.GitPassword != "") {
 		return errors.New("GIT_USERNAME and GIT_PASSWORD must be set together")
 	}
+	if c.SecretMountPath == "" {
+		return errors.New("SECRET_MOUNT_PATH is required")
+	}
+	if !filepath.IsAbs(c.SecretMountPath) {
+		return fmt.Errorf("SECRET_MOUNT_PATH must be absolute, got %q", c.SecretMountPath)
+	}
+	if c.SealedSecretControllerNamespace == "" {
+		return errors.New("SEALED_SECRET_CONTROLLER_NAMESPACE is required")
+	}
+	if c.SealedSecretControllerName == "" {
+		return errors.New("SEALED_SECRET_CONTROLLER_NAME is required")
+	}
+	switch c.SealedSecretScope {
+	case sealedSecretScopeStrict, sealedSecretScopeNamespaceWide, sealedSecretScopeClusterWide:
+	default:
+		return fmt.Errorf("SEALED_SECRET_SCOPE must be one of %q, %q, or %q, got %q",
+			sealedSecretScopeStrict, sealedSecretScopeNamespaceWide, sealedSecretScopeClusterWide, c.SealedSecretScope)
+	}
+	if c.K8sApplyTimeout <= 0 {
+		return fmt.Errorf("K8S_APPLY_TIMEOUT must be > 0, got %s", c.K8sApplyTimeout)
+	}
 	return nil
+}
+
+func (c *ServerConfig) SecretAuditEnabled() bool {
+	if c.SecretAuditLogEnabled == nil {
+		return defaultSecretAuditLogEnabled
+	}
+	return *c.SecretAuditLogEnabled
+}
+
+func (c *ServerConfig) applyDefaults() {
+	if c.SecretMountPath == "" {
+		c.SecretMountPath = defaultSecretMountPath
+	}
+	if c.SealedSecretControllerNamespace == "" {
+		c.SealedSecretControllerNamespace = defaultSealedSecretControllerNamespace
+	}
+	if c.SealedSecretControllerName == "" {
+		c.SealedSecretControllerName = defaultSealedSecretControllerName
+	}
+	if c.SealedSecretScope == "" {
+		c.SealedSecretScope = defaultSealedSecretScope
+	}
+	if c.K8sApplyTimeout == 0 && !c.k8sApplyTimeoutExplicit {
+		c.K8sApplyTimeout = defaultK8sApplyTimeout
+	}
+	if c.SecretAuditLogEnabled == nil {
+		enabled := defaultSecretAuditLogEnabled
+		c.SecretAuditLogEnabled = &enabled
+	}
 }
 
 func env(key, fallback string) string {

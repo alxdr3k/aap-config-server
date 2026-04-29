@@ -50,7 +50,7 @@ Gate status:
 | `P0-M1` | Phase-1 Config Server MVP serves Git-backed config/env data and supports admin config/env writes. |  | `accepted` | `AC-001`~`AC-005` | `cmd/config-server`, `internal/*`, `README.md`, PR #10 CI | Existing implementation predates this ledger. |
 | `P0-M2` | Operational hardening for auth, degraded state, reload, dirty checkout safety, and unsupported secret writes. |  | `accepted` | `AC-006`~`AC-009` | `internal/store`, `internal/handler`, `internal/gitops`, PR #10 CI | Some PRD phase labels differ from actual landing order. |
 | `P0-M3` | Documentation system migrated to boilerplate structure. |  | `accepted` | `AC-014`, `AC-015` | `docs/00_*`, `docs/current/*`, `AGENTS.md`, `.github/`, PR #10 | Migration landed on main. |
-| `P1-M1` | Secret write/resolve with SealedSecret, K8s apply, and Console App Registry integration. |  | `planned` | `AC-020`, `AC-021` | ADR-004, `docs/01_PRD.md` | Leaf slices defined. |
+| `P1-M1` | Secret write/resolve with SealedSecret, K8s apply, and Console App Registry integration. |  | `in_progress` | `AC-020`, `AC-021` | ADR-004, `docs/01_PRD.md` | Secret boundary slice started. |
 | `P1-M2` | Config Agent rollout path. |  | `planned` | `AC-030` | ADR-001, ADR-002 | Leaf slices defined. |
 | `P1-M3` | Console integration extensions and production hardening. |  | `planned` | `AC-040`~`AC-042` | `docs/01_PRD.md`, `DEC-003` | Leaf slices defined. |
 
@@ -61,7 +61,7 @@ Gate status:
 | `CORE` | Core Config Server runtime, parser, store, Git sync, read/write APIs. | `CORE-1A` | `accepted` | Code exists in `cmd/` and `internal/`; CI passed on PR #10. |
 | `OPS` | Auth, readiness, degraded state, reload, CI/runtime operations. | `OPS-1A` | `accepted` | Runtime docs now live under `docs/current/`; CI passed on PR #10. |
 | `DOC` | Boilerplate documentation migration and status ledger. | `DOC-1A` | `accepted` | Landed through PR #10. |
-| `SECRET` | Secret write/resolve and SealedSecret integration. | `SECRET-1A` | `planned` | Planned. |
+| `SECRET` | Secret write/resolve and SealedSecret integration. | `SECRET-1A` | `in_progress` | Runtime boundaries landed; adapter implementation remains planned. |
 | `REGISTRY` | AAP Console App Registry bootstrap and webhook cache. | `REGISTRY-1A` | `planned` | Planned. |
 | `AGENT` | Config Agent and rollout orchestration. | `AGENT-1A` | `planned` | Planned. |
 | `EXT` | Watch, history, revert, inheritance, batch, webhook, metrics, and HTTP response extensions. | `EXT-1A`~`EXT-1D` | `planned` | Planned. |
@@ -82,8 +82,8 @@ Gate status:
 | `OPS-1A.4` | `P0-M2` | `OPS` | `OPS-1A` | Reject unsupported secret payloads in Phase-1 admin writes. | `CORE-1A.5` | `AC-009` / `TEST-009` | `passing` | `accepted` | `internal/handler`, PR #10 CI |  |
 | `DOC-1A.1` | `P0-M3` | `DOC` | `DOC-1A` | Add boilerplate docs and move PRD/HLD to numbered canonical files. |  | `AC-014` | `passing` | `accepted` | `docs/`, `AGENTS.md`, PR #10 |  |
 | `DOC-1A.2` | `P0-M3` | `DOC` | `DOC-1A` | Add PR template and doc freshness soft-check for Go source paths. | `DOC-1A.1` | `AC-015` | `passing` | `accepted` | `.github/pull_request_template.md`, `.github/workflows/doc-freshness.yml`, PR #10 |  |
-| `SECRET-1A.1` | `P1-M1` | `SECRET` | `SECRET-1A` | Add secret runtime config, interfaces, and dependency boundaries for volume reads, sealing, K8s apply, and audit logging. | `OPS-1A.1` | `AC-020` | `defined` | `ready` | ADR-004 | Start here. |
-| `SECRET-1A.2` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement Volume Mount secret reader and fsnotify-backed refresh for mounted secret files. | `SECRET-1A.1` | `AC-020` | `defined` | `planned` | ADR-004 |  |
+| `SECRET-1A.1` | `P1-M1` | `SECRET` | `SECRET-1A` | Add secret runtime config, interfaces, and dependency boundaries for volume reads, sealing, K8s apply, and audit logging. | `OPS-1A.1` | `AC-020` | `defined` | `landed` | `internal/config`, `internal/secret`, `docs/current/*` |  |
+| `SECRET-1A.2` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement Volume Mount secret reader and fsnotify-backed refresh for mounted secret files. | `SECRET-1A.1` | `AC-020` | `defined` | `ready` | ADR-004 | Start here next. |
 | `SECRET-1A.3` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement SealedSecret generation adapter and deterministic YAML output for secret payloads. | `SECRET-1A.1` | `AC-020` | `defined` | `planned` | ADR-004 |  |
 | `SECRET-1A.4` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement K8s apply adapter for SealedSecret objects with context-aware error handling. | `SECRET-1A.3` | `AC-020` | `defined` | `planned` | ADR-004 |  |
 | `SECRET-1A.5` | `P1-M1` | `SECRET` | `SECRET-1A` | Accept `secrets` in admin writes, write metadata plus SealedSecret files in one Git commit, apply to K8s, and reload outcome explicitly. | `SECRET-1A.2`, `SECRET-1A.4`, `CORE-1A.5` | `AC-020` | `defined` | `planned` | ADR-004 |  |
