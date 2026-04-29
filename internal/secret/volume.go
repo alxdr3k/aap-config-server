@@ -211,7 +211,7 @@ func (r *FileVolumeReader) handleWatchEvent(
 				sendVolumeEvent(ctx, out, VolumeEvent{Reference: ref, Path: clean, Err: err})
 				continue
 			}
-			r.refreshFromEvent(ctx, ref, path, classifyVolumeOp(event.Op), out)
+			r.refreshFromEvent(ctx, ref, path, VolumeOpWrite, out)
 		}
 	}
 }
