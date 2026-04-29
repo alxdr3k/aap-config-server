@@ -44,6 +44,8 @@ type ServerConfig struct {
 	SecretAuditLogEnabled           bool
 	ConsoleAPIURL                   string
 	LogLevel                        string
+
+	k8sApplyTimeoutExplicit bool
 }
 
 // Load reads configuration from environment variables and command-line flags,
@@ -75,6 +77,12 @@ func Load() (*ServerConfig, error) {
 	cfg.AllowUnauthenticatedDev = envBool("ALLOW_UNAUTHENTICATED_DEV", false)
 
 	flag.Parse()
+	cfg.k8sApplyTimeoutExplicit = os.Getenv("K8S_APPLY_TIMEOUT") != ""
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "k8s-apply-timeout" {
+			cfg.k8sApplyTimeoutExplicit = true
+		}
+	})
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -128,12 +136,6 @@ func (c *ServerConfig) Validate() error {
 }
 
 func (c *ServerConfig) applyDefaults() {
-	secretRuntimeUnset := c.SecretMountPath == "" &&
-		c.SealedSecretControllerNamespace == "" &&
-		c.SealedSecretControllerName == "" &&
-		c.SealedSecretScope == "" &&
-		c.K8sApplyTimeout == 0
-
 	if c.SecretMountPath == "" {
 		c.SecretMountPath = defaultSecretMountPath
 	}
@@ -146,9 +148,8 @@ func (c *ServerConfig) applyDefaults() {
 	if c.SealedSecretScope == "" {
 		c.SealedSecretScope = defaultSealedSecretScope
 	}
-	if secretRuntimeUnset {
+	if c.K8sApplyTimeout == 0 && !c.k8sApplyTimeoutExplicit {
 		c.K8sApplyTimeout = defaultK8sApplyTimeout
-		c.SecretAuditLogEnabled = defaultSecretAuditLogEnabled
 	}
 }
 

@@ -139,28 +139,29 @@ func TestValidate_AppliesSecretRuntimeDefaults(t *testing.T) {
 	if c.K8sApplyTimeout != 10*time.Second {
 		t.Errorf("K8sApplyTimeout default: got %s", c.K8sApplyTimeout)
 	}
-	if !c.SecretAuditLogEnabled {
-		t.Error("SecretAuditLogEnabled default should be true")
-	}
 }
 
 func TestValidate_PreservesExplicitSecretAuditDisabled(t *testing.T) {
 	c := &config.ServerConfig{
-		GitURL:                          "git@host:repo.git",
-		GitPollInterval:                 30 * time.Second,
-		APIKey:                          "k",
-		SecretMountPath:                 "/secrets",
-		SealedSecretControllerNamespace: "kube-system",
-		SealedSecretControllerName:      "sealed-secrets-controller",
-		SealedSecretScope:               "strict",
-		K8sApplyTimeout:                 10 * time.Second,
-		SecretAuditLogEnabled:           false,
+		GitURL:                     "git@host:repo.git",
+		GitPollInterval:            30 * time.Second,
+		APIKey:                     "k",
+		SecretAuditLogEnabled:      false,
+		SecretMountPath:            "/custom-secrets",
+		SealedSecretScope:          "namespace-wide",
+		SealedSecretControllerName: "sealed-secrets-controller",
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 	if c.SecretAuditLogEnabled {
 		t.Fatal("explicit audit disabled setting should be preserved")
+	}
+	if c.K8sApplyTimeout != 10*time.Second {
+		t.Errorf("partial runtime config should default K8sApplyTimeout, got %s", c.K8sApplyTimeout)
+	}
+	if c.SealedSecretControllerNamespace != "kube-system" {
+		t.Errorf("partial runtime config should default controller namespace, got %q", c.SealedSecretControllerNamespace)
 	}
 }
 
@@ -183,17 +184,6 @@ func TestValidate_SecretRuntimeValidation(t *testing.T) {
 				c.SealedSecretScope = "wide"
 			},
 			want: "SEALED_SECRET_SCOPE",
-		},
-		{
-			name: "zero k8s apply timeout",
-			mutate: func(c *config.ServerConfig) {
-				c.SecretMountPath = "/secrets"
-				c.SealedSecretControllerNamespace = "kube-system"
-				c.SealedSecretControllerName = "sealed-secrets-controller"
-				c.SealedSecretScope = "strict"
-				c.K8sApplyTimeout = 0
-			},
-			want: "K8S_APPLY_TIMEOUT",
 		},
 		{
 			name: "negative k8s apply timeout",
