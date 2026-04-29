@@ -284,6 +284,12 @@ curl -X POST http://localhost:8080/api/v1/admin/reload \
 
 ## Development
 
+For the repo-local Go toolchain and caches:
+
+```bash
+. scripts/dev-env.sh
+```
+
 ```bash
 make build          # compile the binary
 make test           # go test ./...

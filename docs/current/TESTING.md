@@ -9,6 +9,16 @@ Prerequisites:
 - Go 1.24+; `go.mod` pins `toolchain go1.24.7`.
 - `golangci-lint` only if running `make lint` locally.
 
+For a repo-local Go toolchain and caches, source the local dev environment:
+
+```bash
+. scripts/dev-env.sh
+```
+
+This expects Go at `.tools/go` and keeps `GOCACHE`, `GOMODCACHE`, and `GOPATH`
+under `.cache/`. It also sets `GOTOOLCHAIN=local` so Go does not auto-install a
+different toolchain outside the repo.
+
 ## Build
 
 ```bash
