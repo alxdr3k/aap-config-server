@@ -45,10 +45,10 @@ Do not use that flag in production.
 | `ALLOW_UNAUTHENTICATED_DEV` | no | `false` | Local/test escape hatch only. |
 | `ADDR` | no | `:8080` | HTTP listen address. |
 | `LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, `error`. |
-| `SECRET_MOUNT_PATH` | no | `/secrets` | Absolute root for planned K8s Secret volume reads. |
-| `SEALED_SECRET_CONTROLLER_NAMESPACE` | no | `kube-system` | Namespace for planned SealedSecret controller integration. |
-| `SEALED_SECRET_CONTROLLER_NAME` | no | `sealed-secrets-controller` | Controller service name for planned SealedSecret integration. |
-| `SEALED_SECRET_SCOPE` | no | `strict` | Planned SealedSecret scope: `strict`, `namespace-wide`, or `cluster-wide`. |
+| `SECRET_MOUNT_PATH` | no | `/secrets` | Absolute root for mounted K8s Secret volume reads. |
+| `SEALED_SECRET_CONTROLLER_NAMESPACE` | no | `kube-system` | Namespace for SealedSecret controller public-key lookup and future admin write integration. |
+| `SEALED_SECRET_CONTROLLER_NAME` | no | `sealed-secrets-controller` | Controller service name for SealedSecret public-key lookup and future admin write integration. |
+| `SEALED_SECRET_SCOPE` | no | `strict` | SealedSecret scope used by internal sealing adapters: `strict`, `namespace-wide`, or `cluster-wide`. |
 | `K8S_APPLY_TIMEOUT` | no | `10s` | Timeout for SealedSecret apply adapter calls. |
 | `SECRET_AUDIT_LOG_ENABLED` | no | `true` | Enables planned non-sensitive secret audit logging. |
 | `CONSOLE_API_URL` | no |  | Reserved. |
