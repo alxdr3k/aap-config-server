@@ -120,7 +120,7 @@ Gate status:
 | `EXT-1D.5` | `P1-M3` | `EXT` | `EXT-1D` | Add authenticated Git webhook trigger for immediate refresh after config repo changes. | `OPS-1A.1`, `OPS-1A.2` | `AC-041` | `defined` | `planned` | `docs/01_PRD.md` |  |
 | `HARDEN-1A.1` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add explicit schema validation layer for config, env vars, defaults, and secret metadata files. | `EXT-1C.1`, `SECRET-1A.6` | `AC-042` | `defined` | `planned` | `docs/01_PRD.md` |  |
 | `HARDEN-1A.2` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add configurable rate limiting for admin, secret resolve, watch, and batch endpoints. | `OPS-1A.1`, `EXT-1D.3` | `AC-042` | `defined` | `planned` | `docs/01_PRD.md` |  |
-| `HARDEN-1A.3` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Build integration test harness with fake Git, fake K8s, and fake Console dependencies. | `SECRET-1A.7`, `REGISTRY-1A.3`, `AGENT-1A.8` | `AC-042` | `defined` | `planned` | `docs/development-process.md` |  |
+| `HARDEN-1A.3` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Build integration test harness with fake Git, fake K8s, and fake Console dependencies. | `SECRET-1A.8`, `REGISTRY-1A.3`, `AGENT-1A.8` | `AC-042` | `defined` | `planned` | `docs/development-process.md` |  |
 | `HARDEN-1A.4` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add load/concurrency test profiles for admin writes, watch waits, and Config Agent polling. | `HARDEN-1A.3`, `EXT-1A.3` | `AC-042` | `defined` | `planned` | `docs/development-process.md` |  |
 | `HARDEN-1A.5` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Finalize deployment handoff docs for image, env vars, network policy expectations, and external manifest ownership. | `HARDEN-1A.4`, `DEC-003` | `AC-042` | `defined` | `planned` | `docs/05_RUNBOOK.md`, `docs/current/OPERATIONS.md` |  |
 
