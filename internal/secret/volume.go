@@ -234,7 +234,7 @@ func (r *FileVolumeReader) refreshFromEvent(
 }
 
 func classifyVolumeOp(op fsnotify.Op) VolumeOp {
-	if op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+	if op&fsnotify.Remove != 0 {
 		return VolumeOpRemove
 	}
 	return VolumeOpWrite

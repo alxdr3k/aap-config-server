@@ -171,6 +171,57 @@ func TestFileVolumeReader_WatchRefreshesDuplicatePathReferences(t *testing.T) {
 	}
 }
 
+func TestFileVolumeReader_WatchTreatsSymlinkSwapRenameAsRefresh(t *testing.T) {
+	root := t.TempDir()
+	ref := testReference()
+	path := writeMountedSecret(t, root, ref, "initial")
+	dir := filepath.Dir(path)
+
+	reader, err := secret.NewFileVolumeReader(root)
+	if err != nil {
+		t.Fatalf("NewFileVolumeReader: %v", err)
+	}
+	if _, err := reader.Refresh(context.Background(), ref); err != nil {
+		t.Fatalf("initial refresh: %v", err)
+	}
+
+	if err := os.WriteFile(path, []byte("rotated"), 0o600); err != nil {
+		t.Fatalf("write rotated secret: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events, err := reader.Watch(ctx, []secret.Reference{ref})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+
+	tmp := filepath.Join(dir, "..data_tmp")
+	next := filepath.Join(dir, "..data")
+	if err := os.WriteFile(tmp, []byte("swap"), 0o600); err != nil {
+		t.Fatalf("write symlink-swap marker: %v", err)
+	}
+	if err := os.Rename(tmp, next); err != nil {
+		t.Fatalf("rename symlink-swap marker: %v", err)
+	}
+
+	ev := waitForVolumeEvent(t, events, ref)
+	if ev.Err != nil {
+		t.Fatalf("watch event error: %v", ev.Err)
+	}
+	if ev.Op != secret.VolumeOpWrite {
+		t.Fatalf("rename event should refresh, got op %q", ev.Op)
+	}
+
+	got, err := reader.Read(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("Read after rename event: %v", err)
+	}
+	if string(got.Bytes()) != "rotated" {
+		t.Fatalf("rename event should refresh cache, got %q", string(got.Bytes()))
+	}
+}
+
 func TestFileVolumeReader_ConcurrentReadRefresh(t *testing.T) {
 	root := t.TempDir()
 	ref := testReference()
