@@ -87,7 +87,7 @@
 4. ConfigStore CRUD 테스트           → In-memory store 구현 (COW, DI)
 5. Git clone/pull 테스트             → Git sync 로직 구현
 6. REST API 핸들러 테스트            → HTTP 핸들러 구현
-   - GET /config 응답 형식
+   - GET .../config 응답 형식
    - 쿼리 파라미터 처리
    - 에러 응답 (에러 코드 → HTTP 상태코드 변환)
    - context.Context 전파 확인

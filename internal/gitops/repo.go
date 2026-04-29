@@ -393,7 +393,7 @@ func (r *Repo) walkConfigsUnlocked(fn func(path string, data []byte) error) erro
 // any file under configs/ is modified, added, deleted, or untracked (outside
 // of our own locked write paths), the reported HEAD hash would not describe
 // what we're about to serve. Returning an error here fails the reload closed,
-// which the store then reports via /readyz degraded and /status.
+// which the store then reports via /readyz degraded and /api/v1/status.
 func (r *Repo) Snapshot(fn func(path string, data []byte) error) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

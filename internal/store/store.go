@@ -79,8 +79,8 @@ func (s *Store) current() *snapshot {
 // run one Pull so that an already-present local clone (dev box, persistent
 // volume) is brought up to the remote HEAD before we build the first
 // snapshot. A transient network pull failure is logged and we fall back to
-// the on-disk checkout so a brief outage doesn't block startup; the
-// background poll and /readyz degraded state will surface the drift.
+// the on-disk checkout so a brief outage doesn't block startup; later
+// background polls catch up when the remote becomes reachable.
 // Context cancellation/deadline errors are propagated so callers can
 // actually abort startup when they ask to.
 func (s *Store) LoadFromRepo(ctx context.Context) error {
@@ -103,7 +103,7 @@ func (s *Store) LoadFromRepo(ctx context.Context) error {
 // last-known-good snapshot stays in place and updated=false is returned with
 // the reload error.
 //
-// This is the background-poll path. Operators calling POST /admin/reload must
+// This is the background-poll path. Operators calling POST /api/v1/admin/reload must
 // use ReloadFromRepo instead: a degraded store whose HEAD has not moved needs
 // to re-parse the current checkout to recover, which RefreshFromRepo would
 // silently skip.
@@ -549,4 +549,3 @@ func keys(m map[string]struct{}) []string {
 	sort.Strings(out)
 	return out
 }
-

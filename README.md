@@ -101,6 +101,9 @@ Most responses are JSON. The exceptions are `/healthz` and `/readyz`, which retu
 { "error": { "code": "validation", "message": "org, project and service are required" } }
 ```
 
+Current JSON error codes are `not_found`, `validation`, `conflict`,
+`unauthorized`, `git_push_failed`, `internal`, and `invalid_body`.
+
 ### Authenticated endpoints
 
 Send the API key via either header (Bearer is canonical; `X-API-Key` is a
@@ -263,12 +266,12 @@ curl -X POST http://localhost:8080/api/v1/admin/reload \
   empty, otherwise it opens the existing clone and runs one pull before the
   first snapshot. That keeps a persistent-volume / dev clone from serving
   stale content until the first background poll tick. A pull failure at
-  startup is logged and the on-disk checkout is used; `/readyz` degraded
-  state will surface any resulting drift.
+  startup is logged and the on-disk checkout is used; later background polls
+  catch up when the remote becomes reachable.
 - **Dirty worktree detection.** The snapshot walk refuses to build a view over
   a `configs/` subtree that has been mutated outside the server's own locked
   write path (modified, staged, or untracked files). Such drift would make
-  `metadata.version` lie about what's being served, so the reload fails
+  `/api/v1/status.version` lie about what's being served, so the reload fails
   closed and the server enters the degraded state documented above.
 - **Schema validation.** `config.yaml` and `env_vars.yaml` require
   `metadata.service` / `metadata.org` / `metadata.project`; every

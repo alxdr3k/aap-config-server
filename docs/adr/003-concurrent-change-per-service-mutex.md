@@ -5,11 +5,11 @@
 
 ## 컨텍스트
 
-Console에서 여러 사용자가 거의 동시에 설정을 변경하면, Config Server가 `POST /admin/changes`를 병렬로 처리하면서 Git push 충돌이 발생할 수 있다.
+Console에서 여러 사용자가 거의 동시에 설정을 변경하면, Config Server가 `POST /api/v1/admin/changes`를 병렬로 처리하면서 Git push 충돌이 발생할 수 있다.
 
 ```
-User A: POST /admin/changes (litellm config 변경)
-User B: POST /admin/changes (litellm env_vars 변경)
+User A: POST /api/v1/admin/changes (litellm config 변경)
+User B: POST /api/v1/admin/changes (litellm env_vars 변경)
          ↓
 Config Server: 두 요청 동시 처리
   A: 파일 수정 → git commit → git push ✓
@@ -39,7 +39,7 @@ Config Server: 두 요청 동시 처리
 
 ### 2. 글로벌 Mutex — 미채택
 
-모든 `POST /admin/changes` 요청을 단일 mutex로 직렬화.
+모든 `POST /api/v1/admin/changes` 요청을 단일 mutex로 직렬화.
 
 - **장점**: 구현이 가장 단순, Git 충돌 원천 차단
 - **단점**: 다른 서비스 간 변경도 직렬화되어 불필요한 대기 발생. 서비스 수가 많아지면 병목

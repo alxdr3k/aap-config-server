@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-integration lint docker-build clean
+.PHONY: build test test-race test-integration test-e2e lint coverage docker-build clean
 
 BINARY        := config-server
 CMD_DIR       := ./cmd/config-server

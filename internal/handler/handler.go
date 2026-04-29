@@ -276,7 +276,7 @@ func (h *Handler) getSecrets(w http.ResponseWriter, r *http.Request) {
 
 // ---- admin write ----
 
-// postChangesRequest matches the Phase-1 POST /admin/changes payload.
+// postChangesRequest matches the Phase-1 POST /api/v1/admin/changes payload.
 // The `secrets` field from PRD v2.1 is intentionally not accepted here: the
 // server rejects any unknown field (including secrets) with 400 so callers
 // don't silently lose data while secret handling is unimplemented.

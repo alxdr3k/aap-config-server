@@ -34,7 +34,7 @@ type ServiceData struct {
 	UpdatedAt time.Time
 }
 
-// ChangeRequest carries the payload for POST /admin/changes.
+// ChangeRequest carries the payload for POST /api/v1/admin/changes.
 type ChangeRequest struct {
 	Org     string
 	Project string
@@ -60,7 +60,7 @@ type ChangeResult struct {
 	ReloadError  string
 }
 
-// DeleteRequest carries the payload for DELETE /admin/changes.
+// DeleteRequest carries the payload for DELETE /api/v1/admin/changes.
 type DeleteRequest struct {
 	Org     string
 	Project string

@@ -75,7 +75,7 @@ Bitnami SealedSecret으로 시크릿을 암호화하여 Git에 저장. SealedSec
 
 ```
 Console
-  │ POST /admin/changes (secrets: {평문})
+  │ POST /api/v1/admin/changes (secrets: {평문})
   ▼
 Config Server
   ├─ kubeseal: 평문 → SealedSecret YAML (공개키 암호화)

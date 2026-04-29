@@ -569,7 +569,7 @@ func TestStore_RefreshFromRepo_NoChange(t *testing.T) {
 // TestStore_ReloadFromRepo_ForcesReloadWhenHeadUnchanged guards the P1 admin-
 // reload semantics: force reload must re-parse the current checkout even when
 // the remote has not moved, so a degraded store recovers after the operator
-// fixes the offending YAML and hits POST /admin/reload.
+// fixes the offending YAML and hits POST /api/v1/admin/reload.
 func TestStore_ReloadFromRepo_ForcesReloadWhenHeadUnchanged(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()

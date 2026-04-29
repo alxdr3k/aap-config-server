@@ -711,7 +711,7 @@ func TestStatus_Enriched(t *testing.T) {
 		t.Errorf("version: want abc123, got %v", body["version"])
 	}
 	if body["services_loaded"] == nil {
-		t.Error("services_loaded missing from /status response")
+		t.Error("services_loaded missing from /api/v1/status response")
 	}
 }
 
@@ -723,7 +723,7 @@ func TestStatus_Degraded(t *testing.T) {
 
 	resp := get(t, srv, "/api/v1/status")
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("want 200 (not 503) for /status even when degraded, got %d", resp.StatusCode)
+		t.Fatalf("want 200 (not 503) for /api/v1/status even when degraded, got %d", resp.StatusCode)
 	}
 	var body map[string]any
 	decodeJSON(t, resp, &body)
@@ -764,7 +764,7 @@ func TestAdminReload_Error(t *testing.T) {
 
 // TestAdminReload_DegradedNoHeadUpdate_Returns503 exercises the P1 fix from
 // the 2026-04 review. Background poll's RefreshFromRepo skips reload when
-// HEAD has not moved, but an operator-triggered POST /admin/reload MUST re-
+// HEAD has not moved, but an operator-triggered POST /api/v1/admin/reload MUST re-
 // parse the current checkout — otherwise a degraded store that has lost its
 // reason to repull would keep returning a bogus 200 OK. We simulate that by
 // seeding a store whose ReloadFromRepo reports a parse failure and asserting
@@ -806,7 +806,7 @@ func TestAdminReload_DegradedNoHeadUpdate_Returns503(t *testing.T) {
 }
 
 // TestAdminReload_ForceReloadsWhenHeadUnchanged asserts the happy path of the
-// same P1 fix: if the operator hits POST /admin/reload while HEAD has not
+// same P1 fix: if the operator hits POST /api/v1/admin/reload while HEAD has not
 // moved, the handler still force-reloads and returns 200. `updated` may be
 // true (recovered from degraded) or false (no-op); the shape must be 200/ok.
 func TestAdminReload_ForceReloadsWhenHeadUnchanged(t *testing.T) {
@@ -869,4 +869,3 @@ func TestAPIKeyAuth_BearerCaseInsensitive(t *testing.T) {
 		})
 	}
 }
-
