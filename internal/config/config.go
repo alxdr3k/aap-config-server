@@ -66,7 +66,7 @@ func Load() (*ServerConfig, error) {
 	flag.StringVar(&cfg.SealedSecretControllerNamespace, "sealed-secret-controller-namespace", env("SEALED_SECRET_CONTROLLER_NAMESPACE", defaultSealedSecretControllerNamespace), "Namespace of the SealedSecret controller service")
 	flag.StringVar(&cfg.SealedSecretControllerName, "sealed-secret-controller-name", env("SEALED_SECRET_CONTROLLER_NAME", defaultSealedSecretControllerName), "Name of the SealedSecret controller service")
 	flag.StringVar(&cfg.SealedSecretScope, "sealed-secret-scope", env("SEALED_SECRET_SCOPE", defaultSealedSecretScope), "SealedSecret scope: strict, namespace-wide, or cluster-wide")
-	flag.DurationVar(&cfg.K8sApplyTimeout, "k8s-apply-timeout", envDuration("K8S_APPLY_TIMEOUT", defaultK8sApplyTimeout), "Timeout for future Kubernetes apply calls")
+	flag.DurationVar(&cfg.K8sApplyTimeout, "k8s-apply-timeout", envDuration("K8S_APPLY_TIMEOUT", defaultK8sApplyTimeout), "Timeout for Kubernetes SealedSecret apply calls")
 	secretAuditLogEnabled := envBool("SECRET_AUDIT_LOG_ENABLED", defaultSecretAuditLogEnabled)
 	flag.BoolVar(&secretAuditLogEnabled, "secret-audit-log-enabled", secretAuditLogEnabled, "Enable audit logs for future secret reads/writes")
 	flag.StringVar(&cfg.ConsoleAPIURL, "console-api-url", env("CONSOLE_API_URL", ""), "AAP Console API URL")

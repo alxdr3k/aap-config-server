@@ -49,7 +49,7 @@ Do not use that flag in production.
 | `SEALED_SECRET_CONTROLLER_NAMESPACE` | no | `kube-system` | Namespace for planned SealedSecret controller integration. |
 | `SEALED_SECRET_CONTROLLER_NAME` | no | `sealed-secrets-controller` | Controller service name for planned SealedSecret integration. |
 | `SEALED_SECRET_SCOPE` | no | `strict` | Planned SealedSecret scope: `strict`, `namespace-wide`, or `cluster-wide`. |
-| `K8S_APPLY_TIMEOUT` | no | `10s` | Timeout for planned K8s apply calls. |
+| `K8S_APPLY_TIMEOUT` | no | `10s` | Timeout for SealedSecret apply adapter calls. |
 | `SECRET_AUDIT_LOG_ENABLED` | no | `true` | Enables planned non-sensitive secret audit logging. |
 | `CONSOLE_API_URL` | no |  | Reserved. |
 
