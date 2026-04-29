@@ -30,6 +30,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | SealedSecret generation / kubeseal integration     | Implemented with deterministic YAML generation and Bitnami public-key encryption |
 | K8s apply of SealedSecret objects                  | Implemented for admin secret writes |
 | Secret value resolve (`env_vars?resolve_secrets=true`) | Implemented with API key auth, mounted secret refresh, and `Cache-Control: no-store` |
+| Secret audit logging                               | Implemented for admin secret writes and resolved env var secret reads |
 | Watch / stream endpoint                            | Not implemented |
 | History / revert endpoints                         | Not implemented |
 | Config Agent, registry webhook                     | Not implemented |
@@ -86,7 +87,7 @@ curl http://localhost:8080/api/v1/orgs
 | `SEALED_SECRET_CONTROLLER_NAME` | no                    | `sealed-secrets-controller` | Controller service name for SealedSecret public-key lookup and admin write integration. |
 | `SEALED_SECRET_SCOPE`        | no                       | `strict`              | SealedSecret scope used by internal sealing adapters: `strict`, `namespace-wide`, or `cluster-wide`. |
 | `K8S_APPLY_TIMEOUT`          | no                       | `10s`                 | Timeout for SealedSecret apply adapter calls.          |
-| `SECRET_AUDIT_LOG_ENABLED`   | no                       | `true`                | Enables future non-sensitive secret audit logging.     |
+| `SECRET_AUDIT_LOG_ENABLED`   | no                       | `true`                | Enables non-sensitive secret audit logging.            |
 | `CONSOLE_API_URL`            | no                       | —                     | Reserved.                                              |
 
 ### Auth: fail-closed by default
@@ -267,6 +268,10 @@ curl -X POST http://localhost:8080/api/v1/admin/reload \
   response documented above rather than a bare `200`. Similarly,
   `DeleteChanges` produces `deleted_but_reload_failed` if the post-delete
   reload fails.
+- **Secret audit logs.** When `SECRET_AUDIT_LOG_ENABLED=true`, admin secret
+  writes and `resolve_secrets=true` env var reads emit non-sensitive audit
+  events with action, result, service identity, and secret IDs. Plaintext
+  values are not logged.
 - **Post-reload admin endpoint.** `POST /api/v1/admin/reload` is a **force
   reload**: it pulls, then re-parses the current checkout unconditionally.
   Unlike the background poll (which skips the reload when HEAD hasn't moved),

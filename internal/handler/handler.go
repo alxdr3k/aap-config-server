@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -280,7 +281,7 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if resolveSecrets {
-		resolved, err := h.resolveEnvSecrets(r.Context(), d)
+		resolved, err := h.resolveEnvSecrets(r.Context(), org, project, service, d)
 		if err != nil {
 			respondError(w, err)
 			return
@@ -304,21 +305,36 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) resolveEnvSecrets(ctx context.Context, d *store.ServiceData) (map[string]string, error) {
+func (h *Handler) resolveEnvSecrets(ctx context.Context, org, project, service string, d *store.ServiceData) (map[string]string, error) {
 	refs := d.EnvVars.EnvVars.SecretRefs
+	auditResult := "success"
+	auditSecretIDs := secretRefAuditIDs(refs)
+	defer func() {
+		h.recordSecretAudit(context.WithoutCancel(ctx), secret.AuditEvent{
+			Action:    "secret_env_resolve",
+			Result:    auditResult,
+			Org:       org,
+			Project:   project,
+			Service:   service,
+			SecretIDs: auditSecretIDs,
+		})
+	}()
 	if len(refs) == 0 {
 		return map[string]string{}, nil
 	}
 	if h.secretDeps.VolumeReader == nil {
+		auditResult = "configuration_error"
 		return nil, apperror.New(apperror.CodeInternal, "secret volume reader is not configured")
 	}
 	if d.Secrets == nil {
+		auditResult = "metadata_missing"
 		return nil, apperror.New(apperror.CodeInternal, "secret metadata is required to resolve env var secret_refs")
 	}
 
 	byID := make(map[string]parser.SecretEntry, len(d.Secrets.Secrets))
 	for _, entry := range d.Secrets.Secrets {
 		if _, exists := byID[entry.ID]; exists {
+			auditResult = "duplicate_secret_id"
 			return nil, apperror.New(apperror.CodeInternal,
 				"secret metadata contains duplicate id")
 		}
@@ -329,6 +345,7 @@ func (h *Handler) resolveEnvSecrets(ctx context.Context, d *store.ServiceData) (
 	for envName, secretID := range refs {
 		entry, ok := byID[secretID]
 		if !ok {
+			auditResult = "unknown_secret_id"
 			return nil, apperror.New(apperror.CodeInternal,
 				"env var secret_ref references unknown secret metadata id")
 		}
@@ -339,6 +356,7 @@ func (h *Handler) resolveEnvSecrets(ctx context.Context, d *store.ServiceData) (
 			Key:       entry.K8sSecret.Key,
 		})
 		if err != nil {
+			auditResult = "read_failed"
 			return nil, apperror.Wrap(apperror.CodeInternal, "read mounted secret value", err)
 		}
 		bytes := value.Bytes()
@@ -436,6 +454,7 @@ func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
 				Data:      data,
 			}
 		}
+		defer destroySecretWrites(req.Secrets)
 	}
 
 	result, err := h.store.ApplyChanges(r.Context(), req)
@@ -657,4 +676,48 @@ func nullToEmpty(m map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	return m
+}
+
+func secretRefAuditIDs(refs map[string]string) []string {
+	seen := make(map[string]struct{}, len(refs))
+	for _, id := range refs {
+		if id == "" {
+			continue
+		}
+		seen[id] = struct{}{}
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func destroySecretWrites(writes map[string]store.SecretWrite) {
+	for _, write := range writes {
+		for key, value := range write.Data {
+			value.Destroy()
+			write.Data[key] = value
+		}
+	}
+}
+
+func (h *Handler) recordSecretAudit(ctx context.Context, event secret.AuditEvent) {
+	if event.At.IsZero() {
+		event.At = time.Now().UTC()
+	}
+	if h.secretDeps.Auditor == nil {
+		return
+	}
+	if err := h.secretDeps.Auditor.Record(ctx, event); err != nil {
+		slog.Warn("record secret audit event failed",
+			"err", err,
+			"action", event.Action,
+			"result", event.Result,
+			"org", event.Org,
+			"project", event.Project,
+			"service", event.Service,
+			"secret_ids", event.SecretIDs)
+	}
 }

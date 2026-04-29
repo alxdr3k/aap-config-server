@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -36,6 +37,7 @@ type fakeStore struct {
 	reloadCalls            int
 	refreshCalls           int
 	lastChange             *store.ChangeRequest
+	sawSecretPlaintext     bool
 }
 
 type fakeVolumeReader struct {
@@ -128,6 +130,7 @@ func (f *fakeStore) ListServices(org, project string) []store.ServiceInfo {
 
 func (f *fakeStore) ApplyChanges(_ context.Context, req *store.ChangeRequest) (*store.ChangeResult, error) {
 	f.lastChange = req
+	f.sawSecretPlaintext = changeRequestContainsSecretPlaintext(req, "top-secret")
 	if f.failNextWrite != nil {
 		err := f.failNextWrite
 		f.failNextWrite = nil
@@ -189,6 +192,17 @@ func (f *fakeStore) StatusInfo() store.StoreStatus {
 		ServicesLoaded: len(f.services),
 		IsDegraded:     f.degraded,
 	}
+}
+
+func changeRequestContainsSecretPlaintext(req *store.ChangeRequest, plaintext string) bool {
+	for _, write := range req.Secrets {
+		for _, value := range write.Data {
+			if string(value.Bytes()) == plaintext {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type alwaysReady struct{}
@@ -409,8 +423,11 @@ func TestGetEnvVars_ResolveSecrets(t *testing.T) {
 		Key:       "api-key",
 	}
 	reader := &fakeVolumeReader{values: map[secret.Reference]string{ref: "top-secret"}}
+	var auditLogs bytes.Buffer
 	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithSecretDependencies(secret.Dependencies{
 		VolumeReader: reader,
+		Auditor: secret.NewSlogAuditorWithLogger(true,
+			slog.New(slog.NewJSONHandler(&auditLogs, nil))),
 	}))
 	defer srv.Close()
 
@@ -444,6 +461,15 @@ func TestGetEnvVars_ResolveSecrets(t *testing.T) {
 	}
 	if len(reader.requests) != 0 {
 		t.Fatalf("resolve should force refresh instead of cached read, got reads %+v", reader.requests)
+	}
+	logText := auditLogs.String()
+	for _, want := range []string{"secret_env_resolve", "success", "org", "proj", "svc", "litellm-api-key"} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("audit log missing %q: %s", want, logText)
+		}
+	}
+	if strings.Contains(logText, "top-secret") {
+		t.Fatalf("audit log leaked plaintext: %s", logText)
 	}
 }
 
@@ -720,13 +746,11 @@ func TestPostChanges_AcceptsSecretsField(t *testing.T) {
 	if got.Namespace != "ai-platform" {
 		t.Fatalf("secret namespace: got %q", got.Namespace)
 	}
-	if string(got.Data["master-key"].Bytes()) != "top-secret" {
+	if !st.sawSecretPlaintext {
 		t.Fatal("secret plaintext was not passed to store boundary")
 	}
-	value := got.Data["master-key"]
-	value.Destroy()
-	if string(value.Bytes()) != "" {
-		t.Fatal("secret boundary value should be destroyable")
+	if string(got.Data["master-key"].Bytes()) != "" {
+		t.Fatal("handler should destroy secret plaintext after store boundary returns")
 	}
 }
 

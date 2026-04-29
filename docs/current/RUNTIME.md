@@ -44,7 +44,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
   deployment must restrict network access.
 - Empty `API_KEY` is only allowed with explicit `ALLOW_UNAUTHENTICATED_DEV=true`.
 
-## Planned flow
+## Current flow
 
 - `internal/secret` now defines adapter-neutral boundaries for mounted volume
   reads, SealedSecret sealing, K8s apply, and non-sensitive audit logging.
@@ -63,6 +63,9 @@ implementation; `ADR-003` remains the future service-level mutex target design.
   configured, generates SealedSecrets, commits encrypted manifests with
   metadata, applies them to Kubernetes, and reports apply/reload failures
   explicitly.
+- Secret handling paths emit non-sensitive audit events when
+  `SECRET_AUDIT_LOG_ENABLED=true`; emitted fields are action, result,
+  service identity, and secret IDs, never plaintext values.
 - Config Agent, registry webhook, watch/history/revert, and inheritance are target design only.
 
 ## Failure modes
