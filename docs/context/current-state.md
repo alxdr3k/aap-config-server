@@ -13,12 +13,12 @@ from an atomically swapped in-memory snapshot.
 
 ## Current roadmap position
 
-- current milestone: `P1-M1` secret write/resolve path started
-- active tracks: `SECRET`
-- active phase: `SECRET-1A`
+- current milestone: `P1-M1` Console App Registry integration next
+- active tracks: `REGISTRY`
+- active phase: `REGISTRY-1A`
 - active slice: none
-- last accepted gate: `AC-014` / `AC-015` via PR #10
-- next gate: `P1-M1` / `AC-020`, `AC-021`
+- last accepted gate: `AC-020`
+- next gate: `P1-M1` / `AC-021`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
 
 ## Implemented
@@ -46,10 +46,12 @@ from an atomically swapped in-memory snapshot.
 - K8s dynamic-client SealedSecret apply adapter under `internal/secret`;
   admin write/runtime wiring now uses configured Kubernetes clients when
   in-cluster config is available.
+- Non-sensitive secret audit logging for admin secret writes and resolved env
+  var secret reads, plus best-effort plaintext cleanup in secret handling
+  boundaries.
 
 ## Planned
 
-- Secret audit logging and no-plaintext assertions.
 - App Registry bootstrap and webhook cache.
 - Config Agent rollout path.
 - Watch/history/revert endpoints, config inheritance, response optimizations,
@@ -63,7 +65,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Continue `SECRET-1A` with `SECRET-1A.8` secret audit/no-plaintext hardening.
+1. Start `REGISTRY-1A.1` with AAP Console API client/runtime config/bootstrap load.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -76,8 +78,8 @@ from an atomically swapped in-memory snapshot.
 
 - Commands are listed in `docs/current/TESTING.md`.
 - Acceptance gates are listed in `docs/06_ACCEPTANCE_TESTS.md`.
-- PR #10 established `AC-014` / `AC-015`; subsequent dev-cycle PRs use the
-  repo `check`, `lint`, `scan`, and `test` checks before merge.
+- `AC-020` is passing for the secret write/resolve path; subsequent dev-cycle
+  PRs use the repo `check`, `lint`, `scan`, and `test` checks before merge.
 - Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`, `make test-race`, and `make build` pass in this workspace.
 

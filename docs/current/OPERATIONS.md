@@ -50,7 +50,7 @@ Do not use that flag in production.
 | `SEALED_SECRET_CONTROLLER_NAME` | no | `sealed-secrets-controller` | Controller service name for SealedSecret public-key lookup and admin write integration. |
 | `SEALED_SECRET_SCOPE` | no | `strict` | SealedSecret scope used by internal sealing adapters: `strict`, `namespace-wide`, or `cluster-wide`. |
 | `K8S_APPLY_TIMEOUT` | no | `10s` | Timeout for SealedSecret apply adapter calls. |
-| `SECRET_AUDIT_LOG_ENABLED` | no | `true` | Enables planned non-sensitive secret audit logging. |
+| `SECRET_AUDIT_LOG_ENABLED` | no | `true` | Enables non-sensitive secret audit logging. |
 | `CONSOLE_API_URL` | no |  | Reserved. |
 
 ## Database
@@ -61,6 +61,9 @@ snapshot for serving reads.
 ## Logs / observability
 
 - Logs use structured JSON through `log/slog`.
+- Secret audit logs include action, result, service identity, and secret IDs
+  for admin secret writes and resolved env var secret reads; plaintext values
+  are not logged.
 - No Prometheus metrics endpoint is currently implemented.
 - Operational state is exposed through `/readyz` and `/api/v1/status`.
 

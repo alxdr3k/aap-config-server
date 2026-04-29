@@ -25,7 +25,7 @@ Status: active.
 |---|---|
 | `internal/store/` | In-memory service snapshot, Git-backed reload, config/env/secret apply operations, delete operations, degraded status. |
 | `internal/parser/` | YAML structs/parsers/validation for config, env vars, secrets, and defaults. |
-| `internal/secret/` | Secret runtime boundary types, mounted K8s Secret file reader/watch support, deterministic SealedSecret YAML generation, controller public-key encryption, K8s SealedSecret apply adapter, and future audit interfaces. |
+| `internal/secret/` | Secret runtime boundary types, mounted K8s Secret file reader/watch support, deterministic SealedSecret YAML generation, controller public-key encryption, K8s SealedSecret apply adapter, and slog-backed non-sensitive audit logging. |
 
 ## Data / Persistence
 
@@ -42,9 +42,9 @@ Status: active.
 | `internal/apperror/*_test.go` | Error wrapping and `errors.As` behavior. |
 | `internal/parser/*_test.go` | YAML parser happy-path and validation failures. |
 | `internal/secret/*_test.go` | Secret boundary value/default behavior, mounted secret reader/watch behavior, deterministic SealedSecret YAML generation, public-key encryption wiring, and K8s apply adapter behavior. |
-| `internal/store/*_test.go` | Snapshot reload, config/env/secret apply, delete, degraded behavior, concurrency. |
+| `internal/store/*_test.go` | Snapshot reload, config/env/secret apply, secret audit logging, delete, degraded behavior, concurrency. |
 | `internal/gitops/*_test.go` | Local Git clone/pull/commit/delete/snapshot behavior. |
-| `internal/handler/*_test.go` | HTTP routes, auth, admin write response shape, secret write input, resolved env var secret reads, reload/degraded status. |
+| `internal/handler/*_test.go` | HTTP routes, auth, admin write response shape, secret write input cleanup, resolved env var secret reads, secret audit logging, reload/degraded status. |
 
 ## Needs audit
 

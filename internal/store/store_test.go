@@ -1,9 +1,11 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -316,7 +318,7 @@ func TestStore_ApplyChanges(t *testing.T) {
 		t.Fatalf("LoadFromRepo: %v", err)
 	}
 
-	req := &store.ChangeRequest{
+	result, err := s.ApplyChanges(ctx, &store.ChangeRequest{
 		Org:     "myorg",
 		Project: "proj",
 		Service: "svc",
@@ -326,9 +328,7 @@ func TestStore_ApplyChanges(t *testing.T) {
 			},
 		},
 		Message: "test commit",
-	}
-
-	result, err := s.ApplyChanges(ctx, req)
+	})
 	if err != nil {
 		t.Fatalf("ApplyChanges: %v", err)
 	}
@@ -355,9 +355,12 @@ func TestStore_ApplyChanges_WritesAndAppliesSecrets(t *testing.T) {
 	seedFakeRepo(repo, "myorg", "proj", "svc")
 	sealer := &fakeSealer{}
 	applier := &fakeApplier{}
+	var auditLogs bytes.Buffer
 	s := store.New(repo, store.WithSecretDependencies(secret.Dependencies{
 		Sealer:  sealer,
 		Applier: applier,
+		Auditor: secret.NewSlogAuditorWithLogger(true,
+			slog.New(slog.NewJSONHandler(&auditLogs, nil))),
 	}))
 	if err := s.LoadFromRepo(ctx); err != nil {
 		t.Fatalf("LoadFromRepo: %v", err)
@@ -422,6 +425,18 @@ func TestStore_ApplyChanges_WritesAndAppliesSecrets(t *testing.T) {
 	if d.Secrets == nil || len(d.Secrets.Secrets) != 2 {
 		t.Fatalf("expected two secret metadata entries, got %+v", d.Secrets)
 	}
+
+	logText := auditLogs.String()
+	for _, want := range []string{"secret_admin_write", "success", "myorg", "proj", "svc", "ai-platform/litellm-secrets"} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("audit log missing %q: %s", want, logText)
+		}
+	}
+	for _, secretText := range []string{"top-secret", "postgres://secret"} {
+		if strings.Contains(logText, secretText) {
+			t.Fatalf("audit log leaked plaintext %q: %s", secretText, logText)
+		}
+	}
 }
 
 func TestStore_ApplyChanges_MergesSecretsFromCurrentRepo(t *testing.T) {
@@ -478,7 +493,7 @@ func TestStore_ApplyChanges_SecretsRequireAdapters(t *testing.T) {
 		t.Fatalf("LoadFromRepo: %v", err)
 	}
 
-	_, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+	req := &store.ChangeRequest{
 		Org:     "myorg",
 		Project: "proj",
 		Service: "svc",
@@ -490,7 +505,8 @@ func TestStore_ApplyChanges_SecretsRequireAdapters(t *testing.T) {
 				},
 			},
 		},
-	})
+	}
+	_, err := s.ApplyChanges(ctx, req)
 	if err == nil {
 		t.Fatal("expected missing adapter validation error")
 	}
@@ -500,6 +516,9 @@ func TestStore_ApplyChanges_SecretsRequireAdapters(t *testing.T) {
 	}
 	if len(repo.files) != 0 {
 		t.Fatalf("secret adapter validation should happen before commit, got files %v", repo.files)
+	}
+	if got := string(req.Secrets["litellm-secrets"].Data["master-key"].Bytes()); got != "" {
+		t.Fatalf("secret plaintext should be destroyed after adapter validation failure, got %q", got)
 	}
 }
 

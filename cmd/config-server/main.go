@@ -89,7 +89,7 @@ func main() {
 }
 
 func configureSecretDependencies(cfg secret.RuntimeConfig) secret.Dependencies {
-	deps := secret.Dependencies{}
+	deps := secret.Dependencies{Auditor: secret.NewSlogAuditor(cfg.AuditLogEnabled)}
 	volumeReader, err := secret.NewFileVolumeReader(cfg.MountPath)
 	if err != nil {
 		slog.Error("configure mounted secret reader", "err", err)

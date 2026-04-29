@@ -305,6 +305,9 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 	if err := validateName("service", req.Service); err != nil {
 		return nil, err
 	}
+	if len(req.Secrets) > 0 {
+		defer destroySecretWrites(req.Secrets)
+	}
 	hasSecrets, err := validateSecretWrites(req.Secrets)
 	if err != nil {
 		return nil, err
@@ -312,14 +315,29 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 	if req.Config == nil && req.EnvVars == nil && !hasSecrets {
 		return nil, apperror.New(apperror.CodeValidation, "at least one of config, env_vars, or secrets must be provided")
 	}
+	auditResult := ""
+	auditSecretIDs := []string(nil)
 	if hasSecrets {
+		auditResult = "failure"
+		auditSecretIDs = secretWriteAuditIDs(req.Secrets)
+		defer func() {
+			s.recordSecretAudit(context.WithoutCancel(ctx), secret.AuditEvent{
+				Action:    "secret_admin_write",
+				Result:    auditResult,
+				Org:       req.Org,
+				Project:   req.Project,
+				Service:   req.Service,
+				SecretIDs: auditSecretIDs,
+			})
+		}()
 		if s.secretDeps.Sealer == nil {
+			auditResult = "configuration_error"
 			return nil, apperror.New(apperror.CodeValidation, "secret sealer is not configured")
 		}
 		if s.secretDeps.Applier == nil {
+			auditResult = "configuration_error"
 			return nil, apperror.New(apperror.CodeValidation, "secret applier is not configured")
 		}
-		defer destroySecretWrites(req.Secrets)
 	}
 
 	s.mu.Lock()
@@ -383,6 +401,7 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 	if hasSecrets {
 		sealedManifests, err = s.buildSealedManifests(ctx, req)
 		if err != nil {
+			auditResult = "seal_failed"
 			return nil, err
 		}
 		hash, commitErr = s.repo.CommitAndPushFunc(ctx, msg, func(reader gitops.FileReader) (map[string][]byte, error) {
@@ -426,6 +445,9 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 		hash, commitErr = s.repo.CommitAndPush(ctx, msg, baseFiles)
 	}
 	if commitErr != nil {
+		if hasSecrets {
+			auditResult = "commit_failed"
+		}
 		return nil, commitErr
 	}
 
@@ -450,6 +472,9 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 		slog.Error("reload after commit failed; serving stale snapshot until next successful reload", "err", err)
 		result.ReloadFailed = true
 		result.ReloadError = err.Error()
+	}
+	if hasSecrets {
+		auditResult = secretWriteAuditResult(result)
 	}
 
 	return result, nil
@@ -608,6 +633,47 @@ func destroySecretWrites(writes map[string]SecretWrite) {
 			value.Destroy()
 			write.Data[key] = value
 		}
+	}
+}
+
+func secretWriteAuditIDs(writes map[string]SecretWrite) []string {
+	ids := make([]string, 0, len(writes))
+	for _, name := range sortedSecretNames(writes) {
+		write := writes[name]
+		ids = append(ids, write.Namespace+"/"+name)
+	}
+	return ids
+}
+
+func secretWriteAuditResult(result *ChangeResult) string {
+	switch {
+	case result.ApplyFailed && result.ReloadFailed:
+		return "apply_and_reload_failed"
+	case result.ApplyFailed:
+		return "apply_failed"
+	case result.ReloadFailed:
+		return "reload_failed"
+	default:
+		return "success"
+	}
+}
+
+func (s *Store) recordSecretAudit(ctx context.Context, event secret.AuditEvent) {
+	if event.At.IsZero() {
+		event.At = time.Now().UTC()
+	}
+	if s.secretDeps.Auditor == nil {
+		return
+	}
+	if err := s.secretDeps.Auditor.Record(ctx, event); err != nil {
+		slog.Warn("record secret audit event failed",
+			"err", err,
+			"action", event.Action,
+			"result", event.Result,
+			"org", event.Org,
+			"project", event.Project,
+			"service", event.Service,
+			"secret_ids", event.SecretIDs)
 	}
 }
 

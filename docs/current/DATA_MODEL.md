@@ -40,6 +40,7 @@ snapshot.
 | `secret.DeterministicSealer` | Adapter that turns plaintext secret values into deterministic Bitnami SealedSecret YAML through an injected encryptor. | `internal/secret/sealed.go` |
 | `secret.ControllerPublicKeyProvider` / `secret.PublicKeyEncryptor` | Controller certificate lookup and Bitnami hybrid encryption for SealedSecret data items. | `internal/secret/encrypt.go` |
 | `secret.DynamicApplier` | Adapter that creates or updates Bitnami SealedSecret objects through a Kubernetes dynamic client. | `internal/secret/apply.go` |
+| `secret.AuditEvent` / `secret.SlogAuditor` | Non-sensitive audit event boundary and slog-backed implementation for secret write/resolve activity. | `internal/secret/types.go`, `internal/secret/audit.go` |
 | `store.SecretWrite` | Admin write boundary for plaintext secret values grouped by K8s Secret name before sealing. | `internal/store/types.go` |
 | `ChangeRequest` | Internal representation of admin write input. | `internal/store/types.go` |
 | `DeleteRequest` | Internal representation of admin delete input. | `internal/store/types.go` |
@@ -78,6 +79,9 @@ snapshot.
 - Resolved env var reads map `env_vars.secret_refs` IDs through `secrets.yaml`
   metadata and refresh mounted files through `secret.VolumeReader`; responses
   are no-store and omit ETag.
+- Secret audit events carry action, result, service identity, and secret IDs
+  only. Plaintext values remain confined to `secret.Value` boundaries and HTTP
+  responses for authenticated `resolve_secrets=true` calls.
 - Invalid YAML or missing required fields fail reload closed.
 
 ## Lifecycle states
