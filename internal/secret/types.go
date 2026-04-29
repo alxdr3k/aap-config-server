@@ -83,6 +83,9 @@ type VolumeWatcher interface {
 // SealRequest is the plaintext input to a SealedSecret adapter. Data values
 // are plaintext and must not be logged.
 type SealRequest struct {
+	Org       string
+	Project   string
+	Service   string
 	Namespace string
 	Name      string
 	Data      map[string]Value

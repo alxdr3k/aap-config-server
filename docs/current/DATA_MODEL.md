@@ -37,6 +37,7 @@ snapshot.
 | `secret.RuntimeConfig` | Runtime knobs for future secret mount, SealedSecret, K8s apply, and audit adapters. | `internal/secret/types.go` |
 | `secret.Reference` / `secret.Value` | Boundary types for future plaintext secret reads; values are copied and can be best-effort zeroed. | `internal/secret/types.go` |
 | `secret.FileVolumeReader` | Mounted K8s Secret file reader/cache with fsnotify refresh events. | `internal/secret/volume.go` |
+| `secret.DeterministicSealer` | Adapter that turns plaintext secret values into deterministic Bitnami SealedSecret YAML through an injected encryptor. | `internal/secret/sealed.go` |
 | `ChangeRequest` | Internal representation of admin write input. | `internal/store/types.go` |
 | `DeleteRequest` | Internal representation of admin delete input. | `internal/store/types.go` |
 | `StoreStatus` | Runtime status exposed through `/api/v1/status`. | `internal/store/types.go` |
@@ -55,6 +56,9 @@ snapshot.
 - `secrets.yaml` entries require `id` and a complete `k8s_secret` pointer: `name`, `namespace`, and `key`.
 - Mounted secret reads reject empty or path-unsafe reference segments before
   resolving `{SECRET_MOUNT_PATH}/{namespace}/{name}/{key}`.
+- SealedSecret generation sorts data keys and emits stable YAML field order;
+  path identity and K8s target segments are validated before plaintext values
+  are passed to the injected encryptor.
 - Invalid YAML or missing required fields fail reload closed.
 
 ## Lifecycle states
@@ -69,5 +73,5 @@ snapshot.
 ## Needs audit
 
 - No generated reference docs currently exist under `docs/generated/`.
-- Planned SealedSecret manifests, K8s apply payloads, and Config Agent data
-  models are target design only.
+- Planned public-key lookup, K8s apply payloads, and Config Agent data models
+  are target design only.

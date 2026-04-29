@@ -26,7 +26,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Degraded state exposed via `/readyz` and `/api/v1/status` | Implemented |
 | Secret metadata read (`GET .../secrets`)           | Implemented (auth-gated) |
 | Secret **write** via `secrets` field on POST       | **Not implemented** — rejected with 400 |
-| SealedSecret generation / kubeseal integration     | Not implemented |
+| SealedSecret generation / kubeseal integration     | Internal deterministic YAML generator implemented; public-key encryption adapter wiring not implemented |
 | K8s apply of SealedSecret objects                  | Not implemented |
 | Watch / stream endpoint                            | Not implemented |
 | History / revert endpoints                         | Not implemented |
