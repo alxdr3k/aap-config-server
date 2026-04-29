@@ -5,7 +5,8 @@ Status: active.
 ## Current implemented flow
 
 1. `cmd/config-server/main.go` loads runtime config from env/flags.
-2. Startup validates required config, including `GIT_URL` and `API_KEY` unless `ALLOW_UNAUTHENTICATED_DEV=true`.
+2. Startup validates required config, including `GIT_URL`, secret runtime
+   boundary settings, and `API_KEY` unless `ALLOW_UNAUTHENTICATED_DEV=true`.
 3. `gitops.Repo` opens or clones the configured Git repo/branch.
 4. `store.LoadFromRepo` performs one startup pull, then snapshots `configs/`.
 5. The store parses `config.yaml`, `env_vars.yaml`, and `secrets.yaml` files under `configs/orgs/{org}/projects/{project}/services/{service}/`.
@@ -41,6 +42,8 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 
 ## Planned flow
 
+- `internal/secret` now defines adapter-neutral boundaries for future volume
+  reads, SealedSecret sealing, K8s apply, and non-sensitive audit logging.
 - `POST /api/v1/admin/changes` will eventually accept secret values, generate SealedSecrets, commit encrypted manifests, apply them to Kubernetes, and support secret resolution.
 - Config Agent, registry webhook, watch/history/revert, and inheritance are target design only.
 
@@ -51,6 +54,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 | Missing `GIT_URL` | Startup fails during config validation. |
 | Missing `API_KEY` without dev opt-in | Startup fails closed. |
 | Non-positive `GIT_POLL_INTERVAL` | Startup fails validation. |
+| Invalid secret runtime setting | Startup fails during config validation. |
 | Startup pull transient failure | Warning logged; on-disk checkout is parsed. |
 | YAML parse/validation failure during reload | Snapshot is not swapped; last-known-good snapshot keeps serving. |
 | Degraded store | `/readyz` returns 503 and `/api/v1/status` reports `is_degraded`. |

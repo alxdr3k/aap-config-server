@@ -34,6 +34,8 @@ snapshot.
 | `ServiceConfig` | Parsed `config.yaml` with metadata and arbitrary config map. | `internal/parser/types.go` |
 | `EnvVarsConfig` | Parsed `env_vars.yaml` with plain env vars and secret refs. | `internal/parser/types.go` |
 | `SecretsConfig` | Parsed `secrets.yaml` metadata; no secret plaintext. | `internal/parser/types.go` |
+| `secret.RuntimeConfig` | Runtime knobs for future secret mount, SealedSecret, K8s apply, and audit adapters. | `internal/secret/types.go` |
+| `secret.Reference` / `secret.Value` | Boundary types for future plaintext secret reads; values are copied and can be best-effort zeroed. | `internal/secret/types.go` |
 | `ChangeRequest` | Internal representation of admin write input. | `internal/store/types.go` |
 | `DeleteRequest` | Internal representation of admin delete input. | `internal/store/types.go` |
 | `StoreStatus` | Runtime status exposed through `/api/v1/status`. | `internal/store/types.go` |
@@ -64,4 +66,5 @@ snapshot.
 ## Needs audit
 
 - No generated reference docs currently exist under `docs/generated/`.
-- Planned SealedSecret and Config Agent data models are target design only.
+- Planned SealedSecret manifests, K8s apply payloads, and Config Agent data
+  models are target design only.
