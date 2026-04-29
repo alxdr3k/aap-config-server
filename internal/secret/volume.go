@@ -49,10 +49,12 @@ func (r *FileVolumeReader) Read(ctx context.Context, ref Reference) (Value, erro
 
 	r.mu.RLock()
 	v, ok := r.cache[ref]
-	r.mu.RUnlock()
 	if ok {
-		return NewValue(v.Bytes()), nil
+		out := NewValue(v.Bytes())
+		r.mu.RUnlock()
+		return out, nil
 	}
+	r.mu.RUnlock()
 
 	return r.Refresh(ctx, ref)
 }
@@ -82,9 +84,10 @@ func (r *FileVolumeReader) Refresh(ctx context.Context, ref Reference) (Value, e
 		old.Destroy()
 	}
 	r.cache[ref] = next
+	out := NewValue(next.Bytes())
 	r.mu.Unlock()
 
-	return NewValue(next.Bytes()), nil
+	return out, nil
 }
 
 // Forget removes a cached value, zeroing retained bytes on a best-effort basis.

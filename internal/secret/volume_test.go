@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -168,6 +169,44 @@ func TestFileVolumeReader_WatchRefreshesDuplicatePathReferences(t *testing.T) {
 			t.Fatalf("watch should refresh cache for %s, got %q", ref.ID, string(got.Bytes()))
 		}
 	}
+}
+
+func TestFileVolumeReader_ConcurrentReadRefresh(t *testing.T) {
+	root := t.TempDir()
+	ref := testReference()
+	path := writeMountedSecret(t, root, ref, "initial")
+
+	reader, err := secret.NewFileVolumeReader(root)
+	if err != nil {
+		t.Fatalf("NewFileVolumeReader: %v", err)
+	}
+	if _, err := reader.Refresh(context.Background(), ref); err != nil {
+		t.Fatalf("initial refresh: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				if _, err := reader.Read(context.Background(), ref); err != nil {
+					t.Errorf("Read: %v", err)
+					return
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < 50; i++ {
+		if err := os.WriteFile(path, []byte("rotated"), 0o600); err != nil {
+			t.Fatalf("write rotated secret: %v", err)
+		}
+		if _, err := reader.Refresh(context.Background(), ref); err != nil {
+			t.Fatalf("Refresh: %v", err)
+		}
+	}
+	wg.Wait()
 }
 
 func testReference() secret.Reference {
