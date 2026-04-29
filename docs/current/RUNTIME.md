@@ -42,14 +42,17 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 
 ## Planned flow
 
-- `internal/secret` now defines adapter-neutral boundaries for future volume
+- `internal/secret` now defines adapter-neutral boundaries for mounted volume
   reads, SealedSecret sealing, K8s apply, and non-sensitive audit logging.
 - `internal/secret.FileVolumeReader` can read mounted K8s Secret files and
   refresh cached values from fsnotify events; HTTP `resolve_secrets=true` is
   still planned.
 - `internal/secret.DeterministicSealer` can generate stable Bitnami
-  SealedSecret YAML from an injected encryptor; controller public-key lookup is
-  still planned.
+  SealedSecret YAML from an injected encryptor.
+- `internal/secret.ControllerPublicKeyProvider` and
+  `internal/secret.PublicKeyEncryptor` can fetch the SealedSecret controller
+  certificate through the Kubernetes service proxy and encrypt values using
+  Bitnami's hybrid encryption format.
 - `internal/secret.DynamicApplier` can create/update Bitnami SealedSecret
   objects through a Kubernetes dynamic client; admin write wiring is still
   planned.
@@ -74,6 +77,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 | `secrets` field on admin write | Explicitly rejected in Phase-1 with 400. |
 | Unsafe mounted secret reference | Volume reader rejects it before filesystem access. |
 | Invalid SealedSecret generation input | Sealer rejects missing path identity, namespace/name/data, or path-unsafe keys before emitting YAML. |
+| SealedSecret public-key lookup/encryption failure | Encryptor returns context-rich controller lookup, certificate parse, or encryption errors without logging plaintext values. |
 | Invalid SealedSecret apply manifest | Applier rejects missing YAML, wrong kind, or name/namespace mismatches before K8s API calls. |
 | K8s SealedSecret apply failure | Applier returns context-rich get/create/update errors and respects apply timeout/cancellation. |
 

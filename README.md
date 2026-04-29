@@ -26,7 +26,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Degraded state exposed via `/readyz` and `/api/v1/status` | Implemented |
 | Secret metadata read (`GET .../secrets`)           | Implemented (auth-gated) |
 | Secret **write** via `secrets` field on POST       | **Not implemented** — rejected with 400 |
-| SealedSecret generation / kubeseal integration     | Internal deterministic YAML generator implemented; public-key encryption adapter wiring not implemented |
+| SealedSecret generation / kubeseal integration     | Internal deterministic YAML generator and Bitnami public-key encryption adapter implemented; admin write/runtime wiring not implemented |
 | K8s apply of SealedSecret objects                  | Internal dynamic-client adapter implemented; admin write/runtime wiring not implemented |
 | Watch / stream endpoint                            | Not implemented |
 | History / revert endpoints                         | Not implemented |
@@ -79,10 +79,10 @@ curl http://localhost:8080/api/v1/orgs
 | `ALLOW_UNAUTHENTICATED_DEV`  | no                       | `false`               | Set to `true` to boot without an API key — dev/test only. |
 | `ADDR`                       | no                       | `:8080`               | HTTP listen address.                                   |
 | `LOG_LEVEL`                  | no                       | `info`                | `debug`, `info`, `warn`, `error`.                     |
-| `SECRET_MOUNT_PATH`          | no                       | `/secrets`            | Absolute root for future K8s Secret volume reads.      |
-| `SEALED_SECRET_CONTROLLER_NAMESPACE` | no                | `kube-system`         | Namespace for future SealedSecret public-key/apply integration. |
-| `SEALED_SECRET_CONTROLLER_NAME` | no                    | `sealed-secrets-controller` | Controller service name for future SealedSecret integration. |
-| `SEALED_SECRET_SCOPE`        | no                       | `strict`              | Future SealedSecret scope: `strict`, `namespace-wide`, or `cluster-wide`. |
+| `SECRET_MOUNT_PATH`          | no                       | `/secrets`            | Absolute root for mounted K8s Secret volume reads.      |
+| `SEALED_SECRET_CONTROLLER_NAMESPACE` | no                | `kube-system`         | Namespace for SealedSecret controller public-key lookup and future admin write integration. |
+| `SEALED_SECRET_CONTROLLER_NAME` | no                    | `sealed-secrets-controller` | Controller service name for SealedSecret public-key lookup and future admin write integration. |
+| `SEALED_SECRET_SCOPE`        | no                       | `strict`              | SealedSecret scope used by internal sealing adapters: `strict`, `namespace-wide`, or `cluster-wide`. |
 | `K8S_APPLY_TIMEOUT`          | no                       | `10s`                 | Timeout for SealedSecret apply adapter calls.          |
 | `SECRET_AUDIT_LOG_ENABLED`   | no                       | `true`                | Enables future non-sensitive secret audit logging.     |
 | `CONSOLE_API_URL`            | no                       | —                     | Reserved.                                              |

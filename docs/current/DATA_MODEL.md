@@ -34,10 +34,11 @@ snapshot.
 | `ServiceConfig` | Parsed `config.yaml` with metadata and arbitrary config map. | `internal/parser/types.go` |
 | `EnvVarsConfig` | Parsed `env_vars.yaml` with plain env vars and secret refs. | `internal/parser/types.go` |
 | `SecretsConfig` | Parsed `secrets.yaml` metadata; no secret plaintext. | `internal/parser/types.go` |
-| `secret.RuntimeConfig` | Runtime knobs for future secret mount, SealedSecret, K8s apply, and audit adapters. | `internal/secret/types.go` |
+| `secret.RuntimeConfig` | Runtime knobs for secret mount, SealedSecret, K8s apply, and audit adapters. | `internal/secret/types.go` |
 | `secret.Reference` / `secret.Value` | Boundary types for future plaintext secret reads; values are copied and can be best-effort zeroed. | `internal/secret/types.go` |
 | `secret.FileVolumeReader` | Mounted K8s Secret file reader/cache with fsnotify refresh events. | `internal/secret/volume.go` |
 | `secret.DeterministicSealer` | Adapter that turns plaintext secret values into deterministic Bitnami SealedSecret YAML through an injected encryptor. | `internal/secret/sealed.go` |
+| `secret.ControllerPublicKeyProvider` / `secret.PublicKeyEncryptor` | Controller certificate lookup and Bitnami hybrid encryption for SealedSecret data items. | `internal/secret/encrypt.go` |
 | `secret.DynamicApplier` | Adapter that creates or updates Bitnami SealedSecret objects through a Kubernetes dynamic client. | `internal/secret/apply.go` |
 | `ChangeRequest` | Internal representation of admin write input. | `internal/store/types.go` |
 | `DeleteRequest` | Internal representation of admin delete input. | `internal/store/types.go` |
@@ -62,6 +63,9 @@ snapshot.
   are passed to the injected encryptor.
 - The sealing scope is passed into the encryptor request and also emitted in
   manifest annotations so ciphertext and metadata stay aligned.
+- Public-key encryption fetches the controller service certificate from
+  `/v1/cert.pem`, validates an RSA certificate, and uses Bitnami's
+  hybrid-encryption format with scope-compatible labels.
 - Generated SealedSecret manifest paths use
   `sealed-secrets/{namespace}/{name}.yaml` under the service directory to avoid
   cross-namespace filename collisions.
@@ -81,5 +85,5 @@ snapshot.
 ## Needs audit
 
 - No generated reference docs currently exist under `docs/generated/`.
-- Planned public-key lookup, admin secret write integration, and Config Agent
+- Planned admin secret write integration, secret resolution, and Config Agent
   data models are target design only.

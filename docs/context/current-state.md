@@ -34,19 +34,19 @@ from an atomically swapped in-memory snapshot.
 - Auth-gated admin write/delete/reload endpoints.
 - Auth-gated secret metadata read; secret value write/resolve is not implemented.
 - Degraded state through `/readyz` and `/api/v1/status`.
-- Secret runtime boundary settings and adapter interfaces for future volume
+- Secret runtime boundary settings and adapter interfaces for mounted volume
   reads, SealedSecret sealing, K8s apply, and audit logging.
 - Mounted secret file reader with fsnotify-backed refresh events under
   `internal/secret`; env var secret resolve is still not wired to HTTP.
-- Deterministic SealedSecret YAML generator with injected encryption boundary;
-  public-key lookup and admin write wiring are still not implemented.
+- Deterministic SealedSecret YAML generator with Bitnami public-key encryption
+  adapter and controller certificate lookup; admin write wiring is still not
+  implemented.
 - K8s dynamic-client SealedSecret apply adapter under `internal/secret`;
   admin write/runtime wiring is still planned.
 
 ## Planned
 
-- SealedSecret public-key encryption wiring, admin write integration, and
-  secret value resolve.
+- Admin secret write integration and secret value resolve.
 - App Registry bootstrap and webhook cache.
 - Config Agent rollout path.
 - Watch/history/revert endpoints, config inheritance, response optimizations,
@@ -60,7 +60,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Continue `SECRET-1A` with `SECRET-1A.5` public-key encryption wiring.
+1. Continue `SECRET-1A` with `SECRET-1A.6` admin secret write integration.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
