@@ -5,45 +5,55 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
 const (
-	defaultSecretMountPath                 = "/secrets"
-	defaultSealedSecretControllerNamespace = "kube-system"
-	defaultSealedSecretControllerName      = "sealed-secrets-controller"
-	defaultSealedSecretScope               = "strict"
-	defaultK8sApplyTimeout                 = 10 * time.Second
-	defaultSecretAuditLogEnabled           = true
-	sealedSecretScopeStrict                = "strict"
-	sealedSecretScopeNamespaceWide         = "namespace-wide"
-	sealedSecretScopeClusterWide           = "cluster-wide"
+	defaultSecretMountPath                        = "/secrets"
+	defaultSealedSecretControllerNamespace        = "kube-system"
+	defaultSealedSecretControllerName             = "sealed-secrets-controller"
+	defaultSealedSecretScope                      = "strict"
+	defaultK8sApplyTimeout                        = 10 * time.Second
+	defaultSecretAuditLogEnabled                  = true
+	defaultConsoleAPITimeout                      = 5 * time.Second
+	defaultConsoleRegistryBootstrapAttempts       = 5
+	defaultConsoleRegistryBootstrapInitialBackoff = time.Second
+	defaultConsoleRegistryBootstrapMaxBackoff     = 30 * time.Second
+	sealedSecretScopeStrict                       = "strict"
+	sealedSecretScopeNamespaceWide                = "namespace-wide"
+	sealedSecretScopeClusterWide                  = "cluster-wide"
 )
 
 // ServerConfig holds all runtime configuration for the Config Server.
 // Values are sourced from environment variables (primary) with flag fallbacks.
 // Helm values → K8s env vars → this struct.
 type ServerConfig struct {
-	Addr                            string
-	GitURL                          string
-	GitBranch                       string
-	GitLocalPath                    string
-	GitPollInterval                 time.Duration
-	GitSSHKeyPath                   string
-	GitUsername                     string
-	GitPassword                     string
-	APIKey                          string
-	AllowUnauthenticatedDev         bool
-	SecretMountPath                 string
-	SealedSecretControllerNamespace string
-	SealedSecretControllerName      string
-	SealedSecretScope               string
-	K8sApplyTimeout                 time.Duration
-	SecretAuditLogEnabled           *bool
-	ConsoleAPIURL                   string
-	LogLevel                        string
+	Addr                                   string
+	GitURL                                 string
+	GitBranch                              string
+	GitLocalPath                           string
+	GitPollInterval                        time.Duration
+	GitSSHKeyPath                          string
+	GitUsername                            string
+	GitPassword                            string
+	APIKey                                 string
+	AllowUnauthenticatedDev                bool
+	SecretMountPath                        string
+	SealedSecretControllerNamespace        string
+	SealedSecretControllerName             string
+	SealedSecretScope                      string
+	K8sApplyTimeout                        time.Duration
+	SecretAuditLogEnabled                  *bool
+	ConsoleAPIURL                          string
+	ConsoleAPITimeout                      time.Duration
+	ConsoleRegistryBootstrapAttempts       int
+	ConsoleRegistryBootstrapInitialBackoff time.Duration
+	ConsoleRegistryBootstrapMaxBackoff     time.Duration
+	LogLevel                               string
 
 	k8sApplyTimeoutExplicit bool
 }
@@ -68,8 +78,12 @@ func Load() (*ServerConfig, error) {
 	flag.StringVar(&cfg.SealedSecretScope, "sealed-secret-scope", env("SEALED_SECRET_SCOPE", defaultSealedSecretScope), "SealedSecret scope: strict, namespace-wide, or cluster-wide")
 	flag.DurationVar(&cfg.K8sApplyTimeout, "k8s-apply-timeout", envDuration("K8S_APPLY_TIMEOUT", defaultK8sApplyTimeout), "Timeout for Kubernetes SealedSecret apply calls")
 	secretAuditLogEnabled := envBool("SECRET_AUDIT_LOG_ENABLED", defaultSecretAuditLogEnabled)
-	flag.BoolVar(&secretAuditLogEnabled, "secret-audit-log-enabled", secretAuditLogEnabled, "Enable audit logs for future secret reads/writes")
+	flag.BoolVar(&secretAuditLogEnabled, "secret-audit-log-enabled", secretAuditLogEnabled, "Enable audit logs for secret reads/writes")
 	flag.StringVar(&cfg.ConsoleAPIURL, "console-api-url", env("CONSOLE_API_URL", ""), "AAP Console API URL")
+	flag.DurationVar(&cfg.ConsoleAPITimeout, "console-api-timeout", envDuration("CONSOLE_API_TIMEOUT", defaultConsoleAPITimeout), "Timeout for AAP Console API calls")
+	flag.IntVar(&cfg.ConsoleRegistryBootstrapAttempts, "console-registry-bootstrap-attempts", envInt("CONSOLE_REGISTRY_BOOTSTRAP_ATTEMPTS", defaultConsoleRegistryBootstrapAttempts), "Maximum attempts for startup App Registry bootstrap")
+	flag.DurationVar(&cfg.ConsoleRegistryBootstrapInitialBackoff, "console-registry-bootstrap-initial-backoff", envDuration("CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF", defaultConsoleRegistryBootstrapInitialBackoff), "Initial backoff for startup App Registry bootstrap")
+	flag.DurationVar(&cfg.ConsoleRegistryBootstrapMaxBackoff, "console-registry-bootstrap-max-backoff", envDuration("CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF", defaultConsoleRegistryBootstrapMaxBackoff), "Maximum backoff for startup App Registry bootstrap")
 	flag.StringVar(&cfg.LogLevel, "log-level", env("LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 
 	// API_KEY and GIT_PASSWORD are env-only — never accept via flag (would expose via ps).
@@ -134,6 +148,36 @@ func (c *ServerConfig) Validate() error {
 	if c.K8sApplyTimeout <= 0 {
 		return fmt.Errorf("K8S_APPLY_TIMEOUT must be > 0, got %s", c.K8sApplyTimeout)
 	}
+	if c.ConsoleAPIURL != "" {
+		parsed, err := url.Parse(c.ConsoleAPIURL)
+		if err != nil {
+			return fmt.Errorf("CONSOLE_API_URL is invalid: %w", err)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("CONSOLE_API_URL must use http or https")
+		}
+		if parsed.Host == "" {
+			return fmt.Errorf("CONSOLE_API_URL must include a host")
+		}
+	}
+	if c.ConsoleAPITimeout <= 0 {
+		return fmt.Errorf("CONSOLE_API_TIMEOUT must be > 0, got %s", c.ConsoleAPITimeout)
+	}
+	if c.ConsoleRegistryBootstrapAttempts <= 0 {
+		return fmt.Errorf("CONSOLE_REGISTRY_BOOTSTRAP_ATTEMPTS must be > 0, got %d",
+			c.ConsoleRegistryBootstrapAttempts)
+	}
+	if c.ConsoleRegistryBootstrapInitialBackoff <= 0 {
+		return fmt.Errorf("CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF must be > 0, got %s",
+			c.ConsoleRegistryBootstrapInitialBackoff)
+	}
+	if c.ConsoleRegistryBootstrapMaxBackoff <= 0 {
+		return fmt.Errorf("CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF must be > 0, got %s",
+			c.ConsoleRegistryBootstrapMaxBackoff)
+	}
+	if c.ConsoleRegistryBootstrapMaxBackoff < c.ConsoleRegistryBootstrapInitialBackoff {
+		return fmt.Errorf("CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF must be >= CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF")
+	}
 	return nil
 }
 
@@ -164,6 +208,18 @@ func (c *ServerConfig) applyDefaults() {
 		enabled := defaultSecretAuditLogEnabled
 		c.SecretAuditLogEnabled = &enabled
 	}
+	if c.ConsoleAPITimeout == 0 {
+		c.ConsoleAPITimeout = defaultConsoleAPITimeout
+	}
+	if c.ConsoleRegistryBootstrapAttempts == 0 {
+		c.ConsoleRegistryBootstrapAttempts = defaultConsoleRegistryBootstrapAttempts
+	}
+	if c.ConsoleRegistryBootstrapInitialBackoff == 0 {
+		c.ConsoleRegistryBootstrapInitialBackoff = defaultConsoleRegistryBootstrapInitialBackoff
+	}
+	if c.ConsoleRegistryBootstrapMaxBackoff == 0 {
+		c.ConsoleRegistryBootstrapMaxBackoff = defaultConsoleRegistryBootstrapMaxBackoff
+	}
 }
 
 func env(key, fallback string) string {
@@ -184,6 +240,19 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		slog.Warn("invalid int env var, using fallback", "key", key, "value", v, "fallback", fallback)
+		return fallback
+	}
+	return n
 }
 
 func envBool(key string, fallback bool) bool {

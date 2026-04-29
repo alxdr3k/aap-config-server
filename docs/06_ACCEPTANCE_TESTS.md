@@ -31,7 +31,7 @@ Then  <기대 결과>
 | `AC-014` | Documentation migration | Given a new session, When it follows `AGENTS.md`, Then current status, code map, testing, runtime, and roadmap are discoverable from canonical docs. | manual link check + PR #10 CI | `passing` |
 | `AC-015` | Documentation workflow | Given a PR changes Go source/runtime paths, When doc freshness runs, Then it comments with matching doc update candidates without blocking merge. | workflow YAML parse + pattern review | `passing` |
 | `AC-020` | `FR-7`, `FR-17` | Secret write/resolve handles SealedSecret generation, K8s apply, no-store response, and audit logging. | `TEST-020` | `passing` |
-| `AC-021` | `FR-8` | App Registry bootstrap and webhook cache keep service registration state available to readiness/status and recover from missed webhooks. | future tests | `defined` |
+| `AC-021` | `FR-8` | App Registry bootstrap and webhook cache keep service registration state available to readiness/status and recover from missed webhooks. | `TEST-021` | `defined` |
 | `AC-030` | `FR-9` | Config Agent detects config changes, updates K8s resources, and triggers controlled rollout. | future tests | `defined` |
 | `AC-040` | `FR-6`, `FR-10`, `FR-13`, `FR-14` | Watch/history/revert/inheritance features satisfy target PRD contracts. | future tests | `defined` |
 | `AC-041` | operational extensions | ETag, gzip, batch reads, Prometheus metrics, and Git webhook refresh satisfy target PRD contracts without exposing secret plaintext. | future tests | `defined` |
@@ -64,7 +64,7 @@ staging / manual acceptance가 아직 실행되지 않은 상태인지 분리한
 | `TEST-008` | Dirty checkout snapshot tests | `internal/gitops/repo_test.go` | `AC-008` |
 | `TEST-009` | Unknown admin field rejection tests | `internal/handler/handler_test.go` | `AC-009` |
 | `TEST-020` | Secret write/resolve tests | `internal/config/config_test.go`, `internal/secret/types_test.go`, `internal/secret/volume_test.go`, `internal/secret/sealed_test.go`, `internal/secret/encrypt_test.go`, `internal/secret/apply_test.go`, `internal/store/store_test.go`, `internal/handler/handler_test.go` | `AC-020` |
-| `TEST-021` | App Registry future tests | future registry/handler/status tests | `AC-021` |
+| `TEST-021` | App Registry tests | `internal/registry/*_test.go`, future handler/status tests | `AC-021` |
 | `TEST-030` | Config Agent future tests | future agent/k8s/e2e tests | `AC-030` |
 | `TEST-040` | Console extension future tests | future watch/history/revert/inheritance tests | `AC-040` |
 | `TEST-041` | Operational extension future tests | future HTTP/metrics/webhook tests | `AC-041` |

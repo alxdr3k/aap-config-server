@@ -51,7 +51,11 @@ Do not use that flag in production.
 | `SEALED_SECRET_SCOPE` | no | `strict` | SealedSecret scope used by internal sealing adapters: `strict`, `namespace-wide`, or `cluster-wide`. |
 | `K8S_APPLY_TIMEOUT` | no | `10s` | Timeout for SealedSecret apply adapter calls. |
 | `SECRET_AUDIT_LOG_ENABLED` | no | `true` | Enables non-sensitive secret audit logging. |
-| `CONSOLE_API_URL` | no |  | Reserved. |
+| `CONSOLE_API_URL` | no |  | AAP Console base URL for startup App Registry load. |
+| `CONSOLE_API_TIMEOUT` | no | `5s` | Timeout for AAP Console API calls. |
+| `CONSOLE_REGISTRY_BOOTSTRAP_ATTEMPTS` | no | `5` | Maximum startup App Registry load attempts. |
+| `CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF` | no | `1s` | Initial startup App Registry retry backoff. |
+| `CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF` | no | `30s` | Maximum startup App Registry retry backoff. |
 
 ## Database
 
@@ -64,6 +68,8 @@ snapshot for serving reads.
 - Secret audit logs include action, result, service identity, and secret IDs
   for admin secret writes and resolved env var secret reads; plaintext values
   are not logged.
+- App Registry startup logs whether bootstrap was skipped, loaded, or failed
+  after the configured attempts.
 - No Prometheus metrics endpoint is currently implemented.
 - Operational state is exposed through `/readyz` and `/api/v1/status`.
 

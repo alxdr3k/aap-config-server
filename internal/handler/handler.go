@@ -14,6 +14,7 @@ import (
 
 	"github.com/aap/config-server/internal/apperror"
 	"github.com/aap/config-server/internal/parser"
+	"github.com/aap/config-server/internal/registry"
 	"github.com/aap/config-server/internal/secret"
 	"github.com/aap/config-server/internal/store"
 )
@@ -40,10 +41,11 @@ type Readiness interface {
 
 // Handler groups all HTTP handlers together.
 type Handler struct {
-	store      ConfigStore
-	readiness  Readiness
-	apiKey     string
-	secretDeps secret.Dependencies
+	store       ConfigStore
+	readiness   Readiness
+	apiKey      string
+	appRegistry *registry.Cache
+	secretDeps  secret.Dependencies
 }
 
 // Option customizes Handler dependencies.
@@ -54,6 +56,14 @@ type Option func(*Handler)
 func WithSecretDependencies(deps secret.Dependencies) Option {
 	return func(h *Handler) {
 		h.secretDeps = deps.WithDefaults()
+	}
+}
+
+// WithAppRegistry wires the Console-owned App Registry cache for future
+// registry webhook/status endpoints.
+func WithAppRegistry(cache *registry.Cache) Option {
+	return func(h *Handler) {
+		h.appRegistry = cache
 	}
 }
 

@@ -66,6 +66,10 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 - Secret handling paths emit non-sensitive audit events when
   `SECRET_AUDIT_LOG_ENABLED=true`; emitted fields are action, result,
   service identity, and secret IDs, never plaintext values.
+- If `CONSOLE_API_URL` is configured, startup fetches
+  `GET /api/v1/apps?all=true` from AAP Console into an in-memory App Registry
+  cache using bounded exponential backoff. Final failure is logged and the
+  process continues with the existing cache.
 - Config Agent, registry webhook, watch/history/revert, and inheritance are target design only.
 
 ## Failure modes
@@ -81,6 +85,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 | Degraded store | `/readyz` returns 503 and `/api/v1/status` reports `is_degraded`. |
 | Admin write succeeds but reload fails | Response is `503 committed_but_reload_failed`; Git commit remains. |
 | Admin secret write succeeds but SealedSecret apply fails | Response is `503 committed_but_apply_failed`; encrypted Git commit remains and `apply_error` is returned. |
+| App Registry startup load fails after configured attempts | Startup continues with the existing registry cache and logs the final error. |
 | Admin delete succeeds but reload fails | Response is `503 deleted_but_reload_failed`; Git delete remains. |
 | Dirty `configs/` worktree during snapshot | Reload fails closed to avoid serving data not represented by HEAD. |
 | Unknown admin JSON field | Request fails with `400 invalid_body`. |

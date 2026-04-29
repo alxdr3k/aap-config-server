@@ -12,6 +12,7 @@ import (
 	"github.com/aap/config-server/internal/config"
 	"github.com/aap/config-server/internal/gitops"
 	"github.com/aap/config-server/internal/handler"
+	"github.com/aap/config-server/internal/registry"
 	"github.com/aap/config-server/internal/secret"
 	"github.com/aap/config-server/internal/server"
 	"github.com/aap/config-server/internal/store"
@@ -51,6 +52,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	appRegistry := registry.NewCache()
+	bootstrapAppRegistry(ctx, cfg, appRegistry)
+
 	repo, err := gitops.New(gitops.Options{
 		LocalPath:  cfg.GitLocalPath,
 		RemoteURL:  cfg.GitURL,
@@ -72,7 +76,9 @@ func main() {
 	}
 
 	probe := &server.ReadinessProbe{}
-	h := handler.New(st, probe, cfg.APIKey, handler.WithSecretDependencies(secretDeps))
+	h := handler.New(st, probe, cfg.APIKey,
+		handler.WithSecretDependencies(secretDeps),
+		handler.WithAppRegistry(appRegistry))
 
 	mux := http.NewServeMux()
 	h.Routes(mux)
@@ -86,6 +92,37 @@ func main() {
 		slog.Error("server error", "err", err)
 		os.Exit(1)
 	}
+}
+
+func bootstrapAppRegistry(ctx context.Context, cfg *config.ServerConfig, cache *registry.Cache) registry.BootstrapResult {
+	if cfg.ConsoleAPIURL == "" {
+		slog.Info("app registry bootstrap skipped: CONSOLE_API_URL not set")
+		return registry.BootstrapResult{Skipped: true}
+	}
+	client, err := registry.NewConsoleClient(registry.ClientOptions{
+		BaseURL:    cfg.ConsoleAPIURL,
+		HTTPClient: &http.Client{Timeout: cfg.ConsoleAPITimeout},
+	})
+	if err != nil {
+		cache.MarkLoadFailed(err)
+		slog.Warn("app registry bootstrap skipped: invalid console client config", "err", err)
+		return registry.BootstrapResult{Err: err}
+	}
+	result := registry.Bootstrap(ctx, cache, client, registry.BootstrapOptions{
+		MaxAttempts:    cfg.ConsoleRegistryBootstrapAttempts,
+		InitialBackoff: cfg.ConsoleRegistryBootstrapInitialBackoff,
+		MaxBackoff:     cfg.ConsoleRegistryBootstrapMaxBackoff,
+	})
+	if result.Loaded {
+		slog.Info("app registry bootstrap loaded",
+			"attempts", result.Attempts,
+			"apps_loaded", result.AppsLoaded)
+		return result
+	}
+	slog.Warn("app registry bootstrap failed; continuing with existing cache",
+		"attempts", result.Attempts,
+		"err", result.Err)
+	return result
 }
 
 func configureSecretDependencies(cfg secret.RuntimeConfig) secret.Dependencies {
