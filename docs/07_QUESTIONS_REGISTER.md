@@ -15,10 +15,10 @@
 
 - Opened: 2026-04-29
 - Owner: maintainers
-- Status: open
+- Status: resolved
 - Proposed Answer: Preserve `FR-*` during this migration and optionally add `REQ-*` aliases later if the project needs boilerplate-native requirement IDs.
-- Blocks: full PRD normalization
-- Resolution: pending
+- Blocks: —
+- Resolution: `DEC-002`
 
 **Context**
 
@@ -30,6 +30,8 @@ Renumbering immediately would create avoidable link churn.
 - `FR-*` is stable and already meaningful.
 - Boilerplate examples use `REQ-*`, but the templates do not require immediate renumbering.
 - Traceability can map either vocabulary.
+- Decision: `FR-*` remains canonical unless a future external process requires
+  `REQ-*` aliases.
 
 ---
 

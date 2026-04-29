@@ -105,7 +105,6 @@ Gate status:
 
 ## Risks (open)
 
-- `Q-001`: Requirement ID migration strategy (`FR-*` vs `REQ-*`).
 - `Q-002`: ADR-003 service mutex vs current global git mutex.
 - `Q-003`: Deployment ownership for Helm/K8s manifests.
 
