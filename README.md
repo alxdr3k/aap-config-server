@@ -284,7 +284,9 @@ curl -X POST http://localhost:8080/api/v1/admin/reload \
   when present. A registry-only load failure is reported in
   `degraded_components` but does not make `/readyz` fail; Config Server keeps
   serving Git-backed config so Console and Config Server do not deadlock on
-  startup order.
+  startup order. If `CONSOLE_API_URL` is unset, webhook updates can change
+  `apps_loaded` and `last_updated_at`, but `app_registry.status` stays
+  `not_configured` because no full Console snapshot was loaded.
 - **Post-commit reload.** `ApplyChanges` commits and pushes before reloading.
   A successful commit with a failed reload produces the `committed_but_reload_failed`
   response documented above rather than a bare `200`. Similarly,

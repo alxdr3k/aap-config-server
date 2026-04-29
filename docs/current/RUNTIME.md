@@ -83,7 +83,9 @@ implementation; `ADR-003` remains the future service-level mutex target design.
   `last_load_error` when present. Registry-only load failure is reported as a
   degraded component, but `/readyz` remains tied to process/store readiness so
   Config Server can serve Git-backed config even when Console is temporarily
-  unavailable.
+  unavailable. If startup bootstrap is not configured, webhook updates can
+  change `apps_loaded` and `last_updated_at`, but the status remains
+  `not_configured` to show that no full Console snapshot was loaded.
 - Config Agent, watch/history/revert, and inheritance are target design only.
 
 ## Failure modes

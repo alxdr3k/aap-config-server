@@ -186,3 +186,25 @@ func TestCache_WebhookUpdateDoesNotClearLoadFailure(t *testing.T) {
 		t.Fatalf("cache update state not recorded: %+v", status)
 	}
 }
+
+func TestCache_WebhookUpdatePreservesNotConfiguredStatus(t *testing.T) {
+	cache := registry.NewCache()
+	updatedAt := time.Date(2026, 4, 29, 10, 0, 0, 0, time.UTC)
+
+	if _, changed, err := cache.Upsert(registry.App{
+		Org:       "myorg",
+		Project:   "ai",
+		Service:   "litellm",
+		UpdatedAt: "2026-04-29T10:00:00Z",
+	}, updatedAt); err != nil || !changed {
+		t.Fatalf("upsert after skipped load: changed=%v err=%v", changed, err)
+	}
+
+	status := cache.Status()
+	if status.State != "not_configured" || status.IsDegraded {
+		t.Fatalf("webhook should not imply full-load health: %+v", status)
+	}
+	if status.AppsLoaded != 1 || !status.LastUpdatedAt.Equal(updatedAt) {
+		t.Fatalf("cache update state not recorded: %+v", status)
+	}
+}

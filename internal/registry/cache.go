@@ -224,9 +224,11 @@ func (c *Cache) Status() Status {
 
 func (c *Cache) markCacheUpdatedLocked(updatedAt time.Time) {
 	c.lastUpdated = updatedAt.UTC()
-	if c.status != cacheStatusDegraded {
+	switch c.status {
+	case "":
+		c.status = cacheStatusNotConfigured
+	case cacheStatusOK:
 		c.lastLoadErr = nil
-		c.status = cacheStatusOK
 	}
 }
 

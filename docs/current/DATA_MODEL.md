@@ -99,7 +99,7 @@ snapshot.
 |---|---|---|
 | Store snapshot | loaded, stale-last-known-good | Reload only swaps on full parse success. |
 | Store status | ready, degraded | Degraded means the latest reload failed but the previous snapshot remains available. |
-| App Registry cache | not_configured, ok, degraded | Degraded means the last Console full load failed; webhook updates still record `last_updated_at`, while the load failure remains visible until a later full load succeeds. `/readyz` is not failed for registry-only degradation. |
+| App Registry cache | not_configured, ok, degraded | `ok` means a full Console snapshot loaded. `not_configured` is preserved when only webhook updates arrive without startup bootstrap. Degraded means the last Console full load failed; webhook updates still record `last_updated_at`, while the load failure remains visible until a later full load succeeds. `/readyz` is not failed for registry-only degradation. |
 | Admin write | committed, committed_but_apply_failed, committed_but_reload_failed, committed_but_apply_and_reload_failed | Non-committed validation/sealing failures happen before Git writes; post-commit apply/reload failures are explicit. |
 | Admin delete | deleted, deleted_but_reload_failed | The second state means Git delete succeeded but memory reload failed. |
 
