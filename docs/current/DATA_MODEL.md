@@ -90,7 +90,7 @@ snapshot.
 - App Registry webhook updates perform per-app upsert or idempotent delete
   against the same in-memory cache; Console remains the source of truth.
   Webhook events require RFC3339 `updated_at`, and stale events older than the
-  current cache entry are ignored.
+  current cache entry or latest delete watermark are ignored.
 - Invalid YAML or missing required fields fail reload closed.
 
 ## Lifecycle states

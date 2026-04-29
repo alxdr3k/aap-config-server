@@ -186,7 +186,7 @@ POST /api/v1/admin/app-registry/webhook   # auth required
 ```
 
 Webhook events must include `updated_at` (RFC3339) so delayed async retries
-cannot overwrite newer cache state.
+cannot overwrite newer cache state or resurrect entries after a newer delete.
 
 Successful response:
 

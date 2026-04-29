@@ -11,6 +11,7 @@ import (
 type Cache struct {
 	mu          sync.RWMutex
 	apps        map[Key]App
+	lastEventAt map[Key]time.Time
 	lastLoaded  time.Time
 	lastLoadErr error
 }
@@ -24,7 +25,10 @@ type Status struct {
 
 // NewCache creates an empty registry cache.
 func NewCache() *Cache {
-	return &Cache{apps: map[Key]App{}}
+	return &Cache{
+		apps:        map[Key]App{},
+		lastEventAt: map[Key]time.Time{},
+	}
 }
 
 // Replace atomically replaces the cached registry snapshot.
@@ -33,16 +37,25 @@ func (c *Cache) Replace(apps []App, loadedAt time.Time) {
 		return
 	}
 	normalized := make(map[Key]App, len(apps))
+	snapshotEventAt := make(map[Key]time.Time, len(apps))
 	for _, app := range apps {
 		next, err := normalizeApp(app)
 		if err != nil {
 			continue
 		}
-		normalized[keyFor(next)] = next
+		key := keyFor(next)
+		normalized[key] = next
+		if eventAt, ok, err := parseEventTime(next.UpdatedAt); err == nil && ok {
+			snapshotEventAt[key] = eventAt
+		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.ensureMapsLocked()
 	c.apps = normalized
+	for key, eventAt := range snapshotEventAt {
+		rememberEventTime(c.lastEventAt, key, eventAt)
+	}
 	c.lastLoaded = loadedAt.UTC()
 	c.lastLoadErr = nil
 }
@@ -55,10 +68,8 @@ func (c *Cache) Upsert(app App, updatedAt time.Time) (App, bool, error) {
 	if err != nil {
 		return App{}, false, err
 	}
-	if normalized.UpdatedAt == "" {
-		return App{}, false, fmt.Errorf("updated_at is required")
-	}
-	if _, _, err := parseEventTime(normalized.UpdatedAt); err != nil {
+	eventAt, err := requireEventTime(normalized)
+	if err != nil {
 		return App{}, false, err
 	}
 	if c == nil {
@@ -66,10 +77,14 @@ func (c *Cache) Upsert(app App, updatedAt time.Time) (App, bool, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.apps == nil {
-		c.apps = map[Key]App{}
-	}
+	c.ensureMapsLocked()
 	key := keyFor(normalized)
+	if watermark, ok := c.lastEventAt[key]; ok && eventAt.Before(watermark) {
+		if current, ok := c.apps[key]; ok {
+			return current, false, nil
+		}
+		return normalized, false, nil
+	}
 	if current, ok := c.apps[key]; ok {
 		apply, err := shouldApplyEvent(current, normalized)
 		if err != nil {
@@ -80,6 +95,7 @@ func (c *Cache) Upsert(app App, updatedAt time.Time) (App, bool, error) {
 		}
 	}
 	c.apps[key] = normalized
+	rememberEventTime(c.lastEventAt, key, eventAt)
 	c.lastLoaded = updatedAt.UTC()
 	c.lastLoadErr = nil
 	return normalized, true, nil
@@ -93,10 +109,8 @@ func (c *Cache) Delete(app App, updatedAt time.Time) (Key, bool, error) {
 	if err != nil {
 		return Key{}, false, err
 	}
-	if normalized.UpdatedAt == "" {
-		return Key{}, false, fmt.Errorf("updated_at is required")
-	}
-	if _, _, err := parseEventTime(normalized.UpdatedAt); err != nil {
+	eventAt, err := requireEventTime(normalized)
+	if err != nil {
 		return Key{}, false, err
 	}
 	key := keyFor(normalized)
@@ -105,6 +119,10 @@ func (c *Cache) Delete(app App, updatedAt time.Time) (Key, bool, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.ensureMapsLocked()
+	if watermark, ok := c.lastEventAt[key]; ok && eventAt.Before(watermark) {
+		return key, false, nil
+	}
 	current, existed := c.apps[key]
 	if existed {
 		apply, err := shouldApplyEvent(current, normalized)
@@ -116,6 +134,7 @@ func (c *Cache) Delete(app App, updatedAt time.Time) (Key, bool, error) {
 		}
 	}
 	delete(c.apps, key)
+	rememberEventTime(c.lastEventAt, key, eventAt)
 	c.lastLoaded = updatedAt.UTC()
 	c.lastLoadErr = nil
 	return key, existed, nil
@@ -169,6 +188,29 @@ func (c *Cache) Status() Status {
 		status.LastLoadError = c.lastLoadErr.Error()
 	}
 	return status
+}
+
+func (c *Cache) ensureMapsLocked() {
+	if c.apps == nil {
+		c.apps = map[Key]App{}
+	}
+	if c.lastEventAt == nil {
+		c.lastEventAt = map[Key]time.Time{}
+	}
+}
+
+func requireEventTime(app App) (time.Time, error) {
+	if app.UpdatedAt == "" {
+		return time.Time{}, fmt.Errorf("updated_at is required")
+	}
+	eventAt, _, err := parseEventTime(app.UpdatedAt)
+	return eventAt, err
+}
+
+func rememberEventTime(events map[Key]time.Time, key Key, eventAt time.Time) {
+	if current, ok := events[key]; !ok || eventAt.After(current) {
+		events[key] = eventAt.UTC()
+	}
 }
 
 func shouldApplyEvent(current, incoming App) (bool, error) {
