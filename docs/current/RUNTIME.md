@@ -54,9 +54,11 @@ implementation; `ADR-003` remains the future service-level mutex target design.
   certificate through the Kubernetes service proxy and encrypt values using
   Bitnami's hybrid encryption format.
 - `internal/secret.DynamicApplier` can create/update Bitnami SealedSecret
-  objects through a Kubernetes dynamic client; admin write wiring is still
-  planned.
-- `POST /api/v1/admin/changes` will eventually accept secret values, generate SealedSecrets, commit encrypted manifests, apply them to Kubernetes, and support secret resolution.
+  objects through a Kubernetes dynamic client.
+- `POST /api/v1/admin/changes` accepts secret values when secret adapters are
+  configured, generates SealedSecrets, commits encrypted manifests with
+  metadata, applies them to Kubernetes, and reports apply/reload failures
+  explicitly. HTTP `resolve_secrets=true` is still planned.
 - Config Agent, registry webhook, watch/history/revert, and inheritance are target design only.
 
 ## Failure modes
@@ -71,10 +73,11 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 | YAML parse/validation failure during reload | Snapshot is not swapped; last-known-good snapshot keeps serving. |
 | Degraded store | `/readyz` returns 503 and `/api/v1/status` reports `is_degraded`. |
 | Admin write succeeds but reload fails | Response is `503 committed_but_reload_failed`; Git commit remains. |
+| Admin secret write succeeds but SealedSecret apply fails | Response is `503 committed_but_apply_failed`; encrypted Git commit remains and `apply_error` is returned. |
 | Admin delete succeeds but reload fails | Response is `503 deleted_but_reload_failed`; Git delete remains. |
 | Dirty `configs/` worktree during snapshot | Reload fails closed to avoid serving data not represented by HEAD. |
 | Unknown admin JSON field | Request fails with `400 invalid_body`. |
-| `secrets` field on admin write | Explicitly rejected in Phase-1 with 400. |
+| `secrets` field on admin write without configured adapters | Request fails validation before Git commit. |
 | Unsafe mounted secret reference | Volume reader rejects it before filesystem access. |
 | Invalid SealedSecret generation input | Sealer rejects missing path identity, namespace/name/data, or path-unsafe keys before emitting YAML. |
 | SealedSecret public-key lookup/encryption failure | Encryptor returns context-rich controller lookup, certificate parse, or encryption errors without logging plaintext values. |

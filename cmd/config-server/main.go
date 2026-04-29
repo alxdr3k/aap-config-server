@@ -15,6 +15,9 @@ import (
 	"github.com/aap/config-server/internal/secret"
 	"github.com/aap/config-server/internal/server"
 	"github.com/aap/config-server/internal/store"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 func main() {
@@ -61,7 +64,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	st := store.New(repo)
+	st := store.New(repo, store.WithSecretDependencies(configureSecretDependencies(secretCfg)))
 	if err := st.LoadFromRepo(ctx); err != nil {
 		slog.Error("initial config load", "err", err)
 		os.Exit(1)
@@ -81,6 +84,46 @@ func main() {
 	if err := srv.Run(ctx); err != nil {
 		slog.Error("server error", "err", err)
 		os.Exit(1)
+	}
+}
+
+func configureSecretDependencies(cfg secret.RuntimeConfig) secret.Dependencies {
+	k8sConfig, err := rest.InClusterConfig()
+	if err != nil {
+		slog.Warn("kubernetes secret write adapters disabled; secret writes will be rejected", "err", err)
+		return secret.Dependencies{}
+	}
+
+	kubeClient, err := kubernetes.NewForConfig(k8sConfig)
+	if err != nil {
+		slog.Error("create kubernetes client for secret writes", "err", err)
+		return secret.Dependencies{}
+	}
+	dynamicClient, err := dynamic.NewForConfig(k8sConfig)
+	if err != nil {
+		slog.Error("create kubernetes dynamic client for secret writes", "err", err)
+		return secret.Dependencies{}
+	}
+
+	sealer, err := secret.NewControllerPublicKeySealer(
+		cfg.SealedSecretScope,
+		cfg.SealedSecretControllerNamespace,
+		cfg.SealedSecretControllerName,
+		kubeClient,
+	)
+	if err != nil {
+		slog.Error("configure sealed secret sealer", "err", err)
+		return secret.Dependencies{}
+	}
+	applier, err := secret.NewDynamicApplier(dynamicClient, cfg.K8sApplyTimeout)
+	if err != nil {
+		slog.Error("configure sealed secret applier", "err", err)
+		return secret.Dependencies{}
+	}
+
+	return secret.Dependencies{
+		Sealer:  sealer,
+		Applier: applier,
 	}
 }
 

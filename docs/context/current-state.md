@@ -32,21 +32,23 @@ from an atomically swapped in-memory snapshot.
 - Parser support for `config.yaml`, `env_vars.yaml`, and `secrets.yaml` metadata.
 - Read APIs for config, env vars, service discovery, status, health/readiness.
 - Auth-gated admin write/delete/reload endpoints.
-- Auth-gated secret metadata read; secret value write/resolve is not implemented.
+- Auth-gated secret metadata read and admin secret writes; secret value resolve
+  is not implemented.
 - Degraded state through `/readyz` and `/api/v1/status`.
 - Secret runtime boundary settings and adapter interfaces for mounted volume
   reads, SealedSecret sealing, K8s apply, and audit logging.
 - Mounted secret file reader with fsnotify-backed refresh events under
   `internal/secret`; env var secret resolve is still not wired to HTTP.
 - Deterministic SealedSecret YAML generator with Bitnami public-key encryption
-  adapter and controller certificate lookup; admin write wiring is still not
-  implemented.
+  adapter and controller certificate lookup; admin writes now use this path
+  when Kubernetes adapters are configured.
 - K8s dynamic-client SealedSecret apply adapter under `internal/secret`;
-  admin write/runtime wiring is still planned.
+  admin write/runtime wiring now uses configured Kubernetes clients when
+  in-cluster config is available.
 
 ## Planned
 
-- Admin secret write integration and secret value resolve.
+- Secret value resolve.
 - App Registry bootstrap and webhook cache.
 - Config Agent rollout path.
 - Watch/history/revert endpoints, config inheritance, response optimizations,
@@ -60,7 +62,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Continue `SECRET-1A` with `SECRET-1A.6` admin secret write integration.
+1. Continue `SECRET-1A` with `SECRET-1A.7` `resolve_secrets=true` reads.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 

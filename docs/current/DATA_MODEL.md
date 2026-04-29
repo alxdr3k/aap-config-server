@@ -35,11 +35,12 @@ snapshot.
 | `EnvVarsConfig` | Parsed `env_vars.yaml` with plain env vars and secret refs. | `internal/parser/types.go` |
 | `SecretsConfig` | Parsed `secrets.yaml` metadata; no secret plaintext. | `internal/parser/types.go` |
 | `secret.RuntimeConfig` | Runtime knobs for secret mount, SealedSecret, K8s apply, and audit adapters. | `internal/secret/types.go` |
-| `secret.Reference` / `secret.Value` | Boundary types for future plaintext secret reads; values are copied and can be best-effort zeroed. | `internal/secret/types.go` |
+| `secret.Reference` / `secret.Value` | Boundary types for plaintext secret reads/writes; values are copied and can be best-effort zeroed. | `internal/secret/types.go` |
 | `secret.FileVolumeReader` | Mounted K8s Secret file reader/cache with fsnotify refresh events. | `internal/secret/volume.go` |
 | `secret.DeterministicSealer` | Adapter that turns plaintext secret values into deterministic Bitnami SealedSecret YAML through an injected encryptor. | `internal/secret/sealed.go` |
 | `secret.ControllerPublicKeyProvider` / `secret.PublicKeyEncryptor` | Controller certificate lookup and Bitnami hybrid encryption for SealedSecret data items. | `internal/secret/encrypt.go` |
 | `secret.DynamicApplier` | Adapter that creates or updates Bitnami SealedSecret objects through a Kubernetes dynamic client. | `internal/secret/apply.go` |
+| `store.SecretWrite` | Admin write boundary for plaintext secret values grouped by K8s Secret name before sealing. | `internal/store/types.go` |
 | `ChangeRequest` | Internal representation of admin write input. | `internal/store/types.go` |
 | `DeleteRequest` | Internal representation of admin delete input. | `internal/store/types.go` |
 | `StoreStatus` | Runtime status exposed through `/api/v1/status`. | `internal/store/types.go` |
@@ -71,6 +72,9 @@ snapshot.
   cross-namespace filename collisions.
 - SealedSecret apply validates manifest kind/name/namespace before create/update
   through the `bitnami.com/v1alpha1` `sealedsecrets` resource.
+- Admin secret writes merge existing `secrets.yaml` metadata with new plaintext
+  values, commit metadata plus SealedSecret manifests together, and never write
+  plaintext values to Git.
 - Invalid YAML or missing required fields fail reload closed.
 
 ## Lifecycle states
@@ -79,11 +83,10 @@ snapshot.
 |---|---|---|
 | Store snapshot | loaded, stale-last-known-good | Reload only swaps on full parse success. |
 | Store status | ready, degraded | Degraded means the latest reload failed but the previous snapshot remains available. |
-| Admin write | committed, committed_but_reload_failed | The second state means Git push succeeded but memory reload failed. |
+| Admin write | committed, committed_but_apply_failed, committed_but_reload_failed, committed_but_apply_and_reload_failed | Non-committed validation/sealing failures happen before Git writes; post-commit apply/reload failures are explicit. |
 | Admin delete | deleted, deleted_but_reload_failed | The second state means Git delete succeeded but memory reload failed. |
 
 ## Needs audit
 
 - No generated reference docs currently exist under `docs/generated/`.
-- Planned admin secret write integration, secret resolution, and Config Agent
-  data models are target design only.
+- Planned secret resolution and Config Agent data models are target design only.

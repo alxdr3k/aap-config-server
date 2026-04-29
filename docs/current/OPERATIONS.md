@@ -46,8 +46,8 @@ Do not use that flag in production.
 | `ADDR` | no | `:8080` | HTTP listen address. |
 | `LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, `error`. |
 | `SECRET_MOUNT_PATH` | no | `/secrets` | Absolute root for mounted K8s Secret volume reads. |
-| `SEALED_SECRET_CONTROLLER_NAMESPACE` | no | `kube-system` | Namespace for SealedSecret controller public-key lookup and future admin write integration. |
-| `SEALED_SECRET_CONTROLLER_NAME` | no | `sealed-secrets-controller` | Controller service name for SealedSecret public-key lookup and future admin write integration. |
+| `SEALED_SECRET_CONTROLLER_NAMESPACE` | no | `kube-system` | Namespace for SealedSecret controller public-key lookup and admin write integration. |
+| `SEALED_SECRET_CONTROLLER_NAME` | no | `sealed-secrets-controller` | Controller service name for SealedSecret public-key lookup and admin write integration. |
 | `SEALED_SECRET_SCOPE` | no | `strict` | SealedSecret scope used by internal sealing adapters: `strict`, `namespace-wide`, or `cluster-wide`. |
 | `K8S_APPLY_TIMEOUT` | no | `10s` | Timeout for SealedSecret apply adapter calls. |
 | `SECRET_AUDIT_LOG_ENABLED` | no | `true` | Enables planned non-sensitive secret audit logging. |
@@ -111,13 +111,17 @@ Action:
 Symptom:
 
 - `POST /api/v1/admin/changes` returns `503 committed_but_reload_failed`.
+- For secret writes, `POST /api/v1/admin/changes` can also return
+  `503 committed_but_apply_failed` when the encrypted Git commit succeeded but
+  Kubernetes apply failed.
 
 Action:
 
 1. Treat the Git commit as already written.
-2. Inspect `reload_error`.
-3. Fix the offending config repo state.
-4. Force reload.
+2. Inspect `reload_error` or `apply_error`.
+3. For reload failures, fix the offending config repo state and force reload.
+4. For apply failures, fix K8s access/controller issues, then re-apply the
+   committed SealedSecret manifest or retry the admin write.
 
 ### Auth failure
 

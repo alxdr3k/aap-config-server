@@ -3,7 +3,7 @@
 > **버전**: 2.1
 > **작성일**: 2026-03-12
 > **최종 수정일**: 2026-04-29
-> **상태**: **Approved design — Phase-1 implementation in progress.** 문서가 설명하는 전체 v2.1 계약(SealedSecret 생성, Config Agent, watch/history/revert, resolve_secrets 등) 중 상당 부분은 아직 구현되지 않았다. 실제로 현재 제공되는 범위는 [README.md](../README.md#feature-matrix) 의 Feature Matrix를 기준으로 한다. 본 문서의 API/저장소/아키텍처 기술은 **목표 계약**이며, 구현되지 않은 엔드포인트·필드는 Phase-1에서 명시적으로 거부된다 (예: `POST /api/v1/admin/changes` 의 `secrets` 필드는 400).
+> **상태**: **Approved design — Phase-1 implementation in progress.** 문서가 설명하는 전체 v2.1 계약(SealedSecret 생성, Config Agent, watch/history/revert, resolve_secrets 등) 중 상당 부분은 아직 구현되지 않았다. 실제로 현재 제공되는 범위는 [README.md](../README.md#feature-matrix) 의 Feature Matrix를 기준으로 한다. 본 문서의 API/저장소/아키텍처 기술은 **목표 계약**이며, 구현되지 않은 엔드포인트·필드는 Phase-1에서 명시적으로 거부된다.
 > **참조**: [HLD](./02_HLD.md) · [development-process.md](./development-process.md) · [README.md Feature Matrix](../README.md#feature-matrix)
 
 ---

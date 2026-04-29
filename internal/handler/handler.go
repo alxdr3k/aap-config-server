@@ -12,6 +12,7 @@ import (
 
 	"github.com/aap/config-server/internal/apperror"
 	"github.com/aap/config-server/internal/parser"
+	"github.com/aap/config-server/internal/secret"
 	"github.com/aap/config-server/internal/store"
 )
 
@@ -276,22 +277,25 @@ func (h *Handler) getSecrets(w http.ResponseWriter, r *http.Request) {
 
 // ---- admin write ----
 
-// postChangesRequest matches the Phase-1 POST /api/v1/admin/changes payload.
-// The `secrets` field from PRD v2.1 is intentionally not accepted here: the
-// server rejects any unknown field (including secrets) with 400 so callers
-// don't silently lose data while secret handling is unimplemented.
+// postChangesRequest matches the POST /api/v1/admin/changes payload.
 type postChangesRequest struct {
-	Org     string         `json:"org"`
-	Project string         `json:"project"`
-	Service string         `json:"service"`
-	Config  map[string]any `json:"config"`
-	EnvVars *envVarsBody   `json:"env_vars"`
-	Message string         `json:"message"`
+	Org     string                     `json:"org"`
+	Project string                     `json:"project"`
+	Service string                     `json:"service"`
+	Config  map[string]any             `json:"config"`
+	EnvVars *envVarsBody               `json:"env_vars"`
+	Secrets map[string]secretWriteBody `json:"secrets"`
+	Message string                     `json:"message"`
 }
 
 type envVarsBody struct {
 	Plain      map[string]string `json:"plain"`
 	SecretRefs map[string]string `json:"secret_refs"`
+}
+
+type secretWriteBody struct {
+	Namespace string            `json:"namespace"`
+	Data      map[string]string `json:"data"`
 }
 
 func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
@@ -317,6 +321,19 @@ func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
 			SecretRefs: body.EnvVars.SecretRefs,
 		}
 	}
+	if body.Secrets != nil {
+		req.Secrets = make(map[string]store.SecretWrite, len(body.Secrets))
+		for name, write := range body.Secrets {
+			data := make(map[string]secret.Value, len(write.Data))
+			for key, value := range write.Data {
+				data[key] = secret.NewValue([]byte(value))
+			}
+			req.Secrets[name] = store.SecretWrite{
+				Namespace: write.Namespace,
+				Data:      data,
+			}
+		}
+	}
 
 	result, err := h.store.ApplyChanges(r.Context(), req)
 	if err != nil {
@@ -326,7 +343,14 @@ func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
 
 	status := "committed"
 	code := http.StatusOK
-	if result.ReloadFailed {
+	switch {
+	case result.ApplyFailed && result.ReloadFailed:
+		status = "committed_but_apply_and_reload_failed"
+		code = http.StatusServiceUnavailable
+	case result.ApplyFailed:
+		status = "committed_but_apply_failed"
+		code = http.StatusServiceUnavailable
+	case result.ReloadFailed:
 		// Git write succeeded but the serving snapshot could not be refreshed
 		// from the new HEAD. We surface this explicitly so operators can react
 		// instead of trusting a plain 200.
@@ -343,16 +367,15 @@ func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
 	if result.ReloadFailed && result.ReloadError != "" {
 		resp["reload_error"] = result.ReloadError
 	}
+	if result.ApplyFailed && result.ApplyError != "" {
+		resp["apply_error"] = result.ApplyError
+	}
 	respondJSON(w, code, resp)
 }
 
-// explainDecodeError gives a slightly friendlier hint for the common case of
-// an unknown field (the PRD v2.1 `secrets` field, for example).
+// explainDecodeError gives a slightly friendlier hint for unknown fields.
 func (h *Handler) explainDecodeError(err error) string {
 	msg := err.Error()
-	if strings.Contains(msg, "unknown field \"secrets\"") {
-		return "secrets are not accepted by POST /api/v1/admin/changes in Phase-1; see docs for planned behaviour"
-	}
 	if strings.Contains(msg, "unknown field") {
 		return "request contains an unknown field: " + msg
 	}

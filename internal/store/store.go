@@ -18,6 +18,7 @@ import (
 	"github.com/aap/config-server/internal/apperror"
 	"github.com/aap/config-server/internal/gitops"
 	"github.com/aap/config-server/internal/parser"
+	"github.com/aap/config-server/internal/secret"
 )
 
 var validNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
@@ -50,6 +51,19 @@ type Store struct {
 	mu sync.Mutex
 
 	repo gitops.GitRepo
+
+	secretDeps secret.Dependencies
+}
+
+// Option customizes Store dependencies.
+type Option func(*Store)
+
+// WithSecretDependencies wires secret sealing and apply adapters into admin
+// secret writes. Config/env-only writes keep working without these adapters.
+func WithSecretDependencies(deps secret.Dependencies) Option {
+	return func(s *Store) {
+		s.secretDeps = deps.WithDefaults()
+	}
 }
 
 // snapshot is an immutable view of all service data at a given git version.
@@ -63,8 +77,12 @@ func newSnapshot(data map[string]*ServiceData, version string) *snapshot {
 }
 
 // New creates a Store backed by the given GitRepo.
-func New(repo gitops.GitRepo) *Store {
+func New(repo gitops.GitRepo, opts ...Option) *Store {
 	s := &Store{repo: repo}
+	for _, opt := range opts {
+		opt(s)
+	}
+	s.secretDeps = s.secretDeps.WithDefaults()
 	s.snapshot.Store(newSnapshot(make(map[string]*ServiceData), ""))
 	return s
 }
@@ -264,8 +282,21 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 	if err := validateName("service", req.Service); err != nil {
 		return nil, err
 	}
-	if req.Config == nil && req.EnvVars == nil {
-		return nil, apperror.New(apperror.CodeValidation, "at least one of config or env_vars must be provided")
+	hasSecrets, err := validateSecretWrites(req.Secrets)
+	if err != nil {
+		return nil, err
+	}
+	if req.Config == nil && req.EnvVars == nil && !hasSecrets {
+		return nil, apperror.New(apperror.CodeValidation, "at least one of config, env_vars, or secrets must be provided")
+	}
+	if hasSecrets {
+		if s.secretDeps.Sealer == nil {
+			return nil, apperror.New(apperror.CodeValidation, "secret sealer is not configured")
+		}
+		if s.secretDeps.Applier == nil {
+			return nil, apperror.New(apperror.CodeValidation, "secret applier is not configured")
+		}
+		defer destroySecretWrites(req.Secrets)
 	}
 
 	s.mu.Lock()
@@ -276,6 +307,7 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 
 	files := map[string][]byte{}
 	var writtenFiles []string
+	var sealedManifests []secret.SealedManifest
 
 	if req.Config != nil {
 		cfg := &parser.ServiceConfig{
@@ -317,6 +349,32 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 		writtenFiles = append(writtenFiles, "env_vars.yaml")
 	}
 
+	if hasSecrets {
+		sec, manifests, err := s.buildSecretArtifacts(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		data, err := yaml.Marshal(sec)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, "marshal secrets.yaml", err)
+		}
+		path := filepath.Join(svcPath, "secrets.yaml")
+		files[path] = data
+		writtenFiles = append(writtenFiles, "secrets.yaml")
+
+		for _, manifest := range manifests {
+			manifestPath := filepath.ToSlash(manifest.Path)
+			rel, ok := serviceRelativePath(svcPath, manifestPath)
+			if !ok {
+				return nil, apperror.New(apperror.CodeInternal,
+					fmt.Sprintf("sealed manifest path %q is outside service path", manifest.Path))
+			}
+			files[filepath.FromSlash(manifestPath)] = manifest.YAML
+			writtenFiles = append(writtenFiles, rel)
+		}
+		sealedManifests = manifests
+	}
+
 	msg := req.Message
 	if msg == "" {
 		msg = fmt.Sprintf("update config for %s/%s/%s", req.Org, req.Project, req.Service)
@@ -333,6 +391,14 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 		Files:     writtenFiles,
 	}
 
+	if len(sealedManifests) > 0 {
+		if err := applySealedManifests(ctx, s.secretDeps.Applier, sealedManifests); err != nil {
+			slog.Error("apply sealed secrets after commit failed", "err", err)
+			result.ApplyFailed = true
+			result.ApplyError = err.Error()
+		}
+	}
+
 	// Reload in-memory snapshot using COW. If this fails the git write has
 	// already happened, so we can't pretend it didn't; instead we keep the
 	// previous (last-known-good) snapshot and tell the caller about it.
@@ -343,6 +409,197 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 	}
 
 	return result, nil
+}
+
+func (s *Store) buildSecretArtifacts(ctx context.Context, req *ChangeRequest) (*parser.SecretsConfig, []secret.SealedManifest, error) {
+	existing := s.current().data[ServiceKey{Org: req.Org, Project: req.Project, Service: req.Service}.String()]
+	var existingSecrets *parser.SecretsConfig
+	if existing != nil {
+		existingSecrets = existing.Secrets
+	}
+
+	entries := mergeSecretEntries(existingSecrets, req.Secrets)
+	manifests := make([]secret.SealedManifest, 0, len(req.Secrets))
+	for _, name := range sortedSecretNames(req.Secrets) {
+		write := req.Secrets[name]
+		data := make(map[string]secret.Value, len(write.Data))
+		for _, key := range sortedSecretDataKeys(write.Data) {
+			data[key] = write.Data[key]
+		}
+		manifest, err := s.secretDeps.Sealer.Seal(ctx, secret.SealRequest{
+			Org:       req.Org,
+			Project:   req.Project,
+			Service:   req.Service,
+			Namespace: write.Namespace,
+			Name:      name,
+			Data:      data,
+		})
+		if err != nil {
+			return nil, nil, apperror.Wrap(apperror.CodeInternal,
+				fmt.Sprintf("seal secret %s/%s", write.Namespace, name), err)
+		}
+		manifests = append(manifests, manifest)
+	}
+
+	return &parser.SecretsConfig{
+		Version: "1",
+		Secrets: entries,
+	}, manifests, nil
+}
+
+type secretPointer struct {
+	namespace string
+	name      string
+	key       string
+}
+
+func mergeSecretEntries(existing *parser.SecretsConfig, writes map[string]SecretWrite) []parser.SecretEntry {
+	byPointer := map[secretPointer]parser.SecretEntry{}
+	idInUse := map[string]secretPointer{}
+	if existing != nil {
+		for _, entry := range existing.Secrets {
+			ptr := secretPointer{
+				namespace: entry.K8sSecret.Namespace,
+				name:      entry.K8sSecret.Name,
+				key:       entry.K8sSecret.Key,
+			}
+			byPointer[ptr] = entry
+			if entry.ID != "" {
+				idInUse[entry.ID] = ptr
+			}
+		}
+	}
+
+	for _, name := range sortedSecretNames(writes) {
+		write := writes[name]
+		for _, key := range sortedSecretDataKeys(write.Data) {
+			ptr := secretPointer{namespace: write.Namespace, name: name, key: key}
+			if _, ok := byPointer[ptr]; ok {
+				continue
+			}
+			id := uniqueSecretID(write.Namespace, name, key, idInUse)
+			entry := parser.SecretEntry{
+				ID: id,
+				K8sSecret: parser.K8sSecret{
+					Name:      name,
+					Namespace: write.Namespace,
+					Key:       key,
+				},
+			}
+			byPointer[ptr] = entry
+			idInUse[id] = ptr
+		}
+	}
+
+	entries := make([]parser.SecretEntry, 0, len(byPointer))
+	for _, entry := range byPointer {
+		entries = append(entries, entry)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].ID != entries[j].ID {
+			return entries[i].ID < entries[j].ID
+		}
+		if entries[i].K8sSecret.Namespace != entries[j].K8sSecret.Namespace {
+			return entries[i].K8sSecret.Namespace < entries[j].K8sSecret.Namespace
+		}
+		if entries[i].K8sSecret.Name != entries[j].K8sSecret.Name {
+			return entries[i].K8sSecret.Name < entries[j].K8sSecret.Name
+		}
+		return entries[i].K8sSecret.Key < entries[j].K8sSecret.Key
+	})
+	return entries
+}
+
+func uniqueSecretID(namespace, name, key string, idInUse map[string]secretPointer) string {
+	candidates := []string{
+		key,
+		name + "-" + key,
+		namespace + "-" + name + "-" + key,
+	}
+	for _, id := range candidates {
+		if _, ok := idInUse[id]; !ok {
+			return id
+		}
+	}
+	base := candidates[len(candidates)-1]
+	for i := 2; ; i++ {
+		id := fmt.Sprintf("%s-%d", base, i)
+		if _, ok := idInUse[id]; !ok {
+			return id
+		}
+	}
+}
+
+func validateSecretWrites(writes map[string]SecretWrite) (bool, error) {
+	if len(writes) == 0 {
+		return false, nil
+	}
+	for name, write := range writes {
+		if err := validateName("secret name", name); err != nil {
+			return false, err
+		}
+		if err := validateName("secret namespace", write.Namespace); err != nil {
+			return false, err
+		}
+		if len(write.Data) == 0 {
+			return false, apperror.New(apperror.CodeValidation,
+				fmt.Sprintf("secret %s/%s data is required", write.Namespace, name))
+		}
+		for key := range write.Data {
+			if err := validateName("secret key", key); err != nil {
+				return false, err
+			}
+		}
+	}
+	return true, nil
+}
+
+func destroySecretWrites(writes map[string]SecretWrite) {
+	for _, write := range writes {
+		for key, value := range write.Data {
+			value.Destroy()
+			write.Data[key] = value
+		}
+	}
+}
+
+func applySealedManifests(ctx context.Context, applier secret.Applier, manifests []secret.SealedManifest) error {
+	var errs []string
+	for _, manifest := range manifests {
+		if err := applier.ApplySealedSecret(ctx, manifest); err != nil {
+			errs = append(errs, fmt.Sprintf("apply sealed secret %s/%s: %v", manifest.Namespace, manifest.Name, err))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func serviceRelativePath(svcPath, manifestPath string) (string, bool) {
+	prefix := filepath.ToSlash(svcPath) + "/"
+	if !strings.HasPrefix(manifestPath, prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(manifestPath, prefix), true
+}
+
+func sortedSecretNames(writes map[string]SecretWrite) []string {
+	names := make([]string, 0, len(writes))
+	for name := range writes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func sortedSecretDataKeys(data map[string]secret.Value) []string {
+	keys := make([]string, 0, len(data))
+	for key := range data {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // DeleteChanges removes a service's config files, commits, pushes, and refreshes memory.
