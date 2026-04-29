@@ -39,10 +39,10 @@ Renumbering immediately would create avoidable link churn.
 
 - Opened: 2026-04-29
 - Owner: maintainers
-- Status: open
+- Status: resolved
 - Proposed Answer: Keep current global mutex documented as Phase-1 simplification, then decide whether service-level concurrency is worth implementing before high write volume.
-- Blocks: `CORE` concurrency hardening
-- Resolution: pending
+- Blocks: —
+- Resolution: `ADR-005`
 
 **Context**
 
@@ -55,6 +55,9 @@ write/refresh operations.
 - Current implementation is simpler and likely acceptable for low-frequency config changes.
 - ADR-003's target design may still be correct for scale.
 - A superseding ADR is cleaner than editing an accepted ADR in place.
+- Decision: `ADR-005` accepts current global Git/store serialization for
+  Phase-1 and defers service-level mutex implementation until contention data
+  justifies it.
 
 ---
 

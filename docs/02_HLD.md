@@ -787,7 +787,7 @@ env_vars:
 |------|------|-----|
 | Config Agent debounce 전략 | Leading-edge Debounce | [ADR-001](./adr/001-config-agent-leading-edge-debounce.md) |
 | Config Agent 배포 방식 | 중앙 집중형 (사이드카 대신) | [ADR-002](./adr/002-central-config-agent-vs-sidecar.md) |
-| 동시 변경 처리 | 서비스별 Mutex + Pull-rebase | [ADR-003](./adr/003-concurrent-change-per-service-mutex.md) |
+| 동시 변경 처리 | 서비스별 Mutex + Pull-rebase target; Phase-1 global serialization | [ADR-003](./adr/003-concurrent-change-per-service-mutex.md), [ADR-005](./adr/005-phase-1-global-git-serialization.md) |
 | 시크릿 저장 방식 | SealedSecret + Volume Mount | [ADR-004](./adr/004-secret-storage-sealedsecret-volume-mount.md) |
 
 ---

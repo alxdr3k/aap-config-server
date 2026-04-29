@@ -3,6 +3,10 @@
 > **상태**: Accepted
 > **일자**: 2026-03-12
 
+> **현재 구현 범위**: Phase-1 current implementation is scoped by
+> [ADR-005](./005-phase-1-global-git-serialization.md). Service-level mutexes
+> remain the target design until write contention justifies implementing them.
+
 ## 컨텍스트
 
 Console에서 여러 사용자가 거의 동시에 설정을 변경하면, Config Server가 `POST /api/v1/admin/changes`를 병렬로 처리하면서 Git push 충돌이 발생할 수 있다.
