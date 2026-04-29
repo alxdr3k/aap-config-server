@@ -28,6 +28,9 @@
 # Env:
 #   CODEX_POLL_INTERVAL  seconds between polls (default 20)
 #   CODEX_POLL_TIMEOUT   total wait limit in seconds (default 600)
+#   CODEX_INITIAL_EMPTY_DELAY
+#                         one-time sleep when the first successful activity
+#                         poll has no comments/reviews/reactions (default 300)
 #   CODEX_BASELINE       ISO timestamp; activity at/before this is ignored.
 #   CODEX_REPO           owner/repo override (helpful in fork workflows).
 #   CODEX_PASS_ACTOR     exact GitHub login that signals pass via reaction
@@ -68,8 +71,11 @@ fi
 
 interval="${CODEX_POLL_INTERVAL:-20}"
 timeout="${CODEX_POLL_TIMEOUT:-600}"
+initial_empty_delay="${CODEX_INITIAL_EMPTY_DELAY:-300}"
 pass_actor="${CODEX_PASS_ACTOR:-chatgpt-codex-connector[bot]}"
 pass_reaction="${CODEX_PASS_REACTION:-+1}"
+fetch_failures="$(mktemp)"
+trap 'rm -f "$fetch_failures"' EXIT
 
 # --- API helpers ---
 # fetch_list_or_empty <label> <gh-api-args...>: return JSON array on stdout,
@@ -95,6 +101,7 @@ fetch_list_or_empty() {
       echo "ERROR: $label permanent API failure: $out" >&2
       exit 4
     fi
+    printf '%s\n' "$label" >> "$fetch_failures"
     echo "WARN: $label fetch failed (using empty set): $out" >&2
     echo "[]"
     return 0
@@ -161,9 +168,12 @@ echo "→ polling PR $repo#$pr (interval=${interval}s, timeout=${timeout}s, pass
 # polls until a fresh push changes the underlying fetched timestamp.
 last_fetched_baseline=""
 last_clamped_baseline=""
+first_activity_probe=1
 
 started=$(date +%s)
 while :; do
+  : > "$fetch_failures"
+
   now=$(date +%s)
   if [ $((now - started)) -ge "$timeout" ]; then
     echo "TIMEOUT" >&2
@@ -235,6 +245,25 @@ while :; do
         "=== [\(.kind)] \(.login) @ \(.at) ===\n\(.body)\n"
       end'
     exit 1
+  fi
+
+  if [ "$first_activity_probe" = "1" ] && [ ! -s "$fetch_failures" ]; then
+    first_activity_probe=0
+    total_activity=$(jq -n \
+      --argjson reactions "$reactions" \
+      --argjson ic "$ic" --argjson rv "$rv" --argjson rc "$rc" \
+      '($reactions | length) + ($ic | length) + ($rv | length) + ($rc | length)')
+    if [ "$total_activity" = "0" ]; then
+      now=$(date +%s)
+      remaining=$((timeout - (now - started)))
+      if [ "$remaining" -gt 0 ]; then
+        delay="$initial_empty_delay"
+        if [ "$delay" -gt "$remaining" ]; then delay="$remaining"; fi
+        echo "→ first PR activity poll was empty; sleeping ${delay}s before normal polling" >&2
+        sleep "$delay"
+        continue
+      fi
+    fi
   fi
 
   sleep "$interval"

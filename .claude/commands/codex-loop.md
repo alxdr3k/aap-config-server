@@ -75,6 +75,7 @@ branch protection, merge queue, required check pending 때문에 즉시 merge가
 |------|--------|------|
 | `CODEX_POLL_INTERVAL` | 20 | 폴링 간격 (초) |
 | `CODEX_POLL_TIMEOUT` | 600 | 전체 대기 한도 (초) |
+| `CODEX_INITIAL_EMPTY_DELAY` | 300 | 첫 successful 조회에서 comment/review/reaction이 모두 없을 때 한 번만 쉬는 시간 (초) |
 | `CODEX_BASELINE` | (auto) | 이 ISO timestamp 이전 활동 무시 |
 | `CODEX_REPO` | (auto) | fork 워크플로 시 base repo 명시 (`owner/repo`) |
 | `CODEX_PASS_ACTOR` | `chatgpt-codex-connector[bot]` | 통과 reaction을 다는 봇 login |
