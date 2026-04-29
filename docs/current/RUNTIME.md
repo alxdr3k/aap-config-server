@@ -70,7 +70,9 @@ implementation; `ADR-003` remains the future service-level mutex target design.
   `GET /api/v1/apps?all=true` from AAP Console into an in-memory App Registry
   cache using bounded exponential backoff. Final failure is logged and the
   process continues with the existing cache.
-- Config Agent, registry webhook, watch/history/revert, and inheritance are target design only.
+- `POST /api/v1/admin/app-registry/webhook` lets AAP Console update the App
+  Registry cache with authenticated create/update/upsert/delete notifications.
+- Config Agent, watch/history/revert, and inheritance are target design only.
 
 ## Failure modes
 
@@ -86,6 +88,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 | Admin write succeeds but reload fails | Response is `503 committed_but_reload_failed`; Git commit remains. |
 | Admin secret write succeeds but SealedSecret apply fails | Response is `503 committed_but_apply_failed`; encrypted Git commit remains and `apply_error` is returned. |
 | App Registry startup load fails after configured attempts | Startup continues with the existing registry cache and logs the final error. |
+| App Registry webhook without valid API key | Request fails with `401 unauthorized`; cache is unchanged. |
 | Admin delete succeeds but reload fails | Response is `503 deleted_but_reload_failed`; Git delete remains. |
 | Dirty `configs/` worktree during snapshot | Reload fails closed to avoid serving data not represented by HEAD. |
 | Unknown admin JSON field | Request fails with `400 invalid_body`. |

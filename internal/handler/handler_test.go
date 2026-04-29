@@ -14,6 +14,7 @@ import (
 	"github.com/aap/config-server/internal/apperror"
 	"github.com/aap/config-server/internal/handler"
 	"github.com/aap/config-server/internal/parser"
+	"github.com/aap/config-server/internal/registry"
 	"github.com/aap/config-server/internal/secret"
 	"github.com/aap/config-server/internal/store"
 )
@@ -257,6 +258,25 @@ func postJSON(t *testing.T, srv *httptest.Server, path string, body any) *http.R
 		t.Fatalf("marshal body: %v", err)
 	}
 	resp, err := http.Post(srv.URL+path, "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	return resp
+}
+
+func postJSONWithBearer(t *testing.T, srv *httptest.Server, path string, body any, token string) *http.Response {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+path, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("new POST %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
 	}
@@ -715,6 +735,82 @@ func TestAPIKeyAuth_BearerHeader(t *testing.T) {
 				t.Errorf("%s: want %d, got %d", tc.name, tc.wantCode, resp.StatusCode)
 			}
 		})
+	}
+}
+
+func TestAppRegistryWebhook_UpsertAndDelete(t *testing.T) {
+	cache := registry.NewCache()
+	srv := newServerWithAPIKey(t, newFakeStore(), "secret-key", handler.WithAppRegistry(cache))
+	defer srv.Close()
+
+	upsertBody := map[string]any{
+		"action": "upsert",
+		"app": map[string]any{
+			"org":     "myorg",
+			"project": "ai",
+			"name":    "litellm",
+		},
+	}
+	resp := postJSONWithBearer(t, srv, "/api/v1/admin/app-registry/webhook", upsertBody, "secret-key")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upsert: want 200, got %d", resp.StatusCode)
+	}
+	apps := cache.List()
+	if len(apps) != 1 || apps[0].Org != "myorg" || apps[0].Project != "ai" || apps[0].Service != "litellm" {
+		t.Fatalf("cached apps after upsert: %+v", apps)
+	}
+
+	deleteBody := map[string]any{
+		"action":  "delete",
+		"org":     "myorg",
+		"project": "ai",
+		"service": "litellm",
+	}
+	resp = postJSONWithBearer(t, srv, "/api/v1/admin/app-registry/webhook", deleteBody, "secret-key")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete: want 200, got %d", resp.StatusCode)
+	}
+	if apps := cache.List(); len(apps) != 0 {
+		t.Fatalf("cached apps after delete: %+v", apps)
+	}
+}
+
+func TestAppRegistryWebhook_RequiresAuth(t *testing.T) {
+	cache := registry.NewCache()
+	srv := newServerWithAPIKey(t, newFakeStore(), "secret-key", handler.WithAppRegistry(cache))
+	defer srv.Close()
+
+	resp := postJSON(t, srv, "/api/v1/admin/app-registry/webhook", map[string]any{
+		"action": "upsert",
+		"app": map[string]any{
+			"org":     "myorg",
+			"project": "ai",
+			"name":    "litellm",
+		},
+	})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", resp.StatusCode)
+	}
+	if apps := cache.List(); len(apps) != 0 {
+		t.Fatalf("unauthorized request should not update cache: %+v", apps)
+	}
+}
+
+func TestAppRegistryWebhook_RejectsInvalidAction(t *testing.T) {
+	cache := registry.NewCache()
+	srv := newServerWithAPIKey(t, newFakeStore(), "secret-key", handler.WithAppRegistry(cache))
+	defer srv.Close()
+
+	resp := postJSONWithBearer(t, srv, "/api/v1/admin/app-registry/webhook", map[string]any{
+		"action": "bogus",
+		"app": map[string]any{
+			"org":     "myorg",
+			"project": "ai",
+			"name":    "litellm",
+		},
+	}, "secret-key")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
 	}
 }
 

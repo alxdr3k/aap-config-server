@@ -46,6 +46,46 @@ func (c *Cache) Replace(apps []App, loadedAt time.Time) {
 	c.lastLoadErr = nil
 }
 
+// Upsert inserts or replaces one app registration.
+func (c *Cache) Upsert(app App, updatedAt time.Time) (App, error) {
+	normalized, err := normalizeApp(app)
+	if err != nil {
+		return App{}, err
+	}
+	if c == nil {
+		return normalized, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.apps == nil {
+		c.apps = map[Key]App{}
+	}
+	c.apps[keyFor(normalized)] = normalized
+	c.lastLoaded = updatedAt.UTC()
+	c.lastLoadErr = nil
+	return normalized, nil
+}
+
+// Delete removes one app registration. Missing entries are treated as
+// successful idempotent deletes.
+func (c *Cache) Delete(app App, updatedAt time.Time) (Key, bool, error) {
+	normalized, err := normalizeApp(app)
+	if err != nil {
+		return Key{}, false, err
+	}
+	key := keyFor(normalized)
+	if c == nil {
+		return key, false, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, existed := c.apps[key]
+	delete(c.apps, key)
+	c.lastLoaded = updatedAt.UTC()
+	c.lastLoadErr = nil
+	return key, existed, nil
+}
+
 // MarkLoadFailed records a failed load while preserving the previous snapshot.
 func (c *Cache) MarkLoadFailed(err error) {
 	if c == nil {

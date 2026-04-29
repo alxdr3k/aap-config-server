@@ -87,6 +87,8 @@ snapshot.
 - App Registry startup load replaces the in-memory registry cache from Console
   API data. Final bootstrap failure records the error but preserves the
   existing cache.
+- App Registry webhook updates perform per-app upsert or idempotent delete
+  against the same in-memory cache; Console remains the source of truth.
 - Invalid YAML or missing required fields fail reload closed.
 
 ## Lifecycle states

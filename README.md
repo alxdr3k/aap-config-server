@@ -32,9 +32,10 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Secret value resolve (`env_vars?resolve_secrets=true`) | Implemented with API key auth, mounted secret refresh, and `Cache-Control: no-store` |
 | Secret audit logging                               | Implemented for admin secret writes and resolved env var secret reads |
 | App Registry startup bootstrap                     | Implemented when `CONSOLE_API_URL` is set |
+| App Registry webhook                               | Implemented (auth-gated cache upsert/delete) |
 | Watch / stream endpoint                            | Not implemented |
 | History / revert endpoints                         | Not implemented |
-| Config Agent, registry webhook                     | Not implemented |
+| Config Agent                                      | Not implemented |
 
 If a feature is listed as "Not implemented", treat descriptions in the PRD/HLD
 as planned design — the server will refuse requests that depend on them.
@@ -176,6 +177,12 @@ curl -X POST http://localhost:8080/api/v1/admin/changes \
     },
     "message": "bump retries"
   }'
+```
+
+App Registry webhook:
+
+```bash
+POST /api/v1/admin/app-registry/webhook   # auth required
 ```
 
 Successful response:

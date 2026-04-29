@@ -70,6 +70,8 @@ snapshot for serving reads.
   are not logged.
 - App Registry startup logs whether bootstrap was skipped, loaded, or failed
   after the configured attempts.
+- App Registry webhook calls use the same admin API key boundary as other
+  admin endpoints and update only the in-memory registry cache.
 - No Prometheus metrics endpoint is currently implemented.
 - Operational state is exposed through `/readyz` and `/api/v1/status`.
 
