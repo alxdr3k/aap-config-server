@@ -79,7 +79,7 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 | Unknown admin JSON field | Request fails with `400 invalid_body`. |
 | `secrets` field on admin write without configured adapters | Request fails validation before Git commit. |
 | Unsafe mounted secret reference | Volume reader rejects it before filesystem access. |
-| Invalid SealedSecret generation input | Sealer rejects missing path identity, namespace/name/data, or path-unsafe keys before emitting YAML. |
+| Invalid SealedSecret generation input | Store/sealer reject missing path identity, Kubernetes-incompatible namespace/name, missing data, or path-unsafe keys before emitting YAML or committing Git files. |
 | SealedSecret public-key lookup/encryption failure | Encryptor returns context-rich controller lookup, certificate parse, or encryption errors without logging plaintext values. |
 | Invalid SealedSecret apply manifest | Applier rejects missing YAML, wrong kind, or name/namespace mismatches before K8s API calls. |
 | K8s SealedSecret apply failure | Applier returns context-rich get/create/update errors and respects apply timeout/cancellation. |

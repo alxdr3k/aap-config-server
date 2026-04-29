@@ -23,11 +23,33 @@ import (
 )
 
 var validNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+var validK8sDNSLabelRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 func validateName(field, value string) error {
 	if !validNameRe.MatchString(value) {
 		return apperror.New(apperror.CodeValidation,
 			fmt.Sprintf("%s %q contains invalid characters", field, value))
+	}
+	return nil
+}
+
+func validateK8sDNSLabel(field, value string) error {
+	if value == "" || len(value) > 63 || !validK8sDNSLabelRe.MatchString(value) {
+		return apperror.New(apperror.CodeValidation,
+			fmt.Sprintf("%s %q must be a Kubernetes DNS label", field, value))
+	}
+	return nil
+}
+
+func validateK8sDNSSubdomain(field, value string) error {
+	if value == "" || len(value) > 253 {
+		return apperror.New(apperror.CodeValidation,
+			fmt.Sprintf("%s %q must be a Kubernetes DNS subdomain", field, value))
+	}
+	for _, part := range strings.Split(value, ".") {
+		if err := validateK8sDNSLabel(field, part); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -414,7 +436,7 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 	}
 
 	if len(sealedManifests) > 0 {
-		if err := applySealedManifests(ctx, s.secretDeps.Applier, sealedManifests); err != nil {
+		if err := applySealedManifests(context.WithoutCancel(ctx), s.secretDeps.Applier, sealedManifests); err != nil {
 			slog.Error("apply sealed secrets after commit failed", "err", err)
 			result.ApplyFailed = true
 			result.ApplyError = err.Error()
@@ -561,10 +583,10 @@ func validateSecretWrites(writes map[string]SecretWrite) (bool, error) {
 		return false, nil
 	}
 	for name, write := range writes {
-		if err := validateName("secret name", name); err != nil {
+		if err := validateK8sDNSSubdomain("secret name", name); err != nil {
 			return false, err
 		}
-		if err := validateName("secret namespace", write.Namespace); err != nil {
+		if err := validateK8sDNSLabel("secret namespace", write.Namespace); err != nil {
 			return false, err
 		}
 		if len(write.Data) == 0 {

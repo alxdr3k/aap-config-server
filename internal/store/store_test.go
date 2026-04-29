@@ -25,6 +25,7 @@ type fakeRepo struct {
 	commitHash      string
 	nextPullUpdated bool
 	pullCalls       int
+	afterCommit     func()
 }
 
 type fakeSealer struct {
@@ -48,10 +49,12 @@ func (f *fakeSealer) Seal(_ context.Context, req secret.SealRequest) (secret.Sea
 type fakeApplier struct {
 	manifests []secret.SealedManifest
 	err       error
+	ctxErr    error
 }
 
-func (f *fakeApplier) ApplySealedSecret(_ context.Context, manifest secret.SealedManifest) error {
+func (f *fakeApplier) ApplySealedSecret(ctx context.Context, manifest secret.SealedManifest) error {
 	f.manifests = append(f.manifests, manifest)
+	f.ctxErr = ctx.Err()
 	return f.err
 }
 
@@ -98,6 +101,9 @@ func (f *fakeRepo) CommitAndPushFunc(_ context.Context, _ string, build gitops.C
 		f.files[k] = v
 	}
 	f.commitHash = "newcommit"
+	if f.afterCommit != nil {
+		f.afterCommit()
+	}
 	return f.commitHash, nil
 }
 
@@ -497,6 +503,60 @@ func TestStore_ApplyChanges_SecretsRequireAdapters(t *testing.T) {
 	}
 }
 
+func TestStore_ApplyChanges_RejectsInvalidK8sSecretIdentity(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name    string
+		secrets map[string]store.SecretWrite
+	}{
+		{
+			name: "uppercase secret name",
+			secrets: map[string]store.SecretWrite{
+				"LiteLLM-Secrets": {
+					Namespace: "ai-platform",
+					Data:      map[string]secret.Value{"master-key": secret.NewValue([]byte("top-secret"))},
+				},
+			},
+		},
+		{
+			name: "underscore namespace",
+			secrets: map[string]store.SecretWrite{
+				"litellm-secrets": {
+					Namespace: "ai_platform",
+					Data:      map[string]secret.Value{"master-key": secret.NewValue([]byte("top-secret"))},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			s := store.New(repo)
+			if err := s.LoadFromRepo(ctx); err != nil {
+				t.Fatalf("LoadFromRepo: %v", err)
+			}
+
+			_, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+				Org:     "myorg",
+				Project: "proj",
+				Service: "svc",
+				Secrets: tc.secrets,
+			})
+			if err == nil {
+				t.Fatal("expected invalid Kubernetes secret identity error")
+			}
+			var appErr *apperror.Error
+			if !errors.As(err, &appErr) || appErr.Code != apperror.CodeValidation {
+				t.Fatalf("expected CodeValidation, got %v", err)
+			}
+			if len(repo.files) != 0 {
+				t.Fatalf("invalid Kubernetes secret identity should fail before commit, got files %v", repo.files)
+			}
+		})
+	}
+}
+
 func TestStore_ApplyChanges_ReportsSecretApplyFailure(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
@@ -528,6 +588,48 @@ func TestStore_ApplyChanges_ReportsSecretApplyFailure(t *testing.T) {
 	}
 	if !result.ApplyFailed || !strings.Contains(result.ApplyError, "apply sealed secret ai-platform/litellm-secrets") {
 		t.Fatalf("expected contextual apply failure, got %+v", result)
+	}
+}
+
+func TestStore_ApplyChanges_AppliesSecretsAfterRequestCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "svc")
+	repo.afterCommit = cancel
+	sealer := &fakeSealer{}
+	applier := &fakeApplier{}
+	s := store.New(repo, store.WithSecretDependencies(secret.Dependencies{
+		Sealer:  sealer,
+		Applier: applier,
+	}))
+	if err := s.LoadFromRepo(context.Background()); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	result, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+		Org:     "myorg",
+		Project: "proj",
+		Service: "svc",
+		Secrets: map[string]store.SecretWrite{
+			"litellm-secrets": {
+				Namespace: "ai-platform",
+				Data: map[string]secret.Value{
+					"master-key": secret.NewValue([]byte("top-secret")),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyChanges: %v", err)
+	}
+	if result.ApplyFailed {
+		t.Fatalf("apply should ignore request cancellation after commit: %+v", result)
+	}
+	if len(applier.manifests) != 1 {
+		t.Fatalf("applier calls: got %d", len(applier.manifests))
+	}
+	if applier.ctxErr != nil {
+		t.Fatalf("apply context should be detached from request cancellation, got %v", applier.ctxErr)
 	}
 }
 

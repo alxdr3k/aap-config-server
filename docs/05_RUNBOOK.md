@@ -66,7 +66,7 @@ export ALLOW_UNAUTHENTICATED_DEV=true
 
 - Symptom: `POST /api/v1/admin/changes` returns `503 committed_but_apply_failed`.
 - Detection: response includes `version`, written SealedSecret file paths, and `apply_error`.
-- Mitigation: treat Git commit as already written; fix K8s access/controller issues, then re-apply the committed SealedSecret manifest or retry the admin write.
+- Mitigation: treat Git commit as already written; fix K8s access/controller issues, then re-apply the committed SealedSecret manifest or retry the admin write. Client disconnects after commit do not cancel the server-managed apply attempt.
 - Root-cause investigation: inspect Config Server service account RBAC, SealedSecret controller availability, and the committed encrypted manifest.
 - Related: `AC-020`, `TEST-020`.
 

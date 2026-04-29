@@ -202,7 +202,8 @@ operator.
 
 Secret writes require the server to run with Kubernetes SealedSecret adapters
 configured. If they are unavailable, the request fails validation before any
-Git commit.
+Git commit. Secret namespaces and K8s Secret object names are also validated
+against Kubernetes DNS naming rules before any Git write.
 
 #### Rejected fields
 
