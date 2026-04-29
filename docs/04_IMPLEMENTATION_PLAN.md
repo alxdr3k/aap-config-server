@@ -47,9 +47,9 @@ Gate status:
 
 | Milestone | Product / user gate | Target date | Status | Gate | Evidence | Notes |
 |---|---|---|---|---|---|---|
-| `P0-M1` | Phase-1 Config Server MVP serves Git-backed config/env data and supports admin config/env writes. |  | `landed` | `AC-001`~`AC-008` | `cmd/config-server`, `internal/*`, `README.md` | Existing implementation predates this ledger. |
-| `P0-M2` | Operational hardening for degraded state, auth, reload, and dirty checkout safety. |  | `landed` | `AC-009`~`AC-013` | `internal/store`, `internal/handler`, `internal/gitops` | Some PRD phase labels differ from actual landing order. |
-| `P0-M3` | Documentation system migrated to boilerplate structure. |  | `in_progress` | `AC-014`, `AC-015` | `docs/00_*`, `docs/current/*`, `AGENTS.md`, `.github/` | Active migration slice. |
+| `P0-M1` | Phase-1 Config Server MVP serves Git-backed config/env data and supports admin config/env writes. |  | `accepted` | `AC-001`~`AC-005` | `cmd/config-server`, `internal/*`, `README.md`, PR #10 CI | Existing implementation predates this ledger. |
+| `P0-M2` | Operational hardening for auth, degraded state, reload, dirty checkout safety, and unsupported secret writes. |  | `accepted` | `AC-006`~`AC-009` | `internal/store`, `internal/handler`, `internal/gitops`, PR #10 CI | Some PRD phase labels differ from actual landing order. |
+| `P0-M3` | Documentation system migrated to boilerplate structure. |  | `accepted` | `AC-014`, `AC-015` | `docs/00_*`, `docs/current/*`, `AGENTS.md`, `.github/`, PR #10 | Migration landed on main. |
 | `P1-M1` | Secret write/resolve with SealedSecret and K8s apply. |  | `planned` | `AC-020` | ADR-004 | Target design only. |
 | `P1-M2` | Config Agent rollout path. |  | `planned` | `AC-030` | ADR-001, ADR-002 | Target design only. |
 | `P1-M3` | Watch/history/revert/inheritance/metrics operational features. |  | `planned` | `AC-040` | `docs/01_PRD.md` | Target design only. |
@@ -58,9 +58,9 @@ Gate status:
 
 | Track | Purpose | Active phase | Status | Notes |
 |---|---|---|---|---|
-| `CORE` | Core Config Server runtime, parser, store, Git sync, read/write APIs. | `CORE-1A` | `landed` | Code exists in `cmd/` and `internal/`. |
-| `OPS` | Auth, readiness, degraded state, reload, CI/runtime operations. | `OPS-1A` | `landed` | Runtime docs now live under `docs/current/`. |
-| `DOC` | Boilerplate documentation migration and status ledger. | `DOC-1A` | `in_progress` | Current active work. |
+| `CORE` | Core Config Server runtime, parser, store, Git sync, read/write APIs. | `CORE-1A` | `accepted` | Code exists in `cmd/` and `internal/`; CI passed on PR #10. |
+| `OPS` | Auth, readiness, degraded state, reload, CI/runtime operations. | `OPS-1A` | `accepted` | Runtime docs now live under `docs/current/`; CI passed on PR #10. |
+| `DOC` | Boilerplate documentation migration and status ledger. | `DOC-1A` | `accepted` | Landed through PR #10. |
 | `SECRET` | Secret write/resolve and SealedSecret integration. | `SECRET-1A` | `planned` | Planned. |
 | `AGENT` | Config Agent and rollout orchestration. | `AGENT-1A` | `planned` | Planned. |
 | `EXT` | Watch/history/revert/inheritance/metrics extensions. | `EXT-1A` | `planned` | Planned. |
@@ -69,16 +69,17 @@ Gate status:
 
 | Slice | Milestone | Track | Phase | Goal | Depends | Gate | Gate status | Status | Evidence | Next |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `CORE-1A.1` | `P0-M1` | `CORE` | `CORE-1A` | Runtime config load and validation. |  | `AC-001` / `TEST-001` | `not_run` | `landed` | `internal/config` | Run gate in an environment with Go installed. |
-| `CORE-1A.2` | `P0-M1` | `CORE` | `CORE-1A` | YAML parsing for config/env/secrets metadata. | `CORE-1A.1` | `AC-002` / `TEST-002` | `not_run` | `landed` | `internal/parser` | Run gate in an environment with Go installed. |
-| `CORE-1A.3` | `P0-M1` | `CORE` | `CORE-1A` | Git-backed store with atomic snapshot reload. | `CORE-1A.2` | `AC-003` / `TEST-003` | `not_run` | `landed` | `internal/store`, `internal/gitops` | Run gate in an environment with Go installed. |
-| `CORE-1A.4` | `P0-M1` | `CORE` | `CORE-1A` | Read/discovery APIs from memory. | `CORE-1A.3` | `AC-004` / `TEST-004` | `not_run` | `landed` | `internal/handler` | Run gate in an environment with Go installed. |
-| `CORE-1A.5` | `P0-M1` | `CORE` | `CORE-1A` | Admin write/delete for config/env files. | `CORE-1A.3` | `AC-005` / `TEST-005` | `not_run` | `landed` | `internal/store`, `internal/handler` | Run gate in an environment with Go installed. |
-| `OPS-1A.1` | `P0-M2` | `OPS` | `OPS-1A` | API key auth for admin and secret metadata endpoints. | `CORE-1A.4` | `AC-006` / `TEST-006` | `not_run` | `landed` | `internal/handler`, `internal/config` | Run gate in an environment with Go installed. |
-| `OPS-1A.2` | `P0-M2` | `OPS` | `OPS-1A` | Degraded state, last-known-good snapshot, force reload. | `CORE-1A.3` | `AC-007` / `TEST-007` | `not_run` | `landed` | `internal/store`, `internal/handler` | Run gate in an environment with Go installed. |
-| `OPS-1A.3` | `P0-M2` | `OPS` | `OPS-1A` | Dirty `configs/` checkout reload protection. | `CORE-1A.3` | `AC-008` / `TEST-008` | `not_run` | `landed` | `internal/gitops` | Run gate in an environment with Go installed. |
-| `DOC-1A.1` | `P0-M3` | `DOC` | `DOC-1A` | Add boilerplate docs and move PRD/HLD to numbered canonical files. |  | `AC-014` | `not_run` | `landed` | `docs/`, `AGENTS.md` | Go test blocked locally because `go` is not installed. |
-| `DOC-1A.2` | `P0-M3` | `DOC` | `DOC-1A` | Add PR template and doc freshness soft-check for Go source paths. | `DOC-1A.1` | `AC-015` | `passing` | `landed` | `.github/pull_request_template.md`, `.github/workflows/doc-freshness.yml` | YAML parsed locally with Ruby. |
+| `CORE-1A.1` | `P0-M1` | `CORE` | `CORE-1A` | Runtime config load and validation. |  | `AC-001` / `TEST-001` | `passing` | `accepted` | `internal/config`, PR #10 CI |  |
+| `CORE-1A.2` | `P0-M1` | `CORE` | `CORE-1A` | YAML parsing for config/env/secrets metadata. | `CORE-1A.1` | `AC-002` / `TEST-002` | `passing` | `accepted` | `internal/parser`, PR #10 CI |  |
+| `CORE-1A.3` | `P0-M1` | `CORE` | `CORE-1A` | Git-backed store with atomic snapshot reload. | `CORE-1A.2` | `AC-003` / `TEST-003` | `passing` | `accepted` | `internal/store`, `internal/gitops`, PR #10 CI |  |
+| `CORE-1A.4` | `P0-M1` | `CORE` | `CORE-1A` | Read/discovery APIs from memory. | `CORE-1A.3` | `AC-004` / `TEST-004` | `passing` | `accepted` | `internal/handler`, PR #10 CI |  |
+| `CORE-1A.5` | `P0-M1` | `CORE` | `CORE-1A` | Admin write/delete for config/env files. | `CORE-1A.3` | `AC-005` / `TEST-005` | `passing` | `accepted` | `internal/store`, `internal/handler`, PR #10 CI |  |
+| `OPS-1A.1` | `P0-M2` | `OPS` | `OPS-1A` | API key auth for admin and secret metadata endpoints. | `CORE-1A.4` | `AC-006` / `TEST-006` | `passing` | `accepted` | `internal/handler`, `internal/config`, PR #10 CI |  |
+| `OPS-1A.2` | `P0-M2` | `OPS` | `OPS-1A` | Degraded state, last-known-good snapshot, force reload. | `CORE-1A.3` | `AC-007` / `TEST-007` | `passing` | `accepted` | `internal/store`, `internal/handler`, PR #10 CI |  |
+| `OPS-1A.3` | `P0-M2` | `OPS` | `OPS-1A` | Dirty `configs/` checkout reload protection. | `CORE-1A.3` | `AC-008` / `TEST-008` | `passing` | `accepted` | `internal/gitops`, PR #10 CI |  |
+| `OPS-1A.4` | `P0-M2` | `OPS` | `OPS-1A` | Reject unsupported secret payloads in Phase-1 admin writes. | `CORE-1A.5` | `AC-009` / `TEST-009` | `passing` | `accepted` | `internal/handler`, PR #10 CI |  |
+| `DOC-1A.1` | `P0-M3` | `DOC` | `DOC-1A` | Add boilerplate docs and move PRD/HLD to numbered canonical files. |  | `AC-014` | `passing` | `accepted` | `docs/`, `AGENTS.md`, PR #10 |  |
+| `DOC-1A.2` | `P0-M3` | `DOC` | `DOC-1A` | Add PR template and doc freshness soft-check for Go source paths. | `DOC-1A.1` | `AC-015` | `passing` | `accepted` | `.github/pull_request_template.md`, `.github/workflows/doc-freshness.yml`, PR #10 |  |
 | `SECRET-1A.1` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement secret write acceptance and explicit value handling. | `OPS-1A.1` | `AC-020` | `defined` | `planned` | ADR-004 | Define implementation slices. |
 | `AGENT-1A.1` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement Config Agent polling/apply/restart path. | `SECRET-1A.1` | `AC-030` | `defined` | `planned` | ADR-001, ADR-002 | Define implementation slices. |
 | `EXT-1A.1` | `P1-M3` | `EXT` | `EXT-1A` | Implement watch/history/revert/inheritance/metrics backlog. | `CORE-1A` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` | Prioritize backlog. |

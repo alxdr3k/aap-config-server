@@ -14,16 +14,16 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 
 | Area                                               | Status      |
 | -------------------------------------------------- | ----------- |
-| Git-backed config read (`GET /config`, `env_vars`) | Implemented |
-| Service discovery (`orgs` → `projects` → `services`) | Implemented |
-| Admin write (`POST /admin/changes` config + env_vars) | Implemented |
-| Admin delete (`DELETE /admin/changes`)             | Implemented |
-| Admin reload (`POST /admin/reload`)                | Implemented |
+| Git-backed config/env read (`GET .../config`, `GET .../env_vars`) | Implemented |
+| Service discovery (`GET /api/v1/orgs` → `projects` → `services`) | Implemented |
+| Admin write (`POST /api/v1/admin/changes` config + env_vars) | Implemented |
+| Admin delete (`DELETE /api/v1/admin/changes`)             | Implemented |
+| Admin reload (`POST /api/v1/admin/reload`)                | Implemented |
 | API key auth (Authorization: Bearer, X-API-Key)    | Implemented |
 | Last-known-good snapshot on parse error            | Implemented |
 | `committed_but_reload_failed` post-commit signal   | Implemented |
 | `deleted_but_reload_failed` post-delete signal     | Implemented |
-| Degraded state exposed via `/readyz` and `/status` | Implemented |
+| Degraded state exposed via `/readyz` and `/api/v1/status` | Implemented |
 | Secret metadata read (`GET .../secrets`)           | Implemented (auth-gated) |
 | Secret **write** via `secrets` field on POST       | **Not implemented** — rejected with 400 |
 | SealedSecret generation / kubeseal integration     | Not implemented |

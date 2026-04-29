@@ -13,12 +13,12 @@ from an atomically swapped in-memory snapshot.
 
 ## Current roadmap position
 
-- current milestone: `P0-M1` Phase-1 Config Server MVP
-- active tracks: `CORE`, `OPS`, `DOC`
-- active phase: `DOC-1A` documentation boilerplate migration
-- active slice: `DOC-1A.2`
-- last accepted gate: none recorded in this migrated ledger
-- next gate: `make test` in an environment with Go installed
+- current milestone: `P0-M3` documentation boilerplate migration accepted
+- active tracks: none; follow-up planning is focused on open questions
+- active phase: follow-up planning from open questions
+- active slice: none
+- last accepted gate: `AC-014` / `AC-015` via PR #10
+- next gate: resolve `Q-001`, `Q-002`, and `Q-003`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
 
 ## Implemented
@@ -48,9 +48,9 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Finish documentation migration to the numbered boilerplate structure.
-2. Keep implemented behavior discoverable under `docs/current/`.
-3. Normalize Phase roadmap/status into `docs/04_IMPLEMENTATION_PLAN.md`.
+1. Resolve requirement ID strategy (`Q-001`).
+2. Decide whether to supersede ADR-003 or implement service-level mutex (`Q-002`).
+3. Decide deployment manifest ownership (`Q-003`).
 
 ## Current risks / unknowns
 
@@ -62,7 +62,8 @@ from an atomically swapped in-memory snapshot.
 
 - Commands are listed in `docs/current/TESTING.md`.
 - Acceptance gates are listed in `docs/06_ACCEPTANCE_TESTS.md`.
-- Local `make test` is currently blocked in this environment because `go` is not installed.
+- PR #10 GitHub Actions `CI` and `Doc Freshness` passed before merge.
+- Local `make test` is blocked in this workspace because `go` is not installed.
 
 ## Needs audit
 

@@ -19,16 +19,16 @@ Then  <기대 결과>
 
 | ID | Requirement | Scenario | Verification | Status |
 |---|---|---|---|---|
-| `AC-001` | `FR-1`, `FR-16` | Given server config is missing required fields, When validation runs, Then startup fails closed. | `TEST-001` | `defined` |
-| `AC-002` | `FR-1`, `FR-3`, `FR-12` | Given valid/invalid YAML files, When parsers run, Then valid metadata loads and invalid YAML/required-field gaps fail. | `TEST-002` | `defined` |
-| `AC-003` | `FR-1` | Given a config repo, When the store loads or refreshes, Then it serves a complete atomic snapshot and never swaps on parse failure. | `TEST-003` | `defined` |
-| `AC-004` | `FR-2`, `FR-3`, `FR-11`, `FR-12`, `FR-15` | Given a loaded snapshot, When read/discovery/status endpoints are called, Then responses match the current in-memory view. | `TEST-004` | `defined` |
-| `AC-005` | `FR-4`, `FR-5` | Given an authenticated admin write/delete, When the request is valid, Then Git files are committed/pushed and reload outcome is explicit. | `TEST-005` | `defined` |
-| `AC-006` | `FR-16`, `FR-17` | Given protected endpoints, When credentials are missing or invalid, Then the server returns 401; valid Bearer or `X-API-Key` succeeds. | `TEST-006` | `defined` |
-| `AC-007` | `FR-1`, `FR-15` | Given a failed reload after a good snapshot, When readiness/status are queried, Then the server reports degraded while serving last-known-good data. | `TEST-007` | `defined` |
-| `AC-008` | `FR-1` | Given the local `configs/` worktree is dirty outside server writes, When snapshot reload runs, Then reload fails closed. | `TEST-008` | `defined` |
-| `AC-009` | `FR-4` | Given a Phase-1 admin write body includes `secrets`, When decoded, Then the request fails with 400 instead of silently dropping data. | `TEST-009` | `defined` |
-| `AC-014` | Documentation migration | Given a new session, When it follows `AGENTS.md`, Then current status, code map, testing, runtime, and roadmap are discoverable from canonical docs. | manual link check + `make test` | `defined` |
+| `AC-001` | `FR-1`, `FR-16` | Given server config is missing required fields, When validation runs, Then startup fails closed. | `TEST-001` | `passing` |
+| `AC-002` | `FR-1`, `FR-3`, `FR-12` | Given valid/invalid YAML files, When parsers run, Then valid metadata loads and invalid YAML/required-field gaps fail. | `TEST-002` | `passing` |
+| `AC-003` | `FR-1` | Given a config repo, When the store loads or refreshes, Then it serves a complete atomic snapshot and never swaps on parse failure. | `TEST-003` | `passing` |
+| `AC-004` | `FR-2`, `FR-3`, `FR-11`, `FR-12`, `FR-15` | Given a loaded snapshot, When read/discovery/status endpoints are called, Then responses match the current in-memory view. | `TEST-004` | `passing` |
+| `AC-005` | `FR-4`, `FR-5` | Given an authenticated admin write/delete, When the request is valid, Then Git files are committed/pushed and reload outcome is explicit. | `TEST-005` | `passing` |
+| `AC-006` | `FR-16`, `FR-17` | Given protected endpoints, When credentials are missing or invalid, Then the server returns 401; valid Bearer or `X-API-Key` succeeds. | `TEST-006` | `passing` |
+| `AC-007` | `FR-1`, `FR-15` | Given a failed reload after a good snapshot, When readiness/status are queried, Then the server reports degraded while serving last-known-good data. | `TEST-007` | `passing` |
+| `AC-008` | `FR-1` | Given the local `configs/` worktree is dirty outside server writes, When snapshot reload runs, Then reload fails closed. | `TEST-008` | `passing` |
+| `AC-009` | `FR-4` | Given a Phase-1 admin write body includes `secrets`, When decoded, Then the request fails with 400 instead of silently dropping data. | `TEST-009` | `passing` |
+| `AC-014` | Documentation migration | Given a new session, When it follows `AGENTS.md`, Then current status, code map, testing, runtime, and roadmap are discoverable from canonical docs. | manual link check + PR #10 CI | `passing` |
 | `AC-015` | Documentation workflow | Given a PR changes Go source/runtime paths, When doc freshness runs, Then it comments with matching doc update candidates without blocking merge. | workflow YAML parse + pattern review | `passing` |
 | `AC-020` | `FR-7`, `FR-17` | Secret write/resolve handles SealedSecret generation, K8s apply, no-store response, and audit logging. | future tests | `defined` |
 | `AC-030` | `FR-9` | Config Agent detects config changes, updates K8s resources, and triggers controlled rollout. | future tests | `defined` |
