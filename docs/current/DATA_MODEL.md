@@ -59,6 +59,8 @@ snapshot.
 - SealedSecret generation sorts data keys and emits stable YAML field order;
   path identity and K8s target segments are validated before plaintext values
   are passed to the injected encryptor.
+- The sealing scope is passed into the encryptor request and also emitted in
+  manifest annotations so ciphertext and metadata stay aligned.
 - Generated SealedSecret manifest paths use
   `sealed-secrets/{namespace}/{name}.yaml` under the service directory to avoid
   cross-namespace filename collisions.

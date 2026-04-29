@@ -30,6 +30,7 @@ type EncryptRequest struct {
 	Namespace string
 	Name      string
 	Key       string
+	Scope     string
 	Value     Value
 }
 
@@ -97,6 +98,7 @@ func (s *DeterministicSealer) Seal(ctx context.Context, req SealRequest) (Sealed
 			Namespace: req.Namespace,
 			Name:      req.Name,
 			Key:       key,
+			Scope:     s.scope,
 			Value:     value,
 		})
 		if err != nil {

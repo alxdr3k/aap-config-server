@@ -11,12 +11,14 @@ import (
 )
 
 type fakeEncryptor struct {
-	keys []string
-	err  error
+	keys   []string
+	scopes []string
+	err    error
 }
 
 func (f *fakeEncryptor) Encrypt(_ context.Context, req secret.EncryptRequest) (string, error) {
 	f.keys = append(f.keys, req.Key)
+	f.scopes = append(f.scopes, req.Scope)
 	if f.err != nil {
 		return "", f.err
 	}
@@ -45,6 +47,12 @@ func TestDeterministicSealer_SealProducesStableYAML(t *testing.T) {
 	}
 	if !reflect.DeepEqual(enc.keys, []string{"database-url", "master-key"}) {
 		t.Fatalf("encrypt order should be sorted, got %v", enc.keys)
+	}
+	if !reflect.DeepEqual(enc.scopes, []string{
+		secret.SealedSecretScopeNamespaceWide,
+		secret.SealedSecretScopeNamespaceWide,
+	}) {
+		t.Fatalf("encrypt scopes should match sealer scope, got %v", enc.scopes)
 	}
 
 	got := string(manifest.YAML)
