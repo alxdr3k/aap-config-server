@@ -39,13 +39,23 @@ type fakeStore struct {
 }
 
 type fakeVolumeReader struct {
-	values   map[secret.Reference]string
-	requests []secret.Reference
-	err      error
+	values          map[secret.Reference]string
+	requests        []secret.Reference
+	refreshRequests []secret.Reference
+	err             error
 }
 
 func (f *fakeVolumeReader) Read(_ context.Context, ref secret.Reference) (secret.Value, error) {
 	f.requests = append(f.requests, ref)
+	return f.value(ref)
+}
+
+func (f *fakeVolumeReader) Refresh(_ context.Context, ref secret.Reference) (secret.Value, error) {
+	f.refreshRequests = append(f.refreshRequests, ref)
+	return f.value(ref)
+}
+
+func (f *fakeVolumeReader) value(ref secret.Reference) (secret.Value, error) {
 	if f.err != nil {
 		return secret.Value{}, f.err
 	}
@@ -429,8 +439,11 @@ func TestGetEnvVars_ResolveSecrets(t *testing.T) {
 	if _, ok := envVars["secret_refs"]; ok {
 		t.Fatal("resolve_secrets=true response must not include secret_refs")
 	}
-	if len(reader.requests) != 1 || reader.requests[0] != ref {
-		t.Fatalf("reader requests: got %+v", reader.requests)
+	if len(reader.refreshRequests) != 1 || reader.refreshRequests[0] != ref {
+		t.Fatalf("reader refresh requests: got %+v", reader.refreshRequests)
+	}
+	if len(reader.requests) != 0 {
+		t.Fatalf("resolve should force refresh instead of cached read, got reads %+v", reader.requests)
 	}
 }
 

@@ -56,6 +56,7 @@ func (v *Value) Destroy() {
 // VolumeReader reads plaintext values from the K8s Secret volume mount.
 type VolumeReader interface {
 	Read(ctx context.Context, ref Reference) (Value, error)
+	Refresh(ctx context.Context, ref Reference) (Value, error)
 }
 
 // VolumeOp identifies the kind of mounted secret file change.

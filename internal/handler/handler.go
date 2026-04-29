@@ -328,7 +328,7 @@ func (h *Handler) resolveEnvSecrets(ctx context.Context, d *store.ServiceData) (
 			return nil, apperror.New(apperror.CodeInternal,
 				"env var secret_ref references unknown secret metadata id")
 		}
-		value, err := h.secretDeps.VolumeReader.Read(ctx, secret.Reference{
+		value, err := h.secretDeps.VolumeReader.Refresh(ctx, secret.Reference{
 			ID:        entry.ID,
 			Namespace: entry.K8sSecret.Namespace,
 			Name:      entry.K8sSecret.Name,
