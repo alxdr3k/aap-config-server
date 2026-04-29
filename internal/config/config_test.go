@@ -139,14 +139,18 @@ func TestValidate_AppliesSecretRuntimeDefaults(t *testing.T) {
 	if c.K8sApplyTimeout != 10*time.Second {
 		t.Errorf("K8sApplyTimeout default: got %s", c.K8sApplyTimeout)
 	}
+	if !c.SecretAuditEnabled() {
+		t.Error("SecretAuditLogEnabled default should be true")
+	}
 }
 
 func TestValidate_PreservesExplicitSecretAuditDisabled(t *testing.T) {
+	disabled := false
 	c := &config.ServerConfig{
 		GitURL:                     "git@host:repo.git",
 		GitPollInterval:            30 * time.Second,
 		APIKey:                     "k",
-		SecretAuditLogEnabled:      false,
+		SecretAuditLogEnabled:      &disabled,
 		SecretMountPath:            "/custom-secrets",
 		SealedSecretScope:          "namespace-wide",
 		SealedSecretControllerName: "sealed-secrets-controller",
@@ -154,7 +158,7 @@ func TestValidate_PreservesExplicitSecretAuditDisabled(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	if c.SecretAuditLogEnabled {
+	if c.SecretAuditEnabled() {
 		t.Fatal("explicit audit disabled setting should be preserved")
 	}
 	if c.K8sApplyTimeout != 10*time.Second {

@@ -41,7 +41,7 @@ type ServerConfig struct {
 	SealedSecretControllerName      string
 	SealedSecretScope               string
 	K8sApplyTimeout                 time.Duration
-	SecretAuditLogEnabled           bool
+	SecretAuditLogEnabled           *bool
 	ConsoleAPIURL                   string
 	LogLevel                        string
 
@@ -67,7 +67,8 @@ func Load() (*ServerConfig, error) {
 	flag.StringVar(&cfg.SealedSecretControllerName, "sealed-secret-controller-name", env("SEALED_SECRET_CONTROLLER_NAME", defaultSealedSecretControllerName), "Name of the SealedSecret controller service")
 	flag.StringVar(&cfg.SealedSecretScope, "sealed-secret-scope", env("SEALED_SECRET_SCOPE", defaultSealedSecretScope), "SealedSecret scope: strict, namespace-wide, or cluster-wide")
 	flag.DurationVar(&cfg.K8sApplyTimeout, "k8s-apply-timeout", envDuration("K8S_APPLY_TIMEOUT", defaultK8sApplyTimeout), "Timeout for future Kubernetes apply calls")
-	flag.BoolVar(&cfg.SecretAuditLogEnabled, "secret-audit-log-enabled", envBool("SECRET_AUDIT_LOG_ENABLED", defaultSecretAuditLogEnabled), "Enable audit logs for future secret reads/writes")
+	secretAuditLogEnabled := envBool("SECRET_AUDIT_LOG_ENABLED", defaultSecretAuditLogEnabled)
+	flag.BoolVar(&secretAuditLogEnabled, "secret-audit-log-enabled", secretAuditLogEnabled, "Enable audit logs for future secret reads/writes")
 	flag.StringVar(&cfg.ConsoleAPIURL, "console-api-url", env("CONSOLE_API_URL", ""), "AAP Console API URL")
 	flag.StringVar(&cfg.LogLevel, "log-level", env("LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 
@@ -77,6 +78,7 @@ func Load() (*ServerConfig, error) {
 	cfg.AllowUnauthenticatedDev = envBool("ALLOW_UNAUTHENTICATED_DEV", false)
 
 	flag.Parse()
+	cfg.SecretAuditLogEnabled = &secretAuditLogEnabled
 	cfg.k8sApplyTimeoutExplicit = os.Getenv("K8S_APPLY_TIMEOUT") != ""
 	flag.Visit(func(f *flag.Flag) {
 		if f.Name == "k8s-apply-timeout" {
@@ -135,6 +137,13 @@ func (c *ServerConfig) Validate() error {
 	return nil
 }
 
+func (c *ServerConfig) SecretAuditEnabled() bool {
+	if c.SecretAuditLogEnabled == nil {
+		return defaultSecretAuditLogEnabled
+	}
+	return *c.SecretAuditLogEnabled
+}
+
 func (c *ServerConfig) applyDefaults() {
 	if c.SecretMountPath == "" {
 		c.SecretMountPath = defaultSecretMountPath
@@ -150,6 +159,10 @@ func (c *ServerConfig) applyDefaults() {
 	}
 	if c.K8sApplyTimeout == 0 && !c.k8sApplyTimeoutExplicit {
 		c.K8sApplyTimeout = defaultK8sApplyTimeout
+	}
+	if c.SecretAuditLogEnabled == nil {
+		enabled := defaultSecretAuditLogEnabled
+		c.SecretAuditLogEnabled = &enabled
 	}
 }
 

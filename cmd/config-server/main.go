@@ -35,7 +35,7 @@ func main() {
 		SealedSecretControllerName:      cfg.SealedSecretControllerName,
 		SealedSecretScope:               cfg.SealedSecretScope,
 		K8sApplyTimeout:                 cfg.K8sApplyTimeout,
-		AuditLogEnabled:                 cfg.SecretAuditLogEnabled,
+		AuditLogEnabled:                 cfg.SecretAuditEnabled(),
 	}
 	slog.Info("secret runtime boundary configured",
 		"mount_path", secretCfg.MountPath,
