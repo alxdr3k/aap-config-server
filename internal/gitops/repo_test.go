@@ -188,8 +188,8 @@ func TestWalkConfigs(t *testing.T) {
 	}
 
 	files := map[string][]byte{
-		"configs/orgs/org1/projects/proj/services/svc/config.yaml":    []byte("a"),
-		"configs/orgs/org1/projects/proj/services/svc/env_vars.yaml":  []byte("b"),
+		"configs/orgs/org1/projects/proj/services/svc/config.yaml":   []byte("a"),
+		"configs/orgs/org1/projects/proj/services/svc/env_vars.yaml": []byte("b"),
 	}
 	if _, err := repo.CommitAndPush(ctx, "add files", files); err != nil {
 		t.Fatalf("CommitAndPush: %v", err)
@@ -354,7 +354,7 @@ func TestSnapshot_RejectsDirtyConfigsWorktree(t *testing.T) {
 	if err := os.WriteFile(dirty, []byte("stray"), 0o644); err != nil {
 		t.Fatalf("write stray: %v", err)
 	}
-	defer os.Remove(dirty)
+	t.Cleanup(func() { _ = os.Remove(dirty) })
 
 	if _, err := repo.Snapshot(func(path string, data []byte) error { return nil }); err == nil {
 		t.Error("Snapshot should fail when configs/ worktree has an untracked file")
@@ -380,7 +380,7 @@ func TestSnapshot_IgnoresDirtyOutsideConfigs(t *testing.T) {
 	if err := os.WriteFile(stray, []byte("anything"), 0o644); err != nil {
 		t.Fatalf("write stray: %v", err)
 	}
-	defer os.Remove(stray)
+	t.Cleanup(func() { _ = os.Remove(stray) })
 
 	if _, err := repo.Snapshot(func(path string, data []byte) error { return nil }); err != nil {
 		t.Errorf("Snapshot with dirty non-configs file should pass, got %v", err)

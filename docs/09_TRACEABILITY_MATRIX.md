@@ -19,11 +19,17 @@ Question ↔ Decision ↔ Requirement ↔ Gate/Test ↔ Milestone/Track/Phase/Sl
 | `TRACE-004` |  |  | `FR-15` | `AC-007` / `TEST-007` | `P0-M2` | `OPS` | `OPS-1A` | `OPS-1A.2` | Degraded readiness/status and force reload. |
 | `TRACE-005` |  |  | `FR-16`, `FR-17` | `AC-006` / `TEST-006` | `P0-M2` | `OPS` | `OPS-1A` | `OPS-1A.1` | API key auth boundary. |
 | `TRACE-006` | `Q-002` | `ADR-005` | `FR-4` | `AC-005` / `TEST-005` | `P0-M1` | `CORE` | `CORE-1A` | `CORE-1A.5` | Phase-1 accepts global Git/store serialization; ADR-003 remains target design. |
-| `TRACE-007` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.1` | Planned SealedSecret/resolve path. |
-| `TRACE-008` |  | `ADR-001`, `ADR-002` | `FR-9` | `AC-030` | `P1-M2` | `AGENT` | `AGENT-1A` | `AGENT-1A.1` | Planned Config Agent. |
+| `TRACE-007` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` / `TEST-020` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.1`~`SECRET-1A.7` | Leaf-planned SealedSecret/write/resolve/security path. |
+| `TRACE-008` |  | `ADR-001`, `ADR-002` | `FR-9` | `AC-030` / `TEST-030` | `P1-M2` | `AGENT` | `AGENT-1A` | `AGENT-1A.1`~`AGENT-1A.8` | Leaf-planned Config Agent rollout path. |
 | `TRACE-009` | `Q-001` | `DEC-001`, `DEC-002` | Documentation migration | `AC-014` | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.1` | Boilerplate docs adopted; `FR-*` remains canonical. |
 | `TRACE-010` |  | `DEC-001` | Documentation workflow | `AC-015` | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.2` | PR template and doc freshness soft-check. |
 | `TRACE-011` | `Q-003` | `DEC-003` | Deployment ownership | operations/runbook docs | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.1` | Repo owns binary/image/runtime docs; Helm/K8s manifests remain external. |
+| `TRACE-012` |  |  | `FR-8` | `AC-021` / `TEST-021` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | `REGISTRY-1A.1`~`REGISTRY-1A.3` | Leaf-planned Console App Registry bootstrap and webhook cache. |
+| `TRACE-013` |  |  | `FR-6` | `AC-040` / `TEST-040` | `P1-M3` | `EXT` | `EXT-1A` | `EXT-1A.1`~`EXT-1A.3` | Leaf-planned config/env watch APIs. |
+| `TRACE-014` |  |  | `FR-13`, `FR-14` | `AC-040` / `TEST-040` | `P1-M3` | `EXT` | `EXT-1B` | `EXT-1B.1`~`EXT-1B.5` | Leaf-planned history, versioned reads, and revert path. |
+| `TRACE-015` |  |  | `FR-10` | `AC-040` / `TEST-040` | `P1-M3` | `EXT` | `EXT-1C` | `EXT-1C.1`~`EXT-1C.4` | Leaf-planned inheritance and merge semantics. |
+| `TRACE-016` |  |  | Operational extensions | `AC-041` / `TEST-041` | `P1-M3` | `EXT` | `EXT-1D` | `EXT-1D.1`~`EXT-1D.5` | Leaf-planned ETag, gzip, batch, metrics, and Git webhook work. |
+| `TRACE-017` | `Q-003` | `DEC-003` | Production hardening | `AC-042` / `TEST-042` | `P1-M3` | `HARDEN` | `HARDEN-1A` | `HARDEN-1A.1`~`HARDEN-1A.5` | Leaf-planned schema, rate, integration/load, and deployment handoff work. |
 
 ## Invariants
 
@@ -34,4 +40,4 @@ Question ↔ Decision ↔ Requirement ↔ Gate/Test ↔ Milestone/Track/Phase/Sl
 
 ## Gaps
 
-- Some target PRD/HLD features have gates but no code/tests yet.
+- Some target PRD/HLD features have leaf roadmap slices and future gates but no code/tests yet.

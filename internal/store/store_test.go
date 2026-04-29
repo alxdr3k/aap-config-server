@@ -493,9 +493,9 @@ type pullErrRepo struct {
 }
 
 func (r *pullErrRepo) Pull(ctx context.Context) (string, bool, error) {
-	r.fakeRepo.mu.Lock()
-	r.fakeRepo.pullCalls++
-	r.fakeRepo.mu.Unlock()
+	r.mu.Lock()
+	r.pullCalls++
+	r.mu.Unlock()
 	return "", false, r.pullErr
 }
 

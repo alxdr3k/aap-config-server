@@ -12,7 +12,7 @@ make build
 make docker-build
 ```
 
-- Prerequisites: Go 1.24+, access to the config Git repository, and required runtime env vars.
+- Prerequisites: Go 1.26+, access to the config Git repository, and required runtime env vars.
 - Rollback method: roll back the deployed image or Git config repo commit
   through the owning deployment system.
 - Deployment manifests: Helm/Kubernetes manifests remain outside this repo by
