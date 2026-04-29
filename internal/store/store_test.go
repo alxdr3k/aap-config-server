@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aap/config-server/internal/apperror"
+	"github.com/aap/config-server/internal/gitops"
 	"github.com/aap/config-server/internal/secret"
 	"github.com/aap/config-server/internal/store"
 )
@@ -72,6 +74,24 @@ func (f *fakeRepo) Pull(_ context.Context) (string, bool, error) {
 }
 
 func (f *fakeRepo) CommitAndPush(_ context.Context, _ string, files map[string][]byte) (string, error) {
+	return f.CommitAndPushFunc(context.Background(), "", func(gitops.FileReader) (map[string][]byte, error) {
+		return files, nil
+	})
+}
+
+func (f *fakeRepo) CommitAndPushFunc(_ context.Context, _ string, build gitops.CommitFileBuilder) (string, error) {
+	f.mu.Lock()
+	snap := make(map[string][]byte, len(f.files))
+	for k, v := range f.files {
+		snap[k] = append([]byte(nil), v...)
+	}
+	f.mu.Unlock()
+
+	files, err := build(mapFileReader{files: snap})
+	if err != nil {
+		return "", err
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for k, v := range files {
@@ -85,7 +105,11 @@ func (f *fakeRepo) DeleteAndPush(_ context.Context, _ string, paths []string) (s
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, p := range paths {
-		delete(f.files, p)
+		for path := range f.files {
+			if path == p || strings.HasPrefix(path, p+"/") {
+				delete(f.files, path)
+			}
+		}
 	}
 	f.commitHash = "delcommit"
 	return f.commitHash, nil
@@ -96,9 +120,21 @@ func (f *fakeRepo) ReadFile(path string) ([]byte, error) {
 	defer f.mu.Unlock()
 	d, ok := f.files[path]
 	if !ok {
-		return nil, errors.New("file not found: " + path)
+		return nil, fmt.Errorf("file not found: %w", os.ErrNotExist)
 	}
 	return d, nil
+}
+
+type mapFileReader struct {
+	files map[string][]byte
+}
+
+func (r mapFileReader) ReadFile(path string) ([]byte, error) {
+	data, ok := r.files[path]
+	if !ok {
+		return nil, fmt.Errorf("file not found: %w", os.ErrNotExist)
+	}
+	return append([]byte(nil), data...), nil
 }
 
 // WalkConfigs copies the file map under the lock, then iterates the copy so
@@ -173,6 +209,20 @@ env_vars:
   secret_refs:
     API_KEY: "my-api-key"
 `)
+}
+
+func seedSecretFiles(f *fakeRepo, org, project, svc string) {
+	base := "configs/orgs/" + org + "/projects/" + project + "/services/" + svc
+	f.files[base+"/secrets.yaml"] = []byte(`version: "1"
+secrets:
+  - id: existing-api-key
+    description: ""
+    k8s_secret:
+      name: remote-secrets
+      namespace: ai-platform
+      key: api-key
+`)
+	f.files[base+"/sealed-secrets/ai-platform/remote-secrets.yaml"] = []byte("sealed-remote-secrets")
 }
 
 func TestStore_GetConfig_NotFound(t *testing.T) {
@@ -368,6 +418,52 @@ func TestStore_ApplyChanges_WritesAndAppliesSecrets(t *testing.T) {
 	}
 }
 
+func TestStore_ApplyChanges_MergesSecretsFromCurrentRepo(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "svc")
+	sealer := &fakeSealer{}
+	applier := &fakeApplier{}
+	s := store.New(repo, store.WithSecretDependencies(secret.Dependencies{
+		Sealer:  sealer,
+		Applier: applier,
+	}))
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	// Simulate the local checkout being updated after the last in-memory
+	// reload. Secret metadata must merge from the post-pull checkout used for
+	// the commit rather than from the stale snapshot.
+	seedSecretFiles(repo, "myorg", "proj", "svc")
+
+	_, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+		Org:     "myorg",
+		Project: "proj",
+		Service: "svc",
+		Secrets: map[string]store.SecretWrite{
+			"litellm-secrets": {
+				Namespace: "ai-platform",
+				Data: map[string]secret.Value{
+					"master-key": secret.NewValue([]byte("top-secret")),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyChanges secrets: %v", err)
+	}
+
+	secretsPath := "configs/orgs/myorg/projects/proj/services/svc/secrets.yaml"
+	secretsYAML := string(repo.files[secretsPath])
+	if !strings.Contains(secretsYAML, "existing-api-key") {
+		t.Fatalf("existing repo secret metadata was lost:\n%s", secretsYAML)
+	}
+	if !strings.Contains(secretsYAML, "master-key") {
+		t.Fatalf("new secret metadata was not written:\n%s", secretsYAML)
+	}
+}
+
 func TestStore_ApplyChanges_SecretsRequireAdapters(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
@@ -470,6 +566,7 @@ func TestStore_DeleteChanges(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
 	seedFakeRepo(repo, "myorg", "proj", "svc")
+	seedSecretFiles(repo, "myorg", "proj", "svc")
 
 	s := store.New(repo)
 	if err := s.LoadFromRepo(ctx); err != nil {
@@ -496,11 +593,19 @@ func TestStore_DeleteChanges(t *testing.T) {
 	if result.ReloadFailed {
 		t.Errorf("ReloadFailed should be false on success, got error: %s", result.ReloadError)
 	}
+	if !strings.Contains(fmt.Sprint(result.DeletedFiles), "sealed-secrets/") {
+		t.Fatalf("deleted files should include sealed-secret manifests, got %v", result.DeletedFiles)
+	}
 
 	// Service should be gone from memory (full reload sees deleted files).
 	_, err = s.GetConfig(ctx, "myorg", "proj", "svc")
 	if err == nil {
 		t.Error("expected not-found after delete")
+	}
+	for path := range repo.files {
+		if strings.Contains(path, "services/svc/") {
+			t.Fatalf("service file remained after delete: %s", path)
+		}
 	}
 }
 

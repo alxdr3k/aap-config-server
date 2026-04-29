@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -305,8 +306,8 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 	svcPath := ServicePath(req.Org, req.Project, req.Service)
 	now := time.Now().UTC()
 
-	files := map[string][]byte{}
-	var writtenFiles []string
+	baseFiles := map[string][]byte{}
+	var baseWrittenFiles []string
 	var sealedManifests []secret.SealedManifest
 
 	if req.Config != nil {
@@ -325,8 +326,8 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 			return nil, apperror.Wrap(apperror.CodeInternal, "marshal config.yaml", err)
 		}
 		path := filepath.Join(svcPath, "config.yaml")
-		files[path] = data
-		writtenFiles = append(writtenFiles, "config.yaml")
+		baseFiles[path] = data
+		baseWrittenFiles = append(baseWrittenFiles, "config.yaml")
 	}
 
 	if req.EnvVars != nil {
@@ -345,34 +346,8 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 			return nil, apperror.Wrap(apperror.CodeInternal, "marshal env_vars.yaml", err)
 		}
 		path := filepath.Join(svcPath, "env_vars.yaml")
-		files[path] = data
-		writtenFiles = append(writtenFiles, "env_vars.yaml")
-	}
-
-	if hasSecrets {
-		sec, manifests, err := s.buildSecretArtifacts(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		data, err := yaml.Marshal(sec)
-		if err != nil {
-			return nil, apperror.Wrap(apperror.CodeInternal, "marshal secrets.yaml", err)
-		}
-		path := filepath.Join(svcPath, "secrets.yaml")
-		files[path] = data
-		writtenFiles = append(writtenFiles, "secrets.yaml")
-
-		for _, manifest := range manifests {
-			manifestPath := filepath.ToSlash(manifest.Path)
-			rel, ok := serviceRelativePath(svcPath, manifestPath)
-			if !ok {
-				return nil, apperror.New(apperror.CodeInternal,
-					fmt.Sprintf("sealed manifest path %q is outside service path", manifest.Path))
-			}
-			files[filepath.FromSlash(manifestPath)] = manifest.YAML
-			writtenFiles = append(writtenFiles, rel)
-		}
-		sealedManifests = manifests
+		baseFiles[path] = data
+		baseWrittenFiles = append(baseWrittenFiles, "env_vars.yaml")
 	}
 
 	msg := req.Message
@@ -380,9 +355,56 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 		msg = fmt.Sprintf("update config for %s/%s/%s", req.Org, req.Project, req.Service)
 	}
 
-	hash, err := s.repo.CommitAndPush(ctx, msg, files)
-	if err != nil {
-		return nil, err
+	var writtenFiles []string
+	hash := ""
+	var commitErr error
+	if hasSecrets {
+		sealedManifests, err = s.buildSealedManifests(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		hash, commitErr = s.repo.CommitAndPushFunc(ctx, msg, func(reader gitops.FileReader) (map[string][]byte, error) {
+			files := make(map[string][]byte, len(baseFiles)+1+len(sealedManifests))
+			for path, data := range baseFiles {
+				files[path] = data
+			}
+			nextWrittenFiles := append([]string(nil), baseWrittenFiles...)
+
+			existingSecrets, err := readExistingSecrets(reader, filepath.Join(svcPath, "secrets.yaml"))
+			if err != nil {
+				return nil, err
+			}
+			sec := &parser.SecretsConfig{
+				Version: "1",
+				Secrets: mergeSecretEntries(existingSecrets, req.Secrets),
+			}
+			data, err := yaml.Marshal(sec)
+			if err != nil {
+				return nil, apperror.Wrap(apperror.CodeInternal, "marshal secrets.yaml", err)
+			}
+			path := filepath.Join(svcPath, "secrets.yaml")
+			files[path] = data
+			nextWrittenFiles = append(nextWrittenFiles, "secrets.yaml")
+
+			for _, manifest := range sealedManifests {
+				manifestPath := filepath.ToSlash(manifest.Path)
+				rel, ok := serviceRelativePath(svcPath, manifestPath)
+				if !ok {
+					return nil, apperror.New(apperror.CodeInternal,
+						fmt.Sprintf("sealed manifest path %q is outside service path", manifest.Path))
+				}
+				files[filepath.FromSlash(manifestPath)] = manifest.YAML
+				nextWrittenFiles = append(nextWrittenFiles, rel)
+			}
+			writtenFiles = nextWrittenFiles
+			return files, nil
+		})
+	} else {
+		writtenFiles = append([]string(nil), baseWrittenFiles...)
+		hash, commitErr = s.repo.CommitAndPush(ctx, msg, baseFiles)
+	}
+	if commitErr != nil {
+		return nil, commitErr
 	}
 
 	result := &ChangeResult{
@@ -411,14 +433,22 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 	return result, nil
 }
 
-func (s *Store) buildSecretArtifacts(ctx context.Context, req *ChangeRequest) (*parser.SecretsConfig, []secret.SealedManifest, error) {
-	existing := s.current().data[ServiceKey{Org: req.Org, Project: req.Project, Service: req.Service}.String()]
-	var existingSecrets *parser.SecretsConfig
-	if existing != nil {
-		existingSecrets = existing.Secrets
+func readExistingSecrets(reader gitops.FileReader, path string) (*parser.SecretsConfig, error) {
+	raw, err := reader.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, apperror.Wrap(apperror.CodeInternal, "read existing secrets.yaml", err)
 	}
+	sec, err := parser.ParseSecrets(raw)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeValidation, "parse existing secrets.yaml", err)
+	}
+	return sec, nil
+}
 
-	entries := mergeSecretEntries(existingSecrets, req.Secrets)
+func (s *Store) buildSealedManifests(ctx context.Context, req *ChangeRequest) ([]secret.SealedManifest, error) {
 	manifests := make([]secret.SealedManifest, 0, len(req.Secrets))
 	for _, name := range sortedSecretNames(req.Secrets) {
 		write := req.Secrets[name]
@@ -435,16 +465,12 @@ func (s *Store) buildSecretArtifacts(ctx context.Context, req *ChangeRequest) (*
 			Data:      data,
 		})
 		if err != nil {
-			return nil, nil, apperror.Wrap(apperror.CodeInternal,
+			return nil, apperror.Wrap(apperror.CodeInternal,
 				fmt.Sprintf("seal secret %s/%s", write.Namespace, name), err)
 		}
 		manifests = append(manifests, manifest)
 	}
-
-	return &parser.SecretsConfig{
-		Version: "1",
-		Secrets: entries,
-	}, manifests, nil
+	return manifests, nil
 }
 
 type secretPointer struct {
@@ -625,6 +651,7 @@ func (s *Store) DeleteChanges(ctx context.Context, req *DeleteRequest) (*DeleteR
 		filepath.Join(svcPath, "config.yaml"),
 		filepath.Join(svcPath, "env_vars.yaml"),
 		filepath.Join(svcPath, "secrets.yaml"),
+		filepath.Join(svcPath, "sealed-secrets"),
 	}
 
 	msg := fmt.Sprintf("delete config for %s/%s/%s", req.Org, req.Project, req.Service)
@@ -636,7 +663,7 @@ func (s *Store) DeleteChanges(ctx context.Context, req *DeleteRequest) (*DeleteR
 	result := &DeleteResult{
 		Version:      hash,
 		UpdatedAt:    time.Now().UTC(),
-		DeletedFiles: []string{"config.yaml", "env_vars.yaml", "secrets.yaml"},
+		DeletedFiles: []string{"config.yaml", "env_vars.yaml", "secrets.yaml", "sealed-secrets/"},
 	}
 
 	// Reload in-memory snapshot from the new HEAD so any concurrent remote

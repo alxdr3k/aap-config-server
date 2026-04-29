@@ -223,7 +223,7 @@ Successful response:
 {
   "status":        "deleted",
   "version":       "<commit hash>",
-  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml"]
+  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml", "sealed-secrets/"]
 }
 ```
 
@@ -234,7 +234,7 @@ from the new HEAD, the response is `503` with:
 {
   "status":        "deleted_but_reload_failed",
   "version":       "<commit hash>",
-  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml"],
+  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml", "sealed-secrets/"],
   "reload_error":  "refusing to swap snapshot: 1 file(s) failed to parse: ..."
 }
 ```
