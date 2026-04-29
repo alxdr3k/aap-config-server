@@ -41,4 +41,39 @@ a single place for roadmap/status.
 
 - Positive: clearer source-of-truth hierarchy and faster onboarding.
 - Negative: temporary duplicate PRD/HLD paths exist as compatibility stubs.
-- Follow-ups: `DOC-1A.1`, `Q-001`.
+- Follow-ups: `DOC-1A.1`.
+
+### DEC-002: Keep `FR-*` as canonical requirement IDs
+
+- Date: 2026-04-29
+- Status: accepted
+- Deciders: maintainers
+- Supersedes: —
+- Superseded by: —
+- Resolves: `Q-001`
+- Impacts: `docs/01_PRD.md`, `docs/02_HLD.md`, `docs/06_ACCEPTANCE_TESTS.md`, traceability, migration docs
+
+**Context**
+
+The project already uses `FR-1` through `FR-17` across PRD, HLD, ADR,
+acceptance, traceability, and current docs. Boilerplate examples use `REQ-*`,
+but the template does not require immediate renumbering.
+
+**Decision**
+
+Keep `FR-*` as the canonical requirement ID format. Do not migrate existing
+requirements to `REQ-*` during the boilerplate documentation migration. Add
+`REQ-*` aliases only if a future external process or tool requires
+boilerplate-native IDs.
+
+**Rationale**
+
+This avoids avoidable churn in established links and keeps current requirement,
+acceptance, and ADR references stable while preserving a clear path for aliases
+later.
+
+**Consequences**
+
+- Positive: stable requirement references across docs, ADRs, and tests.
+- Negative: project IDs differ from boilerplate examples.
+- Follow-ups: none required.

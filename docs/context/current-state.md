@@ -18,7 +18,7 @@ from an atomically swapped in-memory snapshot.
 - active phase: follow-up planning from open questions
 - active slice: none
 - last accepted gate: `AC-014` / `AC-015` via PR #10
-- next gate: resolve `Q-001`, `Q-002`, and `Q-003`
+- next gate: resolve `Q-002` and `Q-003`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
 
 ## Implemented
@@ -48,13 +48,11 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Resolve requirement ID strategy (`Q-001`).
-2. Decide whether to supersede ADR-003 or implement service-level mutex (`Q-002`).
-3. Decide deployment manifest ownership (`Q-003`).
+1. Decide whether to supersede ADR-003 or implement service-level mutex (`Q-002`).
+2. Decide deployment manifest ownership (`Q-003`).
 
 ## Current risks / unknowns
 
-- `Q-001`: Should PRD `FR-*` remain the canonical requirement IDs, or should the project migrate to `REQ-*`?
 - `Q-002`: ADR-003 describes service-level mutex; current implementation serializes git operations globally.
 - `Q-003`: Exact deployment owner for Helm/K8s manifests is not represented in this repo.
 
@@ -70,7 +68,6 @@ from an atomically swapped in-memory snapshot.
 
 - HLD package list includes planned packages not present in the current code.
 - CI claims in README should be kept aligned with `.github/workflows/ci.yml`.
-- Decide whether `FR-*` should remain canonical or gain `REQ-*` aliases.
 
 ## Links
 

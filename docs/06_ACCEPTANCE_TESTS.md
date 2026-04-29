@@ -86,5 +86,5 @@ Project-level DoD:
 
 ## Notes
 
-- Current PRD uses `FR-*`; this migration preserves those IDs until `Q-001` is resolved.
+- Current PRD uses `FR-*`; `DEC-002` keeps those IDs canonical.
 - Planned target features remain `defined`, not `passing`, until code and tests land.
