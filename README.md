@@ -38,6 +38,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Config watch endpoint (`GET .../config/watch`)  | Implemented with resource-scoped version query and max 30s long-poll timeout |
 | Env vars watch endpoint (`GET .../env_vars/watch`) | Implemented with resource-scoped version query and max 30s long-poll timeout |
 | Git history iterator / service file classifier   | Implemented as internal module |
+| History API (`GET .../history`)                  | Implemented with `file`, `limit`, and `before` filtering |
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |
@@ -49,7 +50,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Config Agent RBAC/deployment handoff examples      | Documented; external deployment owner per `DEC-003` |
 | Config Agent fake-client e2e smoke coverage        | Implemented |
 | Config Agent live non-dry-run entrypoint           | Not implemented |
-| History / revert endpoints                         | Not implemented |
+| Revert endpoint                                    | Not implemented |
 
 If a feature is listed as "Not implemented", treat descriptions in the PRD/HLD
 as planned design — the server will refuse requests that depend on them.
@@ -172,9 +173,9 @@ X-API-Key: <API_KEY>
 
 Admin endpoints (`POST /api/v1/admin/changes`, `DELETE /api/v1/admin/changes`,
 `POST /api/v1/admin/reload`) and the secret-metadata read
-(`GET /api/v1/orgs/.../secrets`) require auth. Config and env_vars reads are
-currently unauthenticated; deploy behind a NetworkPolicy that only admits the
-expected clients.
+(`GET /api/v1/orgs/.../secrets`) require auth. Config, env_vars, and history
+reads are currently unauthenticated; deploy behind a NetworkPolicy that only
+admits the expected clients.
 
 ### Read
 
@@ -195,6 +196,7 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/config/watch?version={v
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars/watch?version={ver}[&timeout=30s]
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars?resolve_secrets=true   # auth required, no-store
+GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/history[?file=config&limit=20&before={ver}]
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/secrets   # auth required
 ```
 

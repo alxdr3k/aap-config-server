@@ -26,6 +26,7 @@ import (
 
 var validNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 var validK8sDNSLabelRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+var errStopHistory = errors.New("stop history iteration")
 
 func validateName(field, value string) error {
 	if !validNameRe.MatchString(value) {
@@ -285,6 +286,98 @@ func (s *Store) GetConfig(ctx context.Context, org, project, service string) (*S
 			fmt.Sprintf("service not found: %s/%s/%s", org, project, service))
 	}
 	return d, nil
+}
+
+// History returns service-scoped Git history entries with optional file,
+// limit, and before-cursor filtering.
+func (s *Store) History(ctx context.Context, opts HistoryOptions) ([]HistoryEntry, error) {
+	if opts.Org == "" || opts.Project == "" || opts.Service == "" {
+		return nil, apperror.New(apperror.CodeValidation, "org, project and service are required")
+	}
+	if opts.Limit <= 0 {
+		return nil, apperror.New(apperror.CodeValidation, "limit must be greater than 0")
+	}
+	if opts.File != "" && !validHistoryFile(opts.File) {
+		return nil, apperror.New(apperror.CodeValidation, "file must be one of config, env_vars, or secrets")
+	}
+	if _, err := s.GetConfig(ctx, opts.Org, opts.Project, opts.Service); err != nil {
+		return nil, err
+	}
+
+	var entries []HistoryEntry
+	beforeSeen := opts.Before == ""
+	err := s.repo.IterateServiceHistory(ctx, opts.Org, opts.Project, opts.Service, func(entry gitops.ServiceHistoryEntry) error {
+		if !beforeSeen {
+			if entry.Version == opts.Before {
+				beforeSeen = true
+			}
+			return nil
+		}
+		if !historyEntryMatchesFile(entry, opts.File) {
+			return nil
+		}
+
+		entries = append(entries, HistoryEntry{
+			Version:      entry.Version,
+			Message:      entry.Message,
+			Author:       entry.Author,
+			Timestamp:    entry.Timestamp,
+			FilesChanged: historyChangedPaths(entry.FilesChanged),
+		})
+		if len(entries) >= opts.Limit {
+			return errStopHistory
+		}
+		return nil
+	})
+	if errors.Is(err, errStopHistory) {
+		return entries, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func historyEntryMatchesFile(entry gitops.ServiceHistoryEntry, file string) bool {
+	if file == "" {
+		return true
+	}
+	for _, change := range entry.FilesChanged {
+		if historyChangeMatchesFile(change, file) {
+			return true
+		}
+	}
+	return false
+}
+
+func validHistoryFile(file string) bool {
+	switch file {
+	case "config", "env_vars", "secrets":
+		return true
+	default:
+		return false
+	}
+}
+
+func historyChangeMatchesFile(change gitops.ServiceFileChange, file string) bool {
+	switch file {
+	case "config":
+		return change.Kind == gitops.ServiceFileConfig
+	case "env_vars":
+		return change.Kind == gitops.ServiceFileEnvVars
+	case "secrets":
+		return change.Kind == gitops.ServiceFileSecrets || change.Kind == gitops.ServiceFileSealedSecret
+	default:
+		return false
+	}
+}
+
+func historyChangedPaths(changes []gitops.ServiceFileChange) []string {
+	paths := make([]string, len(changes))
+	for i, change := range changes {
+		paths[i] = change.Path
+	}
+	return paths
 }
 
 // ListOrgs returns all known org names.

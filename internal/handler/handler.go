@@ -22,6 +22,7 @@ import (
 // ConfigStore is the interface the handlers need from the store.
 type ConfigStore interface {
 	GetConfig(ctx context.Context, org, project, service string) (*store.ServiceData, error)
+	History(ctx context.Context, opts store.HistoryOptions) ([]store.HistoryEntry, error)
 	ResourceVersion(ctx context.Context, org, project, service, resource string) (string, string, error)
 	WaitForVersionChange(ctx context.Context, version string) (string, bool, error)
 	ListOrgs() []string
@@ -53,6 +54,8 @@ type Handler struct {
 const (
 	defaultWatchTimeout = 30 * time.Second
 	maxWatchTimeout     = 30 * time.Second
+	defaultHistoryLimit = 20
+	maxHistoryLimit     = 100
 )
 
 // Option customizes Handler dependencies.
@@ -110,6 +113,8 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 		h.getEnvVars)
 	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch",
 		h.watchEnvVars)
+	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/history",
+		h.getHistory)
 	// Secret metadata is privileged even though values are never returned; auth
 	// is required so unauthenticated callers cannot enumerate which K8s secret
 	// objects back a service.
@@ -620,6 +625,51 @@ func (h *Handler) getSecrets(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) getHistory(w http.ResponseWriter, r *http.Request) {
+	opts, err := parseHistoryOptions(r)
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	opts.Org = r.PathValue("org")
+	opts.Project = r.PathValue("project")
+	opts.Service = r.PathValue("service")
+
+	entries, err := h.store.History(r.Context(), opts)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+
+	type historyEntryBody struct {
+		Version      string   `json:"version"`
+		Message      string   `json:"message"`
+		Author       string   `json:"author"`
+		Timestamp    string   `json:"timestamp"`
+		FilesChanged []string `json:"files_changed"`
+	}
+
+	history := make([]historyEntryBody, len(entries))
+	for i, entry := range entries {
+		history[i] = historyEntryBody{
+			Version:      entry.Version,
+			Message:      entry.Message,
+			Author:       entry.Author,
+			Timestamp:    entry.Timestamp.UTC().Format(time.RFC3339),
+			FilesChanged: entry.FilesChanged,
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"metadata": map[string]string{
+			"org":     opts.Org,
+			"project": opts.Project,
+			"service": opts.Service,
+		},
+		"history": history,
+	})
+}
+
 // ---- admin write ----
 
 // postChangesRequest matches the POST /api/v1/admin/changes payload.
@@ -866,6 +916,36 @@ func parseWatchTimeout(r *http.Request) (time.Duration, error) {
 		return 0, errors.New("timeout must be less than or equal to 30s")
 	}
 	return timeout, nil
+}
+
+func parseHistoryOptions(r *http.Request) (store.HistoryOptions, error) {
+	opts := store.HistoryOptions{
+		File:   strings.TrimSpace(r.URL.Query().Get("file")),
+		Before: strings.TrimSpace(r.URL.Query().Get("before")),
+		Limit:  defaultHistoryLimit,
+	}
+	switch opts.File {
+	case "", "config", "env_vars", "secrets":
+	default:
+		return opts, errors.New("file must be one of config, env_vars, or secrets")
+	}
+
+	rawLimit := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if rawLimit == "" {
+		return opts, nil
+	}
+	limit, err := strconv.Atoi(rawLimit)
+	if err != nil {
+		return opts, errors.New("limit must be an integer")
+	}
+	if limit <= 0 {
+		return opts, errors.New("limit must be greater than 0")
+	}
+	if limit > maxHistoryLimit {
+		return opts, errors.New("limit must be less than or equal to 100")
+	}
+	opts.Limit = limit
+	return opts, nil
 }
 
 func respondJSON(w http.ResponseWriter, code int, v any) {

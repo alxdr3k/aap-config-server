@@ -46,6 +46,7 @@ snapshot.
 | `store.SecretWrite` | Admin write boundary for plaintext secret values grouped by K8s Secret name before sealing. | `internal/store/types.go` |
 | `ChangeRequest` | Internal representation of admin write input. | `internal/store/types.go` |
 | `DeleteRequest` | Internal representation of admin delete input. | `internal/store/types.go` |
+| `HistoryOptions` / `HistoryEntry` | Store-level service history query options and response records for the public history API. | `internal/store/types.go` |
 | `StoreStatus` | Runtime status exposed through `/api/v1/status`. | `internal/store/types.go` |
 | `gitops.ServiceHistoryEntry` / `gitops.ServiceFileChange` | Git commit history records and service-scoped changed-file classifications for history/revert features. | `internal/gitops/repo.go` |
 | Store version wait primitive | In-memory notification channel used by config/env watch endpoints to wait until the loaded Git version changes. | `internal/store/store.go` |

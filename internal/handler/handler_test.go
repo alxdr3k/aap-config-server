@@ -39,6 +39,8 @@ type fakeStore struct {
 	reloadCalls            int
 	refreshCalls           int
 	resourceVersions       map[string]string
+	history                []store.HistoryEntry
+	historyOpts            store.HistoryOptions
 	waitVersionCalls       int
 	waitVersionArg         string
 	waitForVersionChange   func(context.Context, string) (string, bool, error)
@@ -88,6 +90,14 @@ func (f *fakeStore) GetConfig(_ context.Context, org, project, service string) (
 		return nil, apperror.New(apperror.CodeNotFound, "service not found: "+key)
 	}
 	return d, nil
+}
+
+func (f *fakeStore) History(_ context.Context, opts store.HistoryOptions) ([]store.HistoryEntry, error) {
+	f.historyOpts = opts
+	if _, err := f.GetConfig(context.Background(), opts.Org, opts.Project, opts.Service); err != nil {
+		return nil, err
+	}
+	return f.history, nil
 }
 
 func (f *fakeStore) ListOrgs() []string {
@@ -438,6 +448,83 @@ func TestGetConfig_Found(t *testing.T) {
 	}
 	if meta["version"] != "abc123" {
 		t.Errorf("version: want abc123, got %v", meta["version"])
+	}
+}
+
+func TestGetHistory_Found(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	st.history = []store.HistoryEntry{
+		{
+			Version:      "v2",
+			Message:      "update config",
+			Author:       "admin@example.com",
+			Timestamp:    time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+			FilesChanged: []string{"config.yaml"},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/history?file=config&limit=1&before=v3")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.historyOpts.File != "config" || st.historyOpts.Limit != 1 || st.historyOpts.Before != "v3" {
+		t.Fatalf("history opts: got %+v", st.historyOpts)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["org"] != "org" || meta["project"] != "proj" || meta["service"] != "svc" {
+		t.Fatalf("metadata: got %#v", meta)
+	}
+	history := body["history"].([]any)
+	if len(history) != 1 {
+		t.Fatalf("history length: want 1, got %d", len(history))
+	}
+	entry := history[0].(map[string]any)
+	if entry["version"] != "v2" || entry["timestamp"] != "2026-03-10T10:00:00Z" {
+		t.Fatalf("history entry: got %#v", entry)
+	}
+	if !jsonArrayContains(entry["files_changed"], "config.yaml") {
+		t.Fatalf("files_changed missing config.yaml: %#v", entry["files_changed"])
+	}
+}
+
+func TestGetHistory_NotFound(t *testing.T) {
+	srv := newServer(t, newFakeStore())
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/missing/history")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("want 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetHistory_RejectsInvalidQuery(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"invalid file", "/api/v1/orgs/org/projects/proj/services/svc/history?file=sealed"},
+		{"non integer limit", "/api/v1/orgs/org/projects/proj/services/svc/history?limit=many"},
+		{"zero limit", "/api/v1/orgs/org/projects/proj/services/svc/history?limit=0"},
+		{"over max limit", "/api/v1/orgs/org/projects/proj/services/svc/history?limit=101"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := get(t, srv, tc.path)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d", resp.StatusCode)
+			}
+		})
 	}
 }
 

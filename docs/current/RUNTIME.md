@@ -38,11 +38,13 @@ serialized globally in Phase-1. `ADR-005` records this as the accepted current
 implementation; `ADR-003` remains the future service-level mutex target design.
 
 `gitops.Repo` exposes `IterateServiceHistory(ctx, org, project, service, fn)`
-for internal history/revert work. It walks Git commits newest-first, emits only
+for history/revert work. It walks Git commits newest-first, emits only
 commits that changed recognized files under
 `configs/orgs/{org}/projects/{project}/services/{service}/`, and classifies
 changes as config, env vars, secrets metadata, or SealedSecret manifests.
-Public history/revert HTTP endpoints are still target design only.
+`GET .../history` exposes this as service history with `file`, `limit`, and
+`before` filters. Versioned config/env reads and the revert endpoint are still
+target design only.
 
 ## Config Agent bootstrap flow
 
@@ -155,6 +157,7 @@ only; live deployment wiring remains an external deployment-system concern per
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config`
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars`
   (`resolve_secrets=true` requires auth and returns `Cache-Control: no-store`)
+- `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/history`
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/secrets`
 - `POST /api/v1/admin/changes`
 - `DELETE /api/v1/admin/changes`
@@ -209,8 +212,8 @@ only; live deployment wiring remains an external deployment-system concern per
   unavailable. If startup bootstrap is not configured, webhook updates can
   change `apps_loaded` and `last_updated_at`, but the status remains
   `not_configured` to show that no full Console snapshot was loaded.
-- Config Agent Kubernetes apply/rollout behavior, public history/revert
-  endpoints, and inheritance are target design only.
+- Config Agent Kubernetes apply/rollout behavior, versioned config/env reads,
+  revert endpoint, and inheritance are target design only.
 
 ## Failure modes
 
