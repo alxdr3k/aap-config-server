@@ -25,7 +25,7 @@ Question ↔ Decision ↔ Requirement ↔ Gate/Test ↔ Milestone/Track/Phase/Sl
 | `TRACE-010` |  | `DEC-001` | Documentation workflow | `AC-015` | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.2` | PR template and doc freshness soft-check. |
 | `TRACE-011` | `Q-003` | `DEC-003` | Deployment ownership | operations/runbook docs | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.1` | Repo owns binary/image/runtime docs; Helm/K8s manifests remain external. |
 | `TRACE-012` |  |  | `FR-8` | `AC-021` / `TEST-021` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | `REGISTRY-1A.1`~`REGISTRY-1A.3` | Console App Registry bootstrap, webhook cache, and readiness/status track. |
-| `TRACE-013` |  |  | `FR-6` | `AC-040` / `TEST-040` | `P1-M3` | `EXT` | `EXT-1A` | `EXT-1A.1`~`EXT-1A.3` | Store version-wait primitive landed; config/env watch endpoints remain leaf-planned. |
+| `TRACE-013` |  |  | `FR-6` | `AC-040` / `TEST-040` | `P1-M3` | `EXT` | `EXT-1A` | `EXT-1A.1`~`EXT-1A.3` | Store version-wait primitive and config watch endpoint landed; env watch endpoint remains leaf-planned. |
 | `TRACE-014` |  |  | `FR-13`, `FR-14` | `AC-040` / `TEST-040` | `P1-M3` | `EXT` | `EXT-1B` | `EXT-1B.1`~`EXT-1B.5` | Leaf-planned history, versioned reads, and revert path. |
 | `TRACE-015` |  |  | `FR-10` | `AC-040` / `TEST-040` | `P1-M3` | `EXT` | `EXT-1C` | `EXT-1C.1`~`EXT-1C.4` | Leaf-planned inheritance and merge semantics. |
 | `TRACE-016` |  |  | Operational extensions | `AC-041` / `TEST-041` | `P1-M3` | `EXT` | `EXT-1D` | `EXT-1D.1`~`EXT-1D.5` | Leaf-planned ETag, gzip, batch, metrics, and Git webhook work. |

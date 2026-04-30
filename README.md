@@ -34,7 +34,9 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | App Registry startup bootstrap                     | Implemented when `CONSOLE_API_URL` is set |
 | App Registry webhook                               | Implemented (auth-gated cache upsert/delete) |
 | App Registry state in `/api/v1/status`             | Implemented |
-| Store version-wait primitive for future watch endpoints | Implemented as internal module |
+| Store version-wait primitive for watch endpoints | Implemented as internal module |
+| Config watch endpoint (`GET .../config/watch`)  | Implemented with version query and max 30s long-poll timeout |
+| Env vars watch endpoint (`GET .../env_vars/watch`) | Not implemented |
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |
@@ -46,7 +48,6 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Config Agent RBAC/deployment handoff examples      | Documented; external deployment owner per `DEC-003` |
 | Config Agent fake-client e2e smoke coverage        | Implemented |
 | Config Agent live non-dry-run entrypoint           | Not implemented |
-| Watch / stream endpoint                            | Not implemented |
 | History / revert endpoints                         | Not implemented |
 
 If a feature is listed as "Not implemented", treat descriptions in the PRD/HLD
@@ -155,7 +156,8 @@ Most responses are JSON. The exceptions are `/healthz` and `/readyz`, which retu
 ```
 
 Current JSON error codes are `not_found`, `validation`, `conflict`,
-`unauthorized`, `git_push_failed`, `internal`, and `invalid_body`.
+`unauthorized`, `git_push_failed`, `internal`, `invalid_body`, and
+`invalid_query`.
 
 ### Authenticated endpoints
 
@@ -188,6 +190,7 @@ GET /api/v1/orgs/{org}/projects/{project}/services
 
 # Per-service reads
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/config
+GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/config/watch?version={ver}[&timeout=30s]
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars?resolve_secrets=true   # auth required, no-store
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/secrets   # auth required

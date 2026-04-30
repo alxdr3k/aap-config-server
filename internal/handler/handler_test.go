@@ -38,6 +38,9 @@ type fakeStore struct {
 	reloadUpdated          bool
 	reloadCalls            int
 	refreshCalls           int
+	waitVersionCalls       int
+	waitVersionArg         string
+	waitForVersionChange   func(context.Context, string) (string, bool, error)
 	lastChange             *store.ChangeRequest
 	sawSecretPlaintext     bool
 }
@@ -167,6 +170,19 @@ func (f *fakeStore) DeleteChanges(_ context.Context, req *store.DeleteRequest) (
 }
 
 func (f *fakeStore) HeadVersion() string { return f.version }
+
+func (f *fakeStore) WaitForVersionChange(ctx context.Context, version string) (string, bool, error) {
+	f.waitVersionCalls++
+	f.waitVersionArg = version
+	if f.waitForVersionChange != nil {
+		return f.waitForVersionChange(ctx, version)
+	}
+	if f.version != version {
+		return f.version, true, nil
+	}
+	<-ctx.Done()
+	return f.version, false, ctx.Err()
+}
 
 func (f *fakeStore) RefreshFromRepo(_ context.Context) (bool, error) {
 	f.refreshCalls++
@@ -398,6 +414,91 @@ func TestGetConfig_Found(t *testing.T) {
 	}
 	if meta["version"] != "abc123" {
 		t.Errorf("version: want abc123, got %v", meta["version"])
+	}
+}
+
+func TestGetConfigWatch_VersionMismatchReturnsConfig(t *testing.T) {
+	st := newFakeStore()
+	st.version = "newcommit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{
+				"router_settings": map[string]any{"num_retries": 4},
+			},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config/watch?version=oldcommit")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 1 || st.waitVersionArg != "oldcommit" {
+		t.Fatalf("WaitForVersionChange calls: count=%d arg=%q", st.waitVersionCalls, st.waitVersionArg)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "newcommit" {
+		t.Fatalf("metadata.version: got %v", meta["version"])
+	}
+	config := body["config"].(map[string]any)
+	router := config["router_settings"].(map[string]any)
+	if router["num_retries"] != float64(4) {
+		t.Fatalf("num_retries: got %v", router["num_retries"])
+	}
+}
+
+func TestGetConfigWatch_TimeoutReturnsNotModified(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		Config: &parser.ServiceConfig{Config: map[string]any{"x": "y"}},
+	}
+	st.waitForVersionChange = func(ctx context.Context, version string) (string, bool, error) {
+		<-ctx.Done()
+		return version, false, ctx.Err()
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config/watch?version=abc123&timeout=1ms")
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 1 || st.waitVersionArg != "abc123" {
+		t.Fatalf("WaitForVersionChange calls: count=%d arg=%q", st.waitVersionCalls, st.waitVersionArg)
+	}
+}
+
+func TestGetConfigWatch_RequiresVersion(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config/watch")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 0 {
+		t.Fatalf("missing version should not wait, got %d calls", st.waitVersionCalls)
+	}
+}
+
+func TestGetConfigWatch_RejectsInvalidTimeout(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config/watch?version=abc123&timeout=31s")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 0 {
+		t.Fatalf("invalid timeout should not wait, got %d calls", st.waitVersionCalls)
 	}
 }
 

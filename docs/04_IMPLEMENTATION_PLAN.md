@@ -52,7 +52,7 @@ Gate status:
 | `P0-M3` | Documentation system migrated to boilerplate structure. |  | `accepted` | `AC-014`, `AC-015` | `docs/00_*`, `docs/current/*`, `AGENTS.md`, `.github/`, PR #10 | Migration landed on main. |
 | `P1-M1` | Secret write/resolve with SealedSecret, K8s apply, and Console App Registry integration. |  | `accepted` | `AC-020`, `AC-021` | ADR-004, `internal/secret`, `internal/registry`, `internal/handler` | Secret path and App Registry integration landed. |
 | `P1-M2` | Config Agent rollout path. |  | `accepted` | `AC-030` | ADR-001, ADR-002, `internal/agent`, `Dockerfile`, `docs/current/OPERATIONS.md` | `AGENT-1A.1`~`AGENT-1A.8` landed with fake-client e2e smoke coverage. |
-| `P1-M3` | Console integration extensions and production hardening. |  | `in_progress` | `AC-040`~`AC-042` | `docs/01_PRD.md`, `DEC-003` | `EXT-1A.1` landed; `EXT-1A.2` is ready next. |
+| `P1-M3` | Console integration extensions and production hardening. |  | `in_progress` | `AC-040`~`AC-042` | `docs/01_PRD.md`, `DEC-003` | `EXT-1A.1` and `EXT-1A.2` landed; `EXT-1A.3` is ready next. |
 
 ## Tracks
 
@@ -64,7 +64,7 @@ Gate status:
 | `SECRET` | Secret write/resolve and SealedSecret integration. | `SECRET-1A` | `accepted` | Runtime boundaries, volume reader, deterministic SealedSecret YAML generation, public-key encryption, admin secret writes, K8s apply, secret value resolve, and audit hardening landed. |
 | `REGISTRY` | AAP Console App Registry bootstrap and webhook cache. | `REGISTRY-1A` | `accepted` | Startup bootstrap, webhook cache updates, and status observability landed. |
 | `AGENT` | Config Agent and rollout orchestration. | `AGENT-1A` | `accepted` | Agent bootstrap, leader election, read polling, rendering, ConfigMap/Secret apply, rollout patch, debounce, image target, and e2e smoke coverage landed. |
-| `EXT` | Watch, history, revert, inheritance, batch, webhook, metrics, and HTTP response extensions. | `EXT-1A` | `in_progress` | `EXT-1A.1` landed; `EXT-1A.2` is ready. Later EXT slices remain planned until their direct dependencies land. |
+| `EXT` | Watch, history, revert, inheritance, batch, webhook, metrics, and HTTP response extensions. | `EXT-1A` | `in_progress` | `EXT-1A.1` and `EXT-1A.2` landed; `EXT-1A.3` is ready. Later EXT slices remain planned until their direct dependencies land. |
 | `HARDEN` | Schema validation, rate limiting, integration/load tests, and deployment handoff docs. | `HARDEN-1A` | `planned` | Planned. |
 
 ## Phases / Slices
@@ -102,8 +102,8 @@ Gate status:
 | `AGENT-1A.7` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement leading-edge debounce with cooldown, quiet period, and max-wait controls. | `AGENT-1A.6` | `AC-030` | `passing` | `landed` | `internal/agent` |  |
 | `AGENT-1A.8` | `P1-M2` | `AGENT` | `AGENT-1A` | Add Config Agent image build, RBAC/deployment examples, and e2e smoke coverage with fake K8s/client dependencies. | `AGENT-1A.7` | `AC-030` | `passing` | `landed` | `Dockerfile`, `Makefile`, `internal/agent/e2e_smoke_test.go`, `docs/current/OPERATIONS.md` | Keeps Helm/K8s manifest ownership external per `DEC-003`. |
 | `EXT-1A.1` | `P1-M3` | `EXT` | `EXT-1A` | Add store notification and version-wait primitive for long-poll watch endpoints. | `CORE-1A.3` | `AC-040` | `passing` | `landed` | `internal/store/store.go`, `internal/store/store_test.go`, `docs/current/RUNTIME.md` |  |
-| `EXT-1A.2` | `P1-M3` | `EXT` | `EXT-1A` | Implement `config/watch` long-poll endpoint with timeout and version mismatch behavior. | `EXT-1A.1`, `CORE-1A.4` | `AC-040` | `defined` | `ready` | `docs/01_PRD.md`, `EXT-1A.1` landed | Start here next. |
-| `EXT-1A.3` | `P1-M3` | `EXT` | `EXT-1A` | Implement `env_vars/watch` long-poll endpoint with timeout and independent change detection. | `EXT-1A.1`, `CORE-1A.4` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1A.2` | `P1-M3` | `EXT` | `EXT-1A` | Implement `config/watch` long-poll endpoint with timeout and version mismatch behavior. | `EXT-1A.1`, `CORE-1A.4` | `AC-040` | `passing` | `landed` | `internal/handler/handler.go`, `internal/handler/handler_test.go`, `README.md` |  |
+| `EXT-1A.3` | `P1-M3` | `EXT` | `EXT-1A` | Implement `env_vars/watch` long-poll endpoint with timeout and independent change detection. | `EXT-1A.1`, `CORE-1A.4` | `AC-040` | `defined` | `ready` | `docs/01_PRD.md`, `EXT-1A.2` landed | Start here next. |
 | `EXT-1B.1` | `P1-M3` | `EXT` | `EXT-1B` | Add Git history iterator and file-change classifier for service-scoped history. | `CORE-1A.3` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
 | `EXT-1B.2` | `P1-M3` | `EXT` | `EXT-1B` | Implement history API with `file`, `limit`, and `before` filtering. | `EXT-1B.1`, `CORE-1A.4` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
 | `EXT-1B.3` | `P1-M3` | `EXT` | `EXT-1B` | Add versioned config/env reads from historical Git commits. | `EXT-1B.1`, `CORE-1A.4` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
