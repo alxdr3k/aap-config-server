@@ -8,8 +8,8 @@ Status: active.
 |---|---|
 | `cmd/config-server/main.go` | Composition root: load config, initialize git repo/store/handler/server, start poll loop. |
 | `cmd/config-agent/main.go` | Config Agent bootstrap entrypoint: load agent config, create Config Server client, run local dry-run reads. |
-| `Dockerfile` | Container image build for the config-server binary. |
-| `Makefile` | Project build/test/lint command surface. |
+| `Dockerfile` | Container image build targets for the config-server and config-agent binaries. |
+| `Makefile` | Project build/test/lint/docker command surface. |
 
 ## Runtime / App
 
@@ -19,7 +19,7 @@ Status: active.
 | `internal/server/` | `http.Server` lifecycle, graceful shutdown, readiness probe. |
 | `internal/handler/` | HTTP routing, request decoding, API key auth, JSON response/error envelope. |
 | `internal/apperror/` | Typed domain errors and error-code mapping used by handlers and store. |
-| `internal/agent/` | Config Agent bootstrap runtime config, bounded Config Server API client, dry-run summary runner, K8s Lease leader election wrapper, read polling/version tracking loop, native config/env.sh payload renderer, ConfigMap/Secret apply adapter, Deployment rollout patcher, and leading-edge debounce state machine. |
+| `internal/agent/` | Config Agent bootstrap runtime config, bounded Config Server API client, dry-run summary runner, K8s Lease leader election wrapper, read polling/version tracking loop, native config/env.sh payload renderer, ConfigMap/Secret apply adapter, Deployment rollout patcher, leading-edge debounce state machine, and e2e smoke coverage for the composed Agent flow. |
 
 ## Domain / Services
 
@@ -49,7 +49,7 @@ Status: active.
 | `internal/store/*_test.go` | Snapshot reload, config/env/secret apply, secret audit logging, delete, degraded behavior, concurrency. |
 | `internal/gitops/*_test.go` | Local Git clone/pull/commit/delete/snapshot behavior. |
 | `internal/handler/*_test.go` | HTTP routes, auth, admin write response shape, App Registry webhook auth/cache updates, App Registry status reporting, secret write input cleanup, resolved env var secret reads, secret audit logging, reload/degraded status. |
-| `internal/agent/*_test.go` | Config Agent config loading/validation, Config Server API client behavior, bounded responses, dry-run counts, K8s Lease leader election takeover behavior, fetch loop retry/version tracking, renderer validation, ConfigMap/Secret apply behavior, rollout patch behavior, and debounce timing behavior. |
+| `internal/agent/*_test.go` | Config Agent config loading/validation, Config Server API client behavior, bounded responses, dry-run counts, K8s Lease leader election takeover behavior, fetch loop retry/version tracking, renderer validation, ConfigMap/Secret apply behavior, rollout patch behavior, debounce timing behavior, and e2e smoke coverage under the `e2e` build tag. |
 
 ## Needs audit
 

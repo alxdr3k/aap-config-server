@@ -112,7 +112,8 @@ snapshot.
 ## Needs audit
 
 - No generated reference docs currently exist under `docs/generated/`.
-- Config Agent image/RBAC/e2e orchestration data models are target design only;
-  bootstrap Config Server response DTOs, leader election config, fetch loop
-  state, rendered payloads, ConfigMap/Secret apply targets, rollout patches,
-  and debounce state live under `internal/agent`.
+- Config Agent live non-dry-run entrypoint wiring is target design only; image
+  build targets, RBAC/deployment handoff examples, bootstrap Config Server
+  response DTOs, leader election config, fetch loop state, rendered payloads,
+  ConfigMap/Secret apply targets, rollout patches, debounce state, and
+  fake-client e2e smoke coverage live under the current repo docs/code.

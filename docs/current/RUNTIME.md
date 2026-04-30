@@ -107,7 +107,19 @@ ADR-001:
   quiet period;
 - each apply starts a new cooldown window.
 
-Image/RBAC examples and e2e orchestration remain planned Agent slices.
+## Config Agent image and smoke coverage
+
+`Dockerfile` exposes a `config-agent` target alongside the default
+`config-server` target. `make docker-build-agent` builds the Config Agent image.
+
+`internal/agent/e2e_smoke_test.go` uses fake Config Server and Kubernetes
+clients to exercise the composed Agent path: fetch resolved snapshots, pass
+leading-edge debounce, render native payloads, apply ConfigMap/Secret resources,
+and patch Deployment rollout annotations.
+
+The current `cmd/config-agent` entrypoint still supports local dry-run mode
+only; live deployment wiring remains an external deployment-system concern per
+`DEC-003`.
 
 ## Implemented API surface
 

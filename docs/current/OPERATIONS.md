@@ -88,12 +88,133 @@ snapshot for serving reads.
 
 ## Deployment
 
-- Container build is defined by `Dockerfile`.
-- This repo owns the Config Server binary, Docker image build, runtime
-  configuration docs, and runbook guidance.
+- Container builds are defined by `Dockerfile`.
+- This repo owns the Config Server and Config Agent binaries, Docker image
+  build targets, runtime configuration docs, and runbook guidance.
 - Helm charts and Kubernetes manifests remain outside this repo unless a future
   decision explicitly moves deployment ownership here.
 - Runtime network access should restrict unauthenticated config/env reads to trusted clients.
+
+### Config Agent image build
+
+The default Docker target remains `config-server`:
+
+```bash
+make docker-build
+docker build --target config-server -t aap/config-server:latest .
+```
+
+Build the Config Agent image with the dedicated target:
+
+```bash
+make docker-build-agent
+docker build --target config-agent -t aap/config-agent:latest .
+```
+
+### Config Agent RBAC and deployment handoff example
+
+The following snippets are non-authoritative handoff examples for the external
+deployment repo/system that owns manifests under `DEC-003`. Do not copy them
+into this repo as a manifest tree unless deployment ownership changes.
+
+If the target ConfigMap, Secret, and Lease are pre-created, mutating permissions
+can stay resource-name scoped:
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: litellm-config-agent
+  namespace: ai-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: litellm-config-agent
+  namespace: ai-platform
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["litellm-config"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["litellm-env"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["litellm"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["litellm-config-agent"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: litellm-config-agent
+  namespace: ai-platform
+subjects:
+  - kind: ServiceAccount
+    name: litellm-config-agent
+    namespace: ai-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: litellm-config-agent
+```
+
+If the Agent must create missing target resources, Kubernetes RBAC cannot
+resource-name restrict `create`; the deployment owner must explicitly decide
+whether to add namespace-scoped `create` on `configmaps`, `secrets`, and
+`leases`.
+
+Current `cmd/config-agent` still requires `--dry-run`. The live deployment shape
+below records the target runtime contract for the external deployment owner once
+the non-dry-run entrypoint is enabled:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm-config-agent
+  namespace: ai-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: litellm-config-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: litellm-config-agent
+    spec:
+      serviceAccountName: litellm-config-agent
+      containers:
+        - name: config-agent
+          image: aap/config-agent:latest
+          args:
+            - --config-server=http://aap-config-server.default.svc:8080
+            - --org=myorg
+            - --project=ai
+            - --service=litellm
+            - --resolve-secrets
+            - --target-namespace=ai-platform
+            - --target-configmap=litellm-config
+            - --target-secret=litellm-env
+            - --target-deployment=litellm
+            - --poll-interval=30s
+            - --debounce-cooldown=10s
+            - --debounce-quiet-period=10s
+            - --debounce-max-wait=2m
+          env:
+            - name: CONFIG_AGENT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: config-agent-api
+                  key: api-key
+```
 
 ### CI/CD ownership
 

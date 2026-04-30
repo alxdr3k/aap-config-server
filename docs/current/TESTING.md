@@ -93,7 +93,9 @@ Equivalent:
 go test -tags=e2e ./... -timeout 300s
 ```
 
-No dedicated e2e test package is currently present.
+`internal/agent/e2e_smoke_test.go` runs under the `e2e` build tag with fake
+Config Server and Kubernetes clients. It covers the Config Agent
+fetch/render/apply/rollout smoke path without requiring a live cluster.
 
 ## Coverage
 
@@ -135,6 +137,8 @@ CI/CD design guidance lives in `docs/11_CI_CD.md`.
 ## Before opening a PR
 
 - Run `make test`.
+- Run `make test-e2e` when changing Config Agent image/deployment/e2e smoke
+  behavior.
 - Run `make test-race` for behavior/concurrency changes.
 - Run `make lint` if `golangci-lint` is installed.
 - Update relevant docs if behavior/schema/runtime changed.

@@ -13,12 +13,12 @@ from an atomically swapped in-memory snapshot.
 
 ## Current roadmap position
 
-- current milestone: `P1-M2` Config Agent rollout path next
-- active tracks: `AGENT`
-- active phase: `AGENT-1A`
-- active slice: `AGENT-1A.8`
-- last accepted gate: `AC-021`
-- next gate: `P1-M2` / `AC-030`
+- current milestone: `P1-M3` extension APIs next
+- active tracks: `EXT`
+- active phase: `none ready`
+- active slice: `none ready`
+- last accepted gate: `AC-030`
+- next gate: `P1-M3` / `AC-040`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
 
 ## Implemented
@@ -77,10 +77,11 @@ from an atomically swapped in-memory snapshot.
   a Kubernetes rolling restart.
 - Config Agent leading-edge debounce state machine under `internal/agent`, with
   cooldown, quiet-period, and max-wait behavior covered by deterministic tests.
+- Config Agent image build target, RBAC/deployment handoff examples, and
+  fake-client e2e smoke coverage for fetch/render/apply/rollout flow.
 
 ## Planned
 
-- Config Agent image/RBAC examples and e2e smoke coverage.
 - Watch/history/revert endpoints, config inheritance, response optimizations,
   metrics, schema validation, rate limiting, and integration/load validation.
 
@@ -92,7 +93,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `AGENT-1A.8`: add Config Agent image build, RBAC/deployment examples, and e2e smoke coverage with fake K8s/client dependencies.
+1. Review `EXT-1A.1` for readiness: add store notification and version-wait primitive for long-poll watch endpoints.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -107,10 +108,11 @@ from an atomically swapped in-memory snapshot.
 - Acceptance gates are listed in `docs/06_ACCEPTANCE_TESTS.md`.
 - `AC-020` is passing for the secret write/resolve path, `AC-021` is passing
   for App Registry bootstrap/webhook/status integration, and `AGENT-1A.1`~
-  `AGENT-1A.7` have local coverage for Config Agent bootstrap, leader
+  `AGENT-1A.8` have local coverage for Config Agent bootstrap, leader
   election, read polling, rendering, ConfigMap/Secret apply, rollout patch, and
-  debounce behavior. Subsequent dev-cycle PRs use the repo `check`, `lint`,
-  `scan`, and `test` checks before merge.
+  debounce behavior, plus fake-client e2e smoke coverage for the Agent
+  fetch/render/apply/rollout flow. Subsequent dev-cycle PRs use the repo
+  `check`, `lint`, `scan`, and `test` checks before merge.
 - Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`,
   `make test-race`, `make lint`, and `make build` pass in this workspace.
