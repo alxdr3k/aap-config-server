@@ -100,6 +100,7 @@ snapshot.
 | Store snapshot | loaded, stale-last-known-good | Reload only swaps on full parse success. |
 | Store status | ready, degraded | Degraded means the latest reload failed but the previous snapshot remains available. |
 | App Registry cache | not_configured, ok, degraded | `ok` means a full Console snapshot loaded. `not_configured` is preserved when only webhook updates arrive without startup bootstrap. Degraded means the last Console full load failed; webhook updates still record `last_updated_at`, while the load failure remains visible until a later full load succeeds. `/readyz` is not failed for registry-only degradation. |
+| Config Agent leader lease | active, standby | A Kubernetes `Lease` elects one active Agent replica. Standby replicas observe the same lease and take over after the holder releases or expires. |
 | Admin write | committed, committed_but_apply_failed, committed_but_reload_failed, committed_but_apply_and_reload_failed | Non-committed validation/sealing failures happen before Git writes; post-commit apply/reload failures are explicit. |
 | Admin delete | deleted, deleted_but_reload_failed | The second state means Git delete succeeded but memory reload failed. |
 
@@ -107,4 +108,5 @@ snapshot.
 
 - No generated reference docs currently exist under `docs/generated/`.
 - Config Agent K8s apply/rollout data models are target design only; bootstrap
-  Config Server response DTOs live under `internal/agent`.
+  Config Server response DTOs and leader election config live under
+  `internal/agent`.

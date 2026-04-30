@@ -65,7 +65,7 @@ staging / manual acceptance가 아직 실행되지 않은 상태인지 분리한
 | `TEST-009` | Unknown admin field rejection tests | `internal/handler/handler_test.go` | `AC-009` |
 | `TEST-020` | Secret write/resolve tests | `internal/config/config_test.go`, `internal/secret/types_test.go`, `internal/secret/volume_test.go`, `internal/secret/sealed_test.go`, `internal/secret/encrypt_test.go`, `internal/secret/apply_test.go`, `internal/store/store_test.go`, `internal/handler/handler_test.go` | `AC-020` |
 | `TEST-021` | App Registry tests | `internal/registry/*_test.go`, `internal/handler/handler_test.go` | `AC-021` |
-| `TEST-030` | Config Agent tests | `internal/agent/*_test.go`; future k8s/e2e tests | `AC-030` bootstrap coverage; full rollout future |
+| `TEST-030` | Config Agent tests | `internal/agent/*_test.go`; future k8s/e2e tests | `AC-030` bootstrap and leader election coverage; full rollout future |
 | `TEST-040` | Console extension future tests | future watch/history/revert/inheritance tests | `AC-040` |
 | `TEST-041` | Operational extension future tests | future HTTP/metrics/webhook tests | `AC-041` |
 | `TEST-042` | Production hardening future tests | future schema/rate/integration/load tests | `AC-042` |

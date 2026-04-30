@@ -34,8 +34,19 @@ implementation; `ADR-003` remains the future service-level mutex target design.
 4. Log a summary with counts for config keys, plain env vars, secret refs, and
    resolved secrets. Secret values are not printed.
 
-Kubernetes Lease leader election, ConfigMap/Secret apply, Deployment patching,
-polling loops, and debounce behavior remain planned Agent slices.
+The dry-run CLI does not start leader election.
+
+## Config Agent leader election
+
+`internal/agent` wraps client-go `leaderelection` with a Kubernetes `LeaseLock`
+for one-active-Agent semantics. The wrapper validates lease namespace/name,
+replica identity, and timing settings before creating the elector. It blocks
+until context cancellation, invokes start/stop/new-leader callbacks, and uses
+`ReleaseOnCancel=true` by default so a standby replica can take over promptly
+after a clean shutdown.
+
+ConfigMap/Secret apply, Deployment patching, polling loops, and debounce
+behavior remain planned Agent slices.
 
 ## Implemented API surface
 
