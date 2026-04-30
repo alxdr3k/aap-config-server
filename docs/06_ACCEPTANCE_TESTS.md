@@ -34,7 +34,7 @@ Then  <기대 결과>
 | `AC-021` | `FR-8` | App Registry bootstrap and webhook cache keep service registration state available to readiness/status and recover from missed webhooks. | `TEST-021` | `passing` |
 | `AC-030` | `FR-9` | Config Agent detects config changes, updates K8s resources, and triggers controlled rollout. | `TEST-030` | `passing` |
 | `AC-040` | `FR-6`, `FR-10`, `FR-13`, `FR-14` | Watch/history/revert/inheritance features satisfy target PRD contracts. | future tests | `defined` |
-| `AC-041` | operational extensions | ETag, gzip, batch reads, Prometheus metrics, and Git webhook refresh satisfy target PRD contracts without exposing secret plaintext. | `TEST-041` | `defined` |
+| `AC-041` | operational extensions | ETag, gzip, batch reads, Prometheus metrics, and Git webhook refresh satisfy target PRD contracts without exposing secret plaintext. | `TEST-041` | `passing` |
 | `AC-042` | production hardening | Schema validation, rate limiting, integration/load test harnesses, and deployment handoff docs are complete for the target architecture. | future tests | `defined` |
 
 ## Status vocabulary
@@ -67,7 +67,7 @@ staging / manual acceptance가 아직 실행되지 않은 상태인지 분리한
 | `TEST-021` | App Registry tests | `internal/registry/*_test.go`, `internal/handler/handler_test.go` | `AC-021` |
 | `TEST-030` | Config Agent tests | `internal/agent/*_test.go`, `internal/agent/e2e_smoke_test.go` | `AC-030` bootstrap, leader election, fetch loop, rendering, ConfigMap/Secret apply, rollout patch, debounce coverage, and fake-client e2e smoke for fetch/render/apply/rollout |
 | `TEST-040` | Console extension tests | `internal/store/store_test.go`, `internal/handler/handler_test.go`, `internal/gitops/repo_test.go` | `AC-040` store version wait primitive, resource-scoped config/env watch endpoints, git history iterator/classifier, public history API, versioned config/env reads, revert target validation/restore plan, public revert endpoint flow, defaults source parsing, internal merge semantics, public `inherit` query behavior, and admin write preservation regression landed |
-| `TEST-041` | Operational extension tests | `internal/handler/handler_test.go`, `internal/metrics/metrics_test.go`, `internal/store/store_test.go`, `internal/gitops/repo_test.go`; future webhook tests | `AC-041` ETag/`If-None-Match`, gzip, batch read, and Prometheus metrics coverage landed; Git webhook refresh remains planned |
+| `TEST-041` | Operational extension tests | `internal/handler/handler_test.go`, `internal/metrics/metrics_test.go`, `internal/store/store_test.go`, `internal/gitops/repo_test.go` | `AC-041` ETag/`If-None-Match`, gzip, batch read, Prometheus metrics, and authenticated Git webhook refresh coverage landed |
 | `TEST-042` | Production hardening future tests | future schema/rate/integration/load tests | `AC-042` |
 
 ## Manual / Static Checks

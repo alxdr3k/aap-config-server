@@ -13,12 +13,12 @@ from an atomically swapped in-memory snapshot.
 
 ## Current roadmap position
 
-- current milestone: `P1-M3` extension APIs next
-- active tracks: `EXT`
-- active phase: `EXT-1D`
-- active slice: `EXT-1D.5`
-- last accepted gate: `AC-030`
-- next gate: `P1-M3` / `AC-041`
+- current milestone: `P1-M3` hardening next
+- active tracks: `HARDEN`
+- active phase: `HARDEN-1A`
+- active slice: `HARDEN-1A.1`
+- last accepted gate: `AC-041`
+- next gate: `P1-M3` / `AC-042`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
 
 ## Implemented
@@ -79,6 +79,10 @@ from an atomically swapped in-memory snapshot.
   counts/latency by route template/status, reload attempts/durations, Git
   operation counts/durations, watch wait counts/durations, and degraded-state
   gauges for store and App Registry components.
+- Auth-gated Git webhook refresh endpoint at
+  `POST /api/v1/admin/git/webhook`. It accepts provider payloads only as an
+  authenticated trigger, discards the body after a 1 MiB cap, calls
+  `RefreshFromRepo`, and returns `updated`/`version` or `refresh_failed`.
 - Auth-gated admin write/delete/reload endpoints.
 - Auth-gated secret metadata read, admin secret writes, and
   `resolve_secrets=true` env var reads.
@@ -130,8 +134,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Planned
 
-- schema validation, rate limiting, Git webhook refresh, and integration/load
-  validation.
+- schema validation, rate limiting, integration/load validation, and deployment
+  hardening.
 
 ## Explicit non-goals
 
@@ -141,8 +145,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `EXT-1D.5`: add authenticated Git webhook trigger for immediate
-   refresh after config repo changes.
+1. Start `HARDEN-1A.1`: add explicit schema validation layer for config, env
+   vars, defaults, and secret metadata files.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -162,6 +166,8 @@ from an atomically swapped in-memory snapshot.
   debounce behavior, plus fake-client e2e smoke coverage for the Agent
   fetch/render/apply/rollout flow. Subsequent dev-cycle PRs use the repo
   `check`, `lint`, `scan`, and `test` checks before merge.
+- `AC-041` is passing for ETag, gzip, batch read, Prometheus metrics, and Git
+  webhook refresh operational extensions.
 - `EXT-1A.1` has local store coverage for immediate stale-version return,
   successful refresh notification, failed-refresh non-notification, and context
   cancellation.
@@ -210,6 +216,9 @@ from an atomically swapped in-memory snapshot.
   exposition, HTTP route metrics, reload outcomes, Git operation outcomes,
   watch wait outcomes, and degraded-state gauges without service-identity
   labels.
+- `EXT-1D.5` has handler coverage for authenticated Git webhook refresh,
+  unauthorized no-op behavior, `RefreshFromRepo` success, and `refresh_failed`
+  error responses.
 - Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`,
   `make test-race`, `make lint`, and `make build` pass in this workspace.

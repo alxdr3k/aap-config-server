@@ -86,6 +86,15 @@ counts and duration histograms by resource/outcome; and degraded-state gauges
 for `store` and `app_registry`. Metric labels use route templates and operation
 names only; they do not include org/project/service identities or secret data.
 
+`POST /api/v1/admin/git/webhook` is an authenticated immediate refresh trigger
+for external Git provider webhooks. The request body is capped at 1 MiB and
+discarded; authorization comes only from the admin API key, and repository
+selection remains the configured `GIT_URL` / `GIT_BRANCH`. The handler calls
+`RefreshFromRepo`, returning `200 {"status":"ok","updated":<bool>,"version"}`
+for both changed and duplicate webhook deliveries, or `503 refresh_failed` if
+the pull/reload path fails. It does not force a same-HEAD reparse; operators use
+`POST /api/v1/admin/reload` for that.
+
 Admin writes remain service-level. `POST /api/v1/admin/changes` writes only the
 request payload to `config.yaml` and `env_vars.yaml`; inherited defaults are not
 materialized into service files, and `_defaults/common.yaml` files are not
@@ -238,6 +247,7 @@ only; live deployment wiring remains an external deployment-system concern per
 - `POST /api/v1/admin/changes/revert`
 - `DELETE /api/v1/admin/changes`
 - `POST /api/v1/admin/reload`
+- `POST /api/v1/admin/git/webhook`
 - `POST /api/v1/admin/app-registry/webhook`
 
 ## Auth boundary
@@ -288,6 +298,10 @@ only; live deployment wiring remains an external deployment-system concern per
   Registry cache with authenticated create/update/upsert/delete notifications;
   each event must include RFC3339 `updated_at` so stale async retries are
   ignored, including older upserts that arrive after a newer delete.
+- `POST /api/v1/admin/git/webhook` lets a Git provider trigger immediate
+  `RefreshFromRepo` after an external config repo push. The payload is not
+  trusted beyond the authenticated trigger and duplicate deliveries are
+  idempotent.
 - `/api/v1/status` exposes App Registry state under `app_registry` with
   `status`, `apps_loaded`, `last_loaded_at`, `last_updated_at`, and
   `last_load_error` when present. Registry-only load failure is reported as a
@@ -313,6 +327,8 @@ only; live deployment wiring remains an external deployment-system concern per
 | Admin secret write succeeds but SealedSecret apply fails | Response is `503 committed_but_apply_failed`; encrypted Git commit remains and `apply_error` is returned. |
 | App Registry startup load fails after configured attempts | Startup continues with the existing registry cache, `/api/v1/status` reports `app_registry.status=degraded`, and `/readyz` remains 200 when the store is otherwise ready. |
 | App Registry webhook without valid API key | Request fails with `401 unauthorized`; cache is unchanged. |
+| Git webhook without valid API key | Request fails with `401 unauthorized`; repo refresh is not attempted. |
+| Git webhook pull/reload failure | Response is `503 refresh_failed`; last-known-good snapshot behavior is preserved. |
 | Admin delete succeeds but reload fails | Response is `503 deleted_but_reload_failed`; Git delete remains. |
 | Dirty `configs/` worktree during snapshot | Reload fails closed to avoid serving data not represented by HEAD. |
 | Unknown admin JSON field | Request fails with `400 invalid_body`. |

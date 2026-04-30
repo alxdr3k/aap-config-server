@@ -3,7 +3,7 @@
 > **버전**: 2.1
 > **작성일**: 2026-03-12
 > **최종 수정일**: 2026-04-30
-> **상태**: **Approved design — Phase-1 implementation in progress.** 문서가 설명하는 전체 v2.1 계약 중 Config Agent는 binary/API client/local dry-run bootstrap, K8s Lease leader election module, read polling/version tracking module, native config/env.sh rendering module, ConfigMap/Secret apply module, Deployment rollout patch module, leading-edge debounce module, image build target, RBAC/deployment handoff examples, fake-client e2e smoke coverage까지 구현되어 있고, store version-wait primitive, `config/watch`/`env_vars/watch` endpoints, Git history iterator/service file classifier, public history API, versioned config/env reads, revert target validation/restore plan, public revert endpoint/commit flow, config/env inheritance read path, service-level admin write preservation regression, non-secret config/env ETag/`If-None-Match` handling, gzip compression, batch config/env read API도 구현되어 있다. live non-dry-run entrypoint 등은 아직 구현되지 않았다. SealedSecret write/resolve path와 App Registry bootstrap/webhook/status cache path는 구현되어 있으며, 실제로 현재 제공되는 범위는 [README.md](../README.md#feature-matrix) 의 Feature Matrix를 기준으로 한다. 본 문서의 API/저장소/아키텍처 기술은 **목표 계약**이며, 구현되지 않은 엔드포인트·필드는 Phase-1에서 명시적으로 거부된다.
+> **상태**: **Approved design — Phase-1 implementation in progress.** 문서가 설명하는 전체 v2.1 계약 중 Config Agent는 binary/API client/local dry-run bootstrap, K8s Lease leader election module, read polling/version tracking module, native config/env.sh rendering module, ConfigMap/Secret apply module, Deployment rollout patch module, leading-edge debounce module, image build target, RBAC/deployment handoff examples, fake-client e2e smoke coverage까지 구현되어 있고, store version-wait primitive, `config/watch`/`env_vars/watch` endpoints, Git history iterator/service file classifier, public history API, versioned config/env reads, revert target validation/restore plan, public revert endpoint/commit flow, config/env inheritance read path, service-level admin write preservation regression, non-secret config/env ETag/`If-None-Match` handling, gzip compression, batch config/env read API, Prometheus `/metrics` endpoint, authenticated Git webhook refresh trigger도 구현되어 있다. live non-dry-run entrypoint 등은 아직 구현되지 않았다. SealedSecret write/resolve path와 App Registry bootstrap/webhook/status cache path는 구현되어 있으며, 실제로 현재 제공되는 범위는 [README.md](../README.md#feature-matrix) 의 Feature Matrix를 기준으로 한다. 본 문서의 API/저장소/아키텍처 기술은 **목표 계약**이며, 구현되지 않은 엔드포인트·필드는 Phase-1에서 명시적으로 거부된다.
 > **참조**: [HLD](./02_HLD.md) · [development-process.md](./development-process.md) · [README.md Feature Matrix](../README.md#feature-matrix)
 
 ---
@@ -1189,6 +1189,7 @@ GET  /healthz                                    # Liveness
 GET  /readyz                                     # Readiness (프로세스 + Git-backed store readiness)
 GET  /api/v1/status                              # 서버 상태 (마지막 sync, 로드된 설정 수, App Registry cache/load 상태 등)
 POST /api/v1/admin/reload                        # 수동 설정 리로드 트리거
+POST /api/v1/admin/git/webhook                   # Git webhook 기반 즉시 refresh 트리거
 ```
 
 ### 4.16 FR-16: 인증/인가 `[FR-16]`
@@ -1294,6 +1295,7 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 | GET | `/readyz` | Readiness (프로세스 + Git-backed store readiness) |
 | GET | `/api/v1/status` | 서버 상태 및 App Registry cache/load 상태 |
 | POST | `/api/v1/admin/reload` | 수동 설정 리로드 |
+| POST | `/api/v1/admin/git/webhook` | Git webhook 기반 즉시 refresh |
 
 ---
 

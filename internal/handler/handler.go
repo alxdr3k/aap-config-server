@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -138,6 +139,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	h.handle(mux, "POST /api/v1/admin/changes/revert", h.requireKey(h.postRevert))
 	h.handle(mux, "DELETE /api/v1/admin/changes", h.requireKey(h.deleteChanges))
 	h.handle(mux, "POST /api/v1/admin/reload", h.requireKey(h.adminReload))
+	h.handle(mux, "POST /api/v1/admin/git/webhook", h.requireKey(h.gitWebhook))
 	h.handle(mux, "POST /api/v1/admin/app-registry/webhook", h.requireKey(h.appRegistryWebhook))
 }
 
@@ -304,6 +306,35 @@ func (h *Handler) adminReload(w http.ResponseWriter, r *http.Request) {
 			"status":       "reload_failed",
 			"reload_error": err.Error(),
 			"version":      h.store.HeadVersion(),
+		})
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
+		"status":  "ok",
+		"updated": updated,
+		"version": h.store.HeadVersion(),
+	})
+}
+
+func (h *Handler) gitWebhook(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if _, err := io.Copy(io.Discard, r.Body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			respondErrorCode(w, http.StatusRequestEntityTooLarge, "payload_too_large",
+				"webhook payload must be at most 1MiB")
+			return
+		}
+		respondErrorCode(w, http.StatusBadRequest, "invalid_body", "failed to read webhook payload")
+		return
+	}
+
+	updated, err := h.store.RefreshFromRepo(r.Context())
+	if err != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status":        "refresh_failed",
+			"refresh_error": err.Error(),
+			"version":       h.store.HeadVersion(),
 		})
 		return
 	}

@@ -19,6 +19,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Admin write (`POST /api/v1/admin/changes` config + env_vars) | Implemented |
 | Admin delete (`DELETE /api/v1/admin/changes`)             | Implemented |
 | Admin reload (`POST /api/v1/admin/reload`)                | Implemented |
+| Git webhook refresh (`POST /api/v1/admin/git/webhook`)    | Implemented (auth-gated immediate `git pull` + refresh trigger) |
 | API key auth (Authorization: Bearer, X-API-Key)    | Implemented |
 | Last-known-good snapshot on parse error            | Implemented |
 | `committed_but_reload_failed` post-commit signal   | Implemented |
@@ -348,6 +349,19 @@ from the new HEAD, the response is `503` with:
 curl -X POST http://localhost:8080/api/v1/admin/reload \
   -H "Authorization: Bearer $API_KEY"
 ```
+
+### Git webhook refresh
+
+```bash
+curl -X POST http://localhost:8080/api/v1/admin/git/webhook \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"ref":"refs/heads/main"}'
+```
+
+The webhook payload is not trusted for authorization or service selection; a
+valid API key is required, and the server pulls the configured `GIT_URL` /
+`GIT_BRANCH`.
 
 ## Operational notes
 

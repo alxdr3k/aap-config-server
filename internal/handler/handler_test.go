@@ -37,6 +37,7 @@ type fakeStore struct {
 	nextDeleteReloadErr        string
 	degraded                   bool
 	refreshErr                 error
+	refreshUpdated             bool
 	reloadErr                  error
 	reloadUpdated              bool
 	reloadCalls                int
@@ -303,7 +304,10 @@ func (f *fakeStore) RefreshFromRepo(_ context.Context) (bool, error) {
 	if f.refreshErr != nil {
 		return false, f.refreshErr
 	}
-	return false, nil
+	if f.refreshUpdated {
+		f.version = "refreshedcommit"
+	}
+	return f.refreshUpdated, nil
 }
 
 func (f *fakeStore) ReloadFromRepo(_ context.Context) (bool, error) {
@@ -2832,6 +2836,108 @@ func TestAdminReload_ForceReloadsWhenHeadUnchanged(t *testing.T) {
 	}
 	if st.reloadCalls != 1 {
 		t.Errorf("expected ReloadFromRepo to be called exactly once, got %d", st.reloadCalls)
+	}
+}
+
+func TestGitWebhookRefresh_RequiresAuth(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "secret-key")
+	defer srv.Close()
+
+	resp := postJSON(t, srv, "/api/v1/admin/git/webhook", map[string]any{
+		"ref": "refs/heads/main",
+	})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401 without API key, got %d", resp.StatusCode)
+	}
+	if st.refreshCalls != 0 {
+		t.Fatalf("unauthorized webhook must not refresh repo, got %d calls", st.refreshCalls)
+	}
+}
+
+func TestGitWebhookRefresh_RefreshesFromRepo(t *testing.T) {
+	st := newFakeStore()
+	st.refreshUpdated = true
+	srv := newServerWithAPIKey(t, st, "secret-key")
+	defer srv.Close()
+
+	resp := postJSONWithBearer(t, srv, "/api/v1/admin/git/webhook", map[string]any{
+		"ref":        "refs/heads/main",
+		"repository": map[string]any{"full_name": "org/configs"},
+	}, "secret-key")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.refreshCalls != 1 {
+		t.Fatalf("expected RefreshFromRepo once, got %d", st.refreshCalls)
+	}
+	if st.reloadCalls != 0 {
+		t.Fatalf("git webhook must not force reload through ReloadFromRepo, got %d calls", st.reloadCalls)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	if body["status"] != "ok" {
+		t.Errorf("status: want ok, got %v", body["status"])
+	}
+	if body["updated"] != true {
+		t.Errorf("updated: want true, got %v", body["updated"])
+	}
+	if body["version"] != "refreshedcommit" {
+		t.Errorf("version: want refreshedcommit, got %v", body["version"])
+	}
+}
+
+func TestGitWebhookRefresh_ReportsRefreshFailure(t *testing.T) {
+	st := newFakeStore()
+	st.refreshErr = errors.New("pull: network unavailable")
+	srv := newServerWithAPIKey(t, st, "secret-key")
+	defer srv.Close()
+
+	resp := postJSONWithBearer(t, srv, "/api/v1/admin/git/webhook", map[string]any{
+		"event": "push",
+	}, "secret-key")
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	if body["status"] != "refresh_failed" {
+		t.Errorf("status: want refresh_failed, got %v", body["status"])
+	}
+	if !strings.Contains(body["refresh_error"].(string), "network unavailable") {
+		t.Errorf("refresh_error: got %v", body["refresh_error"])
+	}
+	if body["version"] != "abc123" {
+		t.Errorf("version: want current head, got %v", body["version"])
+	}
+}
+
+func TestGitWebhookRefresh_RejectsOversizedPayload(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "secret-key")
+	defer srv.Close()
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		srv.URL+"/api/v1/admin/git/webhook",
+		strings.NewReader(strings.Repeat("x", 1<<20+1)),
+	)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer secret-key")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST webhook: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413, got %d", resp.StatusCode)
+	}
+	if st.refreshCalls != 0 {
+		t.Fatalf("oversized webhook must not refresh repo, got %d calls", st.refreshCalls)
 	}
 }
 

@@ -3,7 +3,7 @@
 > **버전**: 1.3
 > **작성일**: 2026-03-11
 > **최종 수정일**: 2026-04-30
-> **상태**: **Approved design — Phase-1 implementation in progress.** 본 문서의 패키지 구조 중 `cmd/config-agent`와 `internal/agent` bootstrap, K8s Lease leader election, read polling/version tracking module, native config/env.sh rendering module, ConfigMap/Secret apply module, Deployment rollout patch module, leading-edge debounce module, image build target, RBAC/deployment handoff examples, fake-client e2e smoke coverage, `internal/store` version-wait primitive, `config/watch`/`env_vars/watch` endpoints, `internal/gitops` history iterator/file classifier, public history API, versioned config/env reads, revert target validation/restore plan, public revert endpoint/commit flow, config/env inheritance read path, service-level admin write preservation regression, non-secret config/env ETag/`If-None-Match` handling, gzip compression, batch config/env read API, Prometheus `/metrics` endpoint는 구현되어 있으나, Config Agent의 live non-dry-run entrypoint와 `internal/seal`, `internal/auth` 등 일부 목표 패키지는 아직 **목표 설계**이다. 현재 repo에는 Config Server 본체(`cmd/config-server`, `internal/{config,gitops,handler,metrics,parser,registry,server,store,apperror}`), Agent bootstrap/leader election/fetch loop/rendering/apply/rollout patch/debounce/e2e smoke(`cmd/config-agent`, `internal/agent`), secret runtime/volume/sealing/apply/audit boundary(`internal/secret`)가 구현되어 있다. 실제 구현 범위는 [README.md Feature Matrix](../README.md#feature-matrix) 참조.
+> **상태**: **Approved design — Phase-1 implementation in progress.** 본 문서의 패키지 구조 중 `cmd/config-agent`와 `internal/agent` bootstrap, K8s Lease leader election, read polling/version tracking module, native config/env.sh rendering module, ConfigMap/Secret apply module, Deployment rollout patch module, leading-edge debounce module, image build target, RBAC/deployment handoff examples, fake-client e2e smoke coverage, `internal/store` version-wait primitive, `config/watch`/`env_vars/watch` endpoints, `internal/gitops` history iterator/file classifier, public history API, versioned config/env reads, revert target validation/restore plan, public revert endpoint/commit flow, config/env inheritance read path, service-level admin write preservation regression, non-secret config/env ETag/`If-None-Match` handling, gzip compression, batch config/env read API, Prometheus `/metrics` endpoint, authenticated Git webhook refresh trigger는 구현되어 있으나, Config Agent의 live non-dry-run entrypoint와 `internal/seal`, `internal/auth` 등 일부 목표 패키지는 아직 **목표 설계**이다. 현재 repo에는 Config Server 본체(`cmd/config-server`, `internal/{config,gitops,handler,metrics,parser,registry,server,store,apperror}`), Agent bootstrap/leader election/fetch loop/rendering/apply/rollout patch/debounce/e2e smoke(`cmd/config-agent`, `internal/agent`), secret runtime/volume/sealing/apply/audit boundary(`internal/secret`)가 구현되어 있다. 실제 구현 범위는 [README.md Feature Matrix](../README.md#feature-matrix) 참조.
 > **참조**: [PRD v2.1](./01_PRD.md) · [README.md](../README.md)
 
 ---
@@ -141,6 +141,7 @@ apply │   │git │  │   │ polling
 | `POST /api/v1/admin/changes` | 설정/시크릿 일괄 생성·변경 (단일 atomic Git commit) |
 | `DELETE /api/v1/admin/changes` | 설정/시크릿 일괄 삭제 (단일 atomic Git commit) |
 | `POST /api/v1/admin/changes/revert` | 특정 버전으로 설정/시크릿 롤백 (새 Git commit 생성) |
+| `POST /api/v1/admin/git/webhook` | 외부 Git 변경 후 즉시 pull/refresh 트리거 |
 | `POST /api/v1/admin/app-registry/webhook` | App 등록/수정/삭제 (인메모리 인증 캐시 갱신) |
 
 **Config Agent → Config Server 읽기 API:**
@@ -849,7 +850,7 @@ env_vars:
 | **FR-12** | 시크릿 메타데이터 API | `store`, `handler` | `GET .../secrets` | — | — |
 | **FR-13** | 변경 이력 API | `gitops`, `handler` | `GET .../history` | Git | — |
 | **FR-14** | 설정 롤백 API | `store`, `gitops`, `seal`, `handler` | `POST /api/v1/admin/changes/revert` | Git, kubeseal, K8s API | — |
-| **FR-15** | 헬스체크 / 운영 API | `server`, `handler`, `metrics` | `/healthz`, `/readyz`, `/api/v1/status`, `/metrics` | — | — |
+| **FR-15** | 헬스체크 / 운영 API | `server`, `handler`, `metrics` | `/healthz`, `/readyz`, `/api/v1/status`, `/metrics`, `POST /api/v1/admin/reload`, `POST /api/v1/admin/git/webhook` | Git | — |
 | **FR-16** | 인증/인가 | `auth` | 미들웨어 (`Authorization: Bearer`) | 환경변수 `API_KEY` | — |
 | **FR-17** | 시크릿 보안 | `secret`, `auth` | 미들웨어 | K8s Network Policy | — |
 
