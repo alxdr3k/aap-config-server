@@ -26,7 +26,7 @@ func TestFetchLoopDetectsInitialAndVersionChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchOnce first: %v", err)
 	}
-	if !first.Initial || !first.Changed || first.State.ConfigVersion != "v1" {
+	if !first.Initial || !first.Changed || first.State.Revision != "v1" {
 		t.Fatalf("unexpected first result: %+v", first)
 	}
 	loop.MarkHandled(first)
@@ -43,8 +43,49 @@ func TestFetchLoopDetectsInitialAndVersionChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchOnce third: %v", err)
 	}
-	if third.Initial || !third.Changed || third.State.EnvVersion != "v2" {
+	if third.Initial || !third.Changed || third.State.Revision != "v2" {
 		t.Fatalf("third result should be changed: %+v", third)
+	}
+}
+
+func TestFetchLoopIgnoresGlobalRevisionOnlyChanges(t *testing.T) {
+	client := &sequenceSnapshotClient{
+		configs: []*ConfigSnapshot{
+			configSnapshotWithValue("repo-a", ts(1), "same-config"),
+			configSnapshotWithValue("repo-b", ts(1), "same-config"),
+		},
+		envs: []*EnvVarsSnapshot{
+			envSnapshotWithValue("repo-a", ts(1), "same-env"),
+			envSnapshotWithValue("repo-b", ts(1), "same-env"),
+		},
+	}
+	loop := newTestFetchLoop(t, client)
+
+	first, err := loop.FetchOnce(context.Background())
+	if err != nil {
+		t.Fatalf("FetchOnce first: %v", err)
+	}
+	loop.MarkHandled(first)
+
+	second, err := loop.FetchOnce(context.Background())
+	if err != nil {
+		t.Fatalf("FetchOnce second: %v", err)
+	}
+	if second.Changed {
+		t.Fatalf("global revision-only change should be ignored: %+v", second)
+	}
+}
+
+func TestFetchLoopRejectsMixedRevisionSnapshots(t *testing.T) {
+	client := &sequenceSnapshotClient{
+		configs: []*ConfigSnapshot{configSnapshot("repo-a", ts(1))},
+		envs:    []*EnvVarsSnapshot{envSnapshot("repo-b", ts(1))},
+	}
+	loop := newTestFetchLoop(t, client)
+
+	_, err := loop.FetchOnce(context.Background())
+	if err == nil || err.Error() != `config/env revision mismatch: config="repo-a" env="repo-b"` {
+		t.Fatalf("expected revision mismatch error, got %v", err)
 	}
 }
 
@@ -233,16 +274,24 @@ func (c *sequenceSnapshotClient) FetchEnvVars(_ context.Context, _ ServiceRef, r
 }
 
 func configSnapshot(version string, updatedAt time.Time) *ConfigSnapshot {
+	return configSnapshotWithValue(version, updatedAt, version)
+}
+
+func configSnapshotWithValue(version string, updatedAt time.Time, value string) *ConfigSnapshot {
 	return &ConfigSnapshot{
 		Metadata: Metadata{Version: version, UpdatedAt: updatedAt},
-		Config:   map[string]any{"model_list": []any{}},
+		Config:   map[string]any{"value": value},
 	}
 }
 
 func envSnapshot(version string, updatedAt time.Time) *EnvVarsSnapshot {
+	return envSnapshotWithValue(version, updatedAt, version)
+}
+
+func envSnapshotWithValue(version string, updatedAt time.Time, value string) *EnvVarsSnapshot {
 	return &EnvVarsSnapshot{
 		Metadata: Metadata{Version: version, UpdatedAt: updatedAt},
-		EnvVars:  EnvVars{Plain: map[string]string{"LOG_LEVEL": "INFO"}},
+		EnvVars:  EnvVars{Plain: map[string]string{"VALUE": value}},
 	}
 }
 

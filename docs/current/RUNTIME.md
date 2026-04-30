@@ -48,11 +48,12 @@ after a clean shutdown.
 ## Config Agent fetch loop
 
 `internal/agent` can poll Config Server read APIs without the future watch
-endpoints. The loop fetches both `config` and `env_vars`, tracks the last
-successfully handled versions/updated timestamps, treats the first snapshot as
-changed, and only advances state after the caller's handler succeeds. Fetch or
-handler failures retry with bounded exponential backoff; successful polls reset
-backoff and wait `PollInterval`.
+endpoints. The loop fetches both `config` and `env_vars`, rejects a poll if the
+two reads came from different repo revisions, tracks the last successfully
+handled content hashes, treats the first snapshot as changed, and only advances
+state after the caller's handler succeeds. Fetch or handler failures retry with
+bounded exponential backoff; successful polls reset backoff and wait
+`PollInterval`.
 
 ConfigMap/Secret apply, Deployment patching, native payload rendering, and
 debounce behavior remain planned Agent slices.

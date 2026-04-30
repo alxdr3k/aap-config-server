@@ -64,8 +64,8 @@ from an atomically swapped in-memory snapshot.
   client-go LeaseLock with standby takeover coverage against the fake K8s
   client.
 - Config Agent read polling loop under `internal/agent`, with config/env
-  version tracking, handler-success-based state advancement, and retry
-  backoff for fetch/handler failures.
+  content-hash change detection, same-revision guard, handler-success-based
+  state advancement, and retry backoff for fetch/handler failures.
 
 ## Planned
 

@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -23,8 +26,9 @@ type FetchLoopConfig struct {
 
 // FetchState tracks the last successfully handled Config Server versions.
 type FetchState struct {
-	ConfigVersion   string
-	EnvVersion      string
+	Revision        string
+	ConfigHash      string
+	EnvHash         string
 	ConfigUpdatedAt time.Time
 	EnvUpdatedAt    time.Time
 	Handled         bool
@@ -89,16 +93,29 @@ func (l *FetchLoop) FetchOnce(ctx context.Context) (FetchResult, error) {
 	if envSnapshot == nil {
 		return FetchResult{}, errors.New("env vars snapshot is nil")
 	}
+	if configSnapshot.Metadata.Version != envSnapshot.Metadata.Version {
+		return FetchResult{}, fmt.Errorf("config/env revision mismatch: config=%q env=%q",
+			configSnapshot.Metadata.Version, envSnapshot.Metadata.Version)
+	}
+	configHash, err := hashJSON(configSnapshot.Config)
+	if err != nil {
+		return FetchResult{}, fmt.Errorf("hash config snapshot: %w", err)
+	}
+	envHash, err := hashJSON(envSnapshot.EnvVars)
+	if err != nil {
+		return FetchResult{}, fmt.Errorf("hash env vars snapshot: %w", err)
+	}
 
 	state := FetchState{
-		ConfigVersion:   configSnapshot.Metadata.Version,
-		EnvVersion:      envSnapshot.Metadata.Version,
+		Revision:        configSnapshot.Metadata.Version,
+		ConfigHash:      configHash,
+		EnvHash:         envHash,
 		ConfigUpdatedAt: configSnapshot.Metadata.UpdatedAt,
 		EnvUpdatedAt:    envSnapshot.Metadata.UpdatedAt,
 		Handled:         true,
 	}
 	initial := !l.state.Handled
-	changed := initial || !l.state.sameVersion(state)
+	changed := initial || !l.state.sameContent(state)
 	return FetchResult{
 		Ref:            l.cfg.Ref,
 		Config:         configSnapshot,
@@ -244,11 +261,17 @@ func (c FetchLoopConfig) withDefaults() FetchLoopConfig {
 	return c
 }
 
-func (s FetchState) sameVersion(other FetchState) bool {
-	return s.ConfigVersion == other.ConfigVersion &&
-		s.EnvVersion == other.EnvVersion &&
-		s.ConfigUpdatedAt.Equal(other.ConfigUpdatedAt) &&
-		s.EnvUpdatedAt.Equal(other.EnvUpdatedAt)
+func (s FetchState) sameContent(other FetchState) bool {
+	return s.ConfigHash == other.ConfigHash && s.EnvHash == other.EnvHash
+}
+
+func hashJSON(value any) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func waitContext(ctx context.Context, delay time.Duration) error {
