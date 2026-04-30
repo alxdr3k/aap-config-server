@@ -49,6 +49,9 @@ export ALLOW_UNAUTHENTICATED_DEV=true
   `aap_config_server_git_operations_total`,
   `aap_config_server_watch_waits_total`, and
   `aap_config_server_degraded_state`.
+- External Git push refresh: configure the Git provider to call
+  `POST /api/v1/admin/git/webhook` with the Config Server API key. Duplicate
+  deliveries are safe; failures return `503 refresh_failed`.
 
 ## Common Incidents
 
@@ -91,6 +94,16 @@ export ALLOW_UNAUTHENTICATED_DEV=true
 - Mitigation: remove or commit out-of-band changes under `configs/`; do not serve from mutated checkout state.
 - Root-cause investigation: identify non-server processes writing into `GIT_LOCAL_PATH`.
 - Related: `AC-008`, `TEST-008`.
+
+### Incident: Git webhook refresh fails
+
+- Symptom: `POST /api/v1/admin/git/webhook` returns `503 refresh_failed`.
+- Detection: response includes `refresh_error`; metrics show the HTTP 503 and
+  reload/Git operation failure labels.
+- Mitigation: inspect Git remote reachability and config repo parse errors,
+  fix the underlying cause, then retry the webhook or call
+  `POST /api/v1/admin/reload` if an operator needs a force reparse.
+- Related: `AC-041`, `TEST-041`.
 
 ### Incident: Protected endpoint returns unauthorized
 

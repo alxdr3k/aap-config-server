@@ -74,6 +74,10 @@ snapshot for serving reads.
   admin endpoints and update only the in-memory registry cache. Events must
   carry RFC3339 `updated_at`; stale retries are ignored, including older
   upserts that arrive after a newer delete.
+- Git webhook refresh calls use the same admin API key boundary as other admin
+  endpoints. `POST /api/v1/admin/git/webhook` discards the provider payload and
+  calls `RefreshFromRepo` for the configured repo/branch, making duplicate
+  webhook deliveries safe (`updated:false`).
 - `/api/v1/status` reports App Registry cache/load state under
   `app_registry`; registry-only degradation appears in `degraded_components`
   but does not make `/readyz` fail.
@@ -87,6 +91,8 @@ snapshot for serving reads.
 
 - A background git poll loop calls `RefreshFromRepo` every `GIT_POLL_INTERVAL`.
 - The poll path only reloads when HEAD moved.
+- `POST /api/v1/admin/git/webhook` also uses `RefreshFromRepo` for immediate
+  post-push refresh when a Git provider webhook is configured.
 - `POST /api/v1/admin/reload` force-reloads even when HEAD did not move.
 
 ## Deployment
