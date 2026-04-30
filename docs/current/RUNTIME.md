@@ -55,8 +55,21 @@ state after the caller's handler succeeds. Fetch or handler failures retry with
 bounded exponential backoff; successful polls reset backoff and wait
 `PollInterval`.
 
-ConfigMap/Secret apply, Deployment patching, native payload rendering, and
-debounce behavior remain planned Agent slices.
+## Config Agent rendering
+
+`internal/agent` can render fetched snapshots into the payloads that future
+Kubernetes apply code will write:
+
+- Config snapshots render the `config` object as deterministic native YAML for
+  the target ConfigMap. Strings such as `os.environ/API_KEY` are preserved as
+  literal config values and are not resolved or masked by the renderer.
+- Env var snapshots render to `env.sh` as sorted `export KEY='VALUE'` lines for
+  the target Secret. The renderer requires resolved snapshots, rejects
+  remaining `secret_refs`, rejects duplicate plain/secret keys, and validates
+  shell-compatible env var names.
+
+ConfigMap/Secret apply, Deployment patching, and debounce behavior remain
+planned Agent slices.
 
 ## Implemented API surface
 
