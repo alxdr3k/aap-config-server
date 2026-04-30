@@ -1501,6 +1501,60 @@ func TestPostChanges(t *testing.T) {
 	}
 }
 
+func TestPostChanges_PassesServiceLevelPayloadWhenInheritedReadsExist(t *testing.T) {
+	st := newFakeStore()
+	st.services["myorg/proj/svc"] = &store.ServiceData{
+		Config: &parser.ServiceConfig{Config: map[string]any{
+			"raw": true,
+		}},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasConfig: true, HasEnvVars: true}},
+		InheritedConfig: &parser.ServiceConfig{Config: map[string]any{
+			"raw":     true,
+			"default": true,
+		}},
+		InheritedEnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain: map[string]string{"GLOBAL_ENV": "1"},
+		}},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	body := map[string]any{
+		"org":     "myorg",
+		"project": "proj",
+		"service": "svc",
+		"config": map[string]any{
+			"raw": "updated",
+		},
+		"env_vars": map[string]any{
+			"plain": map[string]any{"SERVICE_ENV": "updated"},
+		},
+		"message": "service-level update",
+	}
+	resp := postJSON(t, srv, "/api/v1/admin/changes", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.lastChange == nil {
+		t.Fatal("expected ApplyChanges request")
+	}
+	if _, ok := st.lastChange.Config["default"]; ok {
+		t.Fatalf("admin request should not merge inherited config into write payload: %#v", st.lastChange.Config)
+	}
+	if st.lastChange.Config["raw"] != "updated" {
+		t.Fatalf("admin request should pass service config unchanged, got %#v", st.lastChange.Config)
+	}
+	if st.lastChange.EnvVars == nil {
+		t.Fatal("expected env vars payload")
+	}
+	if _, ok := st.lastChange.EnvVars.Plain["GLOBAL_ENV"]; ok {
+		t.Fatalf("admin request should not merge inherited env into write payload: %#v", st.lastChange.EnvVars.Plain)
+	}
+	if st.lastChange.EnvVars.Plain["SERVICE_ENV"] != "updated" {
+		t.Fatalf("admin request should pass service env unchanged, got %#v", st.lastChange.EnvVars.Plain)
+	}
+}
+
 func TestPostChanges_InvalidBody(t *testing.T) {
 	srv := newServer(t, newFakeStore())
 	defer srv.Close()

@@ -54,6 +54,11 @@ returns the raw service-level file. Current `resolve_secrets=true` env reads
 also use inherited env var secret refs. Config/env watch endpoints use the same
 inherit view for version comparison and response payloads.
 
+Admin writes remain service-level. `POST /api/v1/admin/changes` writes only the
+request payload to `config.yaml` and `env_vars.yaml`; inherited defaults are not
+materialized into service files, and `_defaults/common.yaml` files are not
+mutated by the admin write path.
+
 `gitops.Repo` exposes `IterateServiceHistory(ctx, org, project, service, fn)`
 for history/revert work. It walks Git commits newest-first, emits only
 commits that changed recognized files under
@@ -257,7 +262,7 @@ only; live deployment wiring remains an external deployment-system concern per
   unavailable. If startup bootstrap is not configured, webhook updates can
   change `apps_loaded` and `last_updated_at`, but the status remains
   `not_configured` to show that no full Console snapshot was loaded.
-- Config Agent live non-dry-run wiring and inheritance are target design only.
+- Config Agent live non-dry-run wiring remains target design only.
 
 ## Failure modes
 

@@ -70,6 +70,9 @@ default and return raw service-level files when `inherit=false`.
 ## YAML validation
 
 - `config.yaml` and `env_vars.yaml` require `metadata.service`, `metadata.org`, and `metadata.project`.
+- Admin write requests persist service-level `config.yaml` / `env_vars.yaml`
+  payloads only. Inherited defaults remain in `_defaults/common.yaml` and are
+  recomputed for reads.
 - `secrets.yaml` entries require `id` and a complete `k8s_secret` pointer: `name`, `namespace`, and `key`.
 - Mounted secret reads reject empty or path-unsafe reference segments before
   resolving `{SECRET_MOUNT_PATH}/{namespace}/{name}/{key}`.

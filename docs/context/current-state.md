@@ -15,8 +15,8 @@ from an atomically swapped in-memory snapshot.
 
 - current milestone: `P1-M3` extension APIs next
 - active tracks: `EXT`
-- active phase: `EXT-1C`
-- active slice: `EXT-1C.4`
+- active phase: `EXT-1D`
+- active slice: `EXT-1D.1`
 - last accepted gate: `AC-030`
 - next gate: `P1-M3` / `AC-040`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -59,6 +59,9 @@ from an atomically swapped in-memory snapshot.
   config/env read APIs. The default is `inherit=true`; `inherit=false` returns
   the raw service-level files. `resolve_secrets=true` uses inherited env var
   secret refs for current reads.
+- Regression coverage that admin writes continue to pass and persist only
+  service-level config/env payloads while inherited reads are enabled; defaults
+  files are not mutated by `POST /api/v1/admin/changes`.
 - Auth-gated admin write/delete/reload endpoints.
 - Auth-gated secret metadata read, admin secret writes, and
   `resolve_secrets=true` env var reads.
@@ -110,8 +113,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Planned
 
-- Config inheritance admin-write regression hardening, response optimizations,
-  metrics, schema validation, rate limiting, and integration/load validation.
+- Response optimizations, metrics, schema validation, rate limiting, and
+  integration/load validation.
 
 ## Explicit non-goals
 
@@ -121,8 +124,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `EXT-1C.4`: preserve service-level admin write behavior while
-   inherited reads are enabled, with docs and regression tests.
+1. Start `EXT-1D.1`: add ETag and `If-None-Match` support for non-secret
+   config/env responses.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -174,6 +177,9 @@ from an atomically swapped in-memory snapshot.
   `inherit=false` raw reads, invalid inherit query rejection, versioned
   inherited reads, inherited watch version comparison, and resolved secret reads
   using inherited env var refs.
+- `EXT-1C.4` has store and handler regression coverage proving admin writes do
+  not merge inherited defaults into service-level persisted config/env payloads
+  and do not mutate `_defaults/common.yaml`.
 - Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`,
   `make test-race`, `make lint`, and `make build` pass in this workspace.
