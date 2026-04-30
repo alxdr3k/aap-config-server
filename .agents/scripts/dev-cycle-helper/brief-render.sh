@@ -26,6 +26,18 @@ render_cycle_markdown() {
       (if (.summary_ko // "") != "" then ": " + (.summary_ko | tostring) else "" end) +
       (if (.status // "") != "" then " (" + (.status | tostring) + ")" else "" end) +
       (if (.unblock_ko // "") != "" then " 시작 조건: " + (.unblock_ko | tostring) else "" end);
+    def promotion_candidate_line:
+      "- " + ((.id // "후보") | tostring) +
+      (if (.summary_ko // .summary // "") != "" then ": " + ((.summary_ko // .summary) | tostring) else "" end) +
+      (if (.status // "") != "" then " (" + (.status | tostring) + ")" else "" end) +
+      (if has("eligible") then (if .eligible then " - 자동 승격 가능" else " - 자동 승격 제외" end) else "" end) +
+      (if (.reason_ko // .unblock_ko // "") != "" then " 이유: " + ((.reason_ko // .unblock_ko) | tostring) else "" end);
+    def promotion_line:
+      "- " + ((.id // "후보") | tostring) +
+      (if (.summary_ko // .summary // "") != "" then ": " + ((.summary_ko // .summary) | tostring) else "" end) +
+      (if ((.status_before // "") != "" or (.status_after // "") != "") then " (" + ((.status_before // "?") | tostring) + " -> " + ((.status_after // "ready") | tostring) + ")" else "" end) +
+      (if (.path // "") != "" then " 파일: " + (.path | tostring) else "" end) +
+      (if (.reason_ko // "") != "" then " 이유: " + (.reason_ko | tostring) else "" end);
     def risk_line:
       ((.summary_ko // .summary // "기록 없음") | tostring) +
       (if (.issue_url // "") != "" then " (이슈: " + (.issue_url | tostring) + ")" else "" end) +
@@ -38,6 +50,8 @@ render_cycle_markdown() {
       field("이번에 한 일"; joined(.actions)),
       "- 결론: \(.conclusion.summary_ko // "기록 없음")" + (if (.conclusion.reason_ko // "") != "" then " " + (.conclusion.reason_ko | tostring) else "" end),
       (if ((.next_candidates // []) | length) > 0 then "- 다음 검토 후보:\n" + ((.next_candidates // []) | map("  " + candidate_line) | join("\n")) else empty end),
+      (if has("auto_promotion_candidates") then (if ((.auto_promotion_candidates // []) | length) > 0 then "- 자동 승격 검토:\n" + ((.auto_promotion_candidates // []) | map("  " + promotion_candidate_line) | join("\n")) else "- 자동 승격 검토: 후보 없음" end) else empty end),
+      (if has("auto_promotions") then (if ((.auto_promotions // []) | length) > 0 then "- 자동 승격:\n" + ((.auto_promotions // []) | map("  " + promotion_line) | join("\n")) else "- 자동 승격: 없음" end) else empty end),
       field("검증"; joined(.verification)),
       "- 리뷰/배포: \(.review_ship.summary_ko // .review_ship.status // "기록 없음")",
       (if ((.risks // []) | length) > 0 then "- 리스크:\n" + ((.risks // []) | map("  - " + risk_line) | join("\n")) else "- 리스크: 없음" end)
@@ -60,6 +74,8 @@ finish_cycle_json_file() {
   if ! jq -e '
     def nonempty_string: type == "string" and test("\\S");
     def item_summary: ((.summary_ko // .summary // .command // "") | nonempty_string);
+    def optional_item_summary: ((.summary_ko // .summary // .id // "") | nonempty_string);
+    def candidate_item: optional_item_summary and ((has("eligible") | not) or (.eligible | type == "boolean"));
     type == "object" and
     .schema_version == 1 and
     ((.cycle | type) == "number") and (.cycle >= 1) and (.cycle == (.cycle | floor)) and
@@ -74,9 +90,13 @@ finish_cycle_json_file() {
     ((.review_ship.summary_ko // .review_ship.status // "") | nonempty_string) and
     (.risks | type == "array") and
     all(.risks[]; ((.summary_ko // .summary // "") | nonempty_string)) and
-    (.next_candidates // [] | type == "array")
+    (.next_candidates // [] | type == "array") and
+    (.auto_promotion_candidates // [] | type == "array") and
+    all((.auto_promotion_candidates // [])[]; candidate_item) and
+    (.auto_promotions // [] | type == "array") and
+    all((.auto_promotions // [])[]; optional_item_summary)
   ' "$input_file" >/dev/null; then
-    echo "Invalid dev-cycle brief JSON. Required: schema_version=1, integer cycle, result, non-empty actions[].summary_ko, conclusion.summary_ko, non-empty verification[].summary_ko, review_ship summary/status, risks[].summary_ko when risks are present." >&2
+    echo "Invalid dev-cycle brief JSON. Required: schema_version=1, integer cycle, result, non-empty actions[].summary_ko, conclusion.summary_ko, non-empty verification[].summary_ko, review_ship summary/status, risks[].summary_ko when risks are present. Optional candidate/promotion arrays must contain items with summary_ko, summary, or id." >&2
     return 1
   fi
 
@@ -178,7 +198,13 @@ finish_cycle_json_file() {
     jq -n \
       --slurpfile record "$record_file" \
       --arg rendered_markdown "$rendered" \
-      '{ok:true, cycle:$record[0].cycle, result:$record[0].result, rendered_markdown:$rendered_markdown}' || {
+      '{
+        ok:true,
+        cycle:$record[0].cycle,
+        result:$record[0].result,
+        auto_promotions_count:(($record[0].auto_promotions // []) | length),
+        rendered_markdown:$rendered_markdown
+      }' || {
         rm -f "$record_file"
         return 1
       }
@@ -328,6 +354,18 @@ summary_json() {
       ((.summary_ko // "설명 없음") | tostring) +
       (if (.status // "") != "" then " (" + (.status | tostring) + ")" else "" end) +
       (if (.unblock_ko // "") != "" then " 시작 조건: " + (.unblock_ko | tostring) else "" end);
+    def promotion_candidate_text:
+      ((.id // "후보") | tostring) + ": " +
+      ((.summary_ko // .summary // "설명 없음") | tostring) +
+      (if (.status // "") != "" then " (" + (.status | tostring) + ")" else "" end) +
+      (if has("eligible") then (if .eligible then " - 자동 승격 가능" else " - 자동 승격 제외" end) else "" end) +
+      (if (.reason_ko // .unblock_ko // "") != "" then " 이유: " + ((.reason_ko // .unblock_ko) | tostring) else "" end);
+    def promotion_text:
+      ((.id // "후보") | tostring) + ": " +
+      ((.summary_ko // .summary // "설명 없음") | tostring) +
+      (if ((.status_before // "") != "" or (.status_after // "") != "") then " (" + ((.status_before // "?") | tostring) + " -> " + ((.status_after // "ready") | tostring) + ")" else "" end) +
+      (if (.path // "") != "" then " 파일: " + (.path | tostring) else "" end) +
+      (if (.reason_ko // "") != "" then " 이유: " + (.reason_ko | tostring) else "" end);
     def block($label; $xs):
       if ($xs | length) == 0 then "- \($label): 없음"
       elif ($xs | length) == 1 then "- \($label): \($xs[0])"
@@ -335,6 +373,8 @@ summary_json() {
     ($cycles | length) as $count |
     ($cycles[-1] // {}) as $last |
     ($last.next_candidates // []) as $candidates |
+    ([$cycles[]? as $c | ($c.auto_promotion_candidates // [])[]? | "사이클 \($c.cycle): \(promotion_candidate_text)"]) as $promotion_candidates |
+    ([$cycles[]? as $c | ($c.auto_promotions // [])[]? | "사이클 \($c.cycle): \(promotion_text)"]) as $promotions |
     ([
       "최종 브리핑",
       "",
@@ -342,6 +382,8 @@ summary_json() {
       block("작업"; if $count == 0 then [] else [$cycles[] | "사이클 \(.cycle): \(headline(.))"] end),
       block("검증"; [$cycles[] as $c | ($c.verification // [])[]? | item_text as $v | "사이클 \($c.cycle): \($v)"]),
       block("리뷰/배포"; if $count == 0 then [] else [$cycles[] | "사이클 \(.cycle): \(.review_ship.summary_ko // .review_ship.status // "기록 없음")"] end),
+      (if ($promotion_candidates | length) > 0 then block("자동 승격 검토"; $promotion_candidates) else empty end),
+      (if ($promotions | length) > 0 then block("자동 승격"; $promotions) else empty end),
       (if ($candidates | length) > 0 then block("다음 검토 후보"; [$candidates[] | candidate_text]) else empty end),
       block("리스크"; [$cycles[] as $c | ($c.risks // [])[]? | risk_text as $r | "사이클 \($c.cycle): \($r)"]),
       "- 걸린 시간: \($elapsed_text)"
@@ -355,6 +397,8 @@ summary_json() {
       cycles:($cycles | map({cycle, result, headline_ko:headline(.)})),
       open_risks:[$cycles[]?.risks[]?],
       next_candidates:$candidates,
+      auto_promotion_candidates:[$cycles[]?.auto_promotion_candidates[]?],
+      auto_promotions:[$cycles[]?.auto_promotions[]?],
       rendered_markdown:$rendered
     }'
 }
