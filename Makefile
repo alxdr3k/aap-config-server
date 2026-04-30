@@ -1,7 +1,8 @@
-.PHONY: build build-server build-agent test test-race test-integration test-e2e lint coverage docker-build clean
+.PHONY: build build-server build-agent test test-race test-integration test-e2e lint coverage docker-build docker-build-agent clean
 
-DOCKER_IMAGE  := aap/config-server
-DOCKER_TAG    := latest
+DOCKER_IMAGE       ?= aap/config-server
+DOCKER_AGENT_IMAGE ?= aap/config-agent
+DOCKER_TAG         ?= latest
 
 build: build-server build-agent
 
@@ -32,7 +33,10 @@ coverage:
 	@echo "Coverage report: coverage.html"
 
 docker-build:
-	docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+	docker build --target config-server -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+
+docker-build-agent:
+	docker build --target config-agent -t $(DOCKER_AGENT_IMAGE):$(DOCKER_TAG) .
 
 clean:
 	rm -rf bin/ coverage.out coverage.html

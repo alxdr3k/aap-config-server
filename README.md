@@ -41,7 +41,10 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Config Agent ConfigMap/Secret apply                | Implemented as internal module |
 | Config Agent Deployment rollout patch              | Implemented as internal module |
 | Config Agent leading-edge debounce                 | Implemented as internal module |
-| Config Agent image/RBAC/e2e orchestration          | Not implemented |
+| Config Agent image build                           | Implemented |
+| Config Agent RBAC/deployment handoff examples      | Documented; external deployment owner per `DEC-003` |
+| Config Agent fake-client e2e smoke coverage        | Implemented |
+| Config Agent live non-dry-run entrypoint           | Not implemented |
 | Watch / stream endpoint                            | Not implemented |
 | History / revert endpoints                         | Not implemented |
 
@@ -108,8 +111,9 @@ curl http://localhost:8080/api/v1/orgs
 
 `config-agent` currently exposes local dry-run summary output. Runtime config,
 Config Server reads, leader election, fetch/render, and ConfigMap/Secret apply
-and rollout/debounce behavior exist as internal modules; image/RBAC/e2e
-orchestration remains planned follow-up work.
+and rollout/debounce behavior exist as internal modules. The Dockerfile also
+has a `config-agent` image target, and `make test-e2e` covers the fake-client
+Agent smoke path. Live non-dry-run entrypoint wiring remains target design.
 
 ```bash
 make build-agent
@@ -119,6 +123,12 @@ CONFIG_AGENT_ORG=myorg \
 CONFIG_AGENT_PROJECT=ai \
 CONFIG_AGENT_SERVICE=litellm \
 ./bin/config-agent --dry-run
+```
+
+Image build:
+
+```bash
+make docker-build-agent
 ```
 
 Use `--resolve-secrets` only when the agent has `CONFIG_AGENT_API_KEY` or
@@ -371,8 +381,10 @@ make build-server   # compile only config-server
 make build-agent    # compile only config-agent
 make test           # go test ./...
 make test-race      # go test -race ./...
+make test-e2e       # go test -tags=e2e ./...
 make lint           # golangci-lint (if installed)
-make docker-build   # build the container image
+make docker-build        # build the config-server container image
+make docker-build-agent  # build the config-agent container image
 ```
 
 Container image build support does not include Helm/Kubernetes manifest

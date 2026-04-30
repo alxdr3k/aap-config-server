@@ -32,7 +32,7 @@ Then  <기대 결과>
 | `AC-015` | Documentation workflow | Given a PR changes Go source/runtime paths, When doc freshness runs, Then it comments with matching doc update candidates without blocking merge. | workflow YAML parse + pattern review | `passing` |
 | `AC-020` | `FR-7`, `FR-17` | Secret write/resolve handles SealedSecret generation, K8s apply, no-store response, and audit logging. | `TEST-020` | `passing` |
 | `AC-021` | `FR-8` | App Registry bootstrap and webhook cache keep service registration state available to readiness/status and recover from missed webhooks. | `TEST-021` | `passing` |
-| `AC-030` | `FR-9` | Config Agent detects config changes, updates K8s resources, and triggers controlled rollout. | future tests | `defined` |
+| `AC-030` | `FR-9` | Config Agent detects config changes, updates K8s resources, and triggers controlled rollout. | `TEST-030` | `passing` |
 | `AC-040` | `FR-6`, `FR-10`, `FR-13`, `FR-14` | Watch/history/revert/inheritance features satisfy target PRD contracts. | future tests | `defined` |
 | `AC-041` | operational extensions | ETag, gzip, batch reads, Prometheus metrics, and Git webhook refresh satisfy target PRD contracts without exposing secret plaintext. | future tests | `defined` |
 | `AC-042` | production hardening | Schema validation, rate limiting, integration/load test harnesses, and deployment handoff docs are complete for the target architecture. | future tests | `defined` |
@@ -65,7 +65,7 @@ staging / manual acceptance가 아직 실행되지 않은 상태인지 분리한
 | `TEST-009` | Unknown admin field rejection tests | `internal/handler/handler_test.go` | `AC-009` |
 | `TEST-020` | Secret write/resolve tests | `internal/config/config_test.go`, `internal/secret/types_test.go`, `internal/secret/volume_test.go`, `internal/secret/sealed_test.go`, `internal/secret/encrypt_test.go`, `internal/secret/apply_test.go`, `internal/store/store_test.go`, `internal/handler/handler_test.go` | `AC-020` |
 | `TEST-021` | App Registry tests | `internal/registry/*_test.go`, `internal/handler/handler_test.go` | `AC-021` |
-| `TEST-030` | Config Agent tests | `internal/agent/*_test.go`; future k8s/e2e tests | `AC-030` bootstrap, leader election, fetch loop, rendering, ConfigMap/Secret apply, rollout patch, and debounce coverage; image/RBAC/e2e orchestration future |
+| `TEST-030` | Config Agent tests | `internal/agent/*_test.go`, `internal/agent/e2e_smoke_test.go` | `AC-030` bootstrap, leader election, fetch loop, rendering, ConfigMap/Secret apply, rollout patch, debounce coverage, and fake-client e2e smoke for fetch/render/apply/rollout |
 | `TEST-040` | Console extension future tests | future watch/history/revert/inheritance tests | `AC-040` |
 | `TEST-041` | Operational extension future tests | future HTTP/metrics/webhook tests | `AC-041` |
 | `TEST-042` | Production hardening future tests | future schema/rate/integration/load tests | `AC-042` |
