@@ -65,9 +65,18 @@ reads remain no-store and omit `ETag`.
 
 The same non-secret config/env JSON responses are gzip-compressed when
 `Accept-Encoding` allows gzip. These responses include
-`Vary: Accept-Encoding`; `If-None-Match` matches return `304 Not Modified`
-without a compressed body. `resolve_secrets=true` env var reads are never
-compressed because they can contain secret plaintext.
+`Vary: Accept-Encoding`; matching `If-None-Match` on GET reads returns
+`304 Not Modified` without a compressed body. The batch read endpoint uses
+POST, so a matching `If-None-Match` returns `412 Precondition Failed`.
+`resolve_secrets=true` env var reads are never compressed because they can
+contain secret plaintext.
+
+`POST /api/v1/configs/batch` reads current non-secret config and unresolved
+env vars for up to 100 services in one request. Results preserve request order.
+Invalid request shape returns `400`; per-service read failures such as
+`not_found` are returned in that result item so other services can still be
+returned. The endpoint defaults to inherited reads and supports request-level
+`inherit=false`. It does not resolve secret values.
 
 Admin writes remain service-level. `POST /api/v1/admin/changes` writes only the
 request payload to `config.yaml` and `env_vars.yaml`; inherited defaults are not
@@ -211,6 +220,7 @@ only; live deployment wiring remains an external deployment-system concern per
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config`
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars`
   (`resolve_secrets=true` requires auth and returns `Cache-Control: no-store`)
+- `POST /api/v1/configs/batch`
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config?version={commit}`
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars?version={commit}`
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/history`
@@ -299,6 +309,7 @@ only; live deployment wiring remains an external deployment-system concern per
 | Unknown admin JSON field | Request fails with `400 invalid_body`. |
 | Non-secret config/env read with matching `If-None-Match` | Request returns `304 Not Modified` with the current `ETag` and no body. |
 | Non-secret config/env read with `Accept-Encoding: gzip` | Request returns gzip-compressed JSON with `Content-Encoding: gzip` and `Vary: Accept-Encoding`. |
+| Batch read request with a missing service item | Response remains `200` and the specific result item contains a `not_found` error while other items are returned normally. |
 | `resolve_secrets=true` without valid API key | Request fails with `401 unauthorized`. |
 | Resolved env var secret response | Mounted secret files are refreshed before response; response includes `Cache-Control: no-store`, omits `ETag`, and is not gzip-compressed. |
 | Duplicate `secrets.yaml` IDs during resolve | Request fails instead of choosing an ambiguous mounted secret value. |

@@ -445,6 +445,30 @@ func postJSONWithBearer(t *testing.T, srv *httptest.Server, path string, body an
 	return resp
 }
 
+func postJSONWithHeaders(t *testing.T, srv *httptest.Server, path string, body any, headers map[string]string) *http.Response {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+path, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("new POST %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableCompression = true
+	client := &http.Client{Transport: transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	return resp
+}
+
 func deleteJSON(t *testing.T, srv *httptest.Server, path string, body any) *http.Response {
 	t.Helper()
 	b, err := json.Marshal(body)
@@ -697,6 +721,163 @@ func TestGetConfig_ETagVariesByInheritView(t *testing.T) {
 	}
 	if inheritedETag == rawETag {
 		t.Fatalf("inherit views should have distinct ETags, both %q", inheritedETag)
+	}
+}
+
+func TestPostConfigsBatch_ReturnsConfigEnvVarsAndItemErrors(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion:  "config-v1",
+		EnvVarsResourceVersion: "env-v1",
+		UpdatedAt:              time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC),
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{"router_settings": map[string]any{"num_retries": 3}},
+		},
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"LOG_LEVEL": "INFO"},
+				SecretRefs: map[string]string{"API_KEY": "litellm-api-key"},
+			},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	body := map[string]any{
+		"queries": []map[string]string{
+			{"org": "org", "project": "proj", "service": "svc"},
+			{"org": "org", "project": "proj", "service": "missing"},
+		},
+	}
+	resp := postJSONWithHeaders(t, srv, "/api/v1/configs/batch", body, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("expected ETag")
+	}
+
+	var got map[string]any
+	decodeJSON(t, resp, &got)
+	results := got["results"].([]any)
+	if len(results) != 2 {
+		t.Fatalf("results length: got %d", len(results))
+	}
+	first := results[0].(map[string]any)
+	config := first["config"].(map[string]any)["config"].(map[string]any)
+	settings := config["router_settings"].(map[string]any)
+	if settings["num_retries"] != float64(3) {
+		t.Fatalf("batch config num_retries: got %#v", settings["num_retries"])
+	}
+	envVars := first["env_vars"].(map[string]any)["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	secretRefs := envVars["secret_refs"].(map[string]any)
+	if plain["LOG_LEVEL"] != "INFO" || secretRefs["API_KEY"] != "litellm-api-key" {
+		t.Fatalf("batch env_vars: got %#v", envVars)
+	}
+	second := results[1].(map[string]any)
+	errBody := second["error"].(map[string]any)
+	if errBody["code"] != "not_found" {
+		t.Fatalf("missing service error: got %#v", errBody)
+	}
+
+	conditionalResp := postJSONWithHeaders(t, srv, "/api/v1/configs/batch", body, map[string]string{
+		"If-None-Match": etag,
+	})
+	if conditionalResp.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("want 412, got %d", conditionalResp.StatusCode)
+	}
+}
+
+func TestPostConfigsBatch_GzipAndInheritFalse(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head-inherit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion:  "raw-config-v1",
+		EnvVarsResourceVersion: "raw-env-v1",
+		UpdatedAt:              time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC),
+		Config:                 &parser.ServiceConfig{Config: map[string]any{"raw_only": true}},
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain:      map[string]string{"RAW_ONLY": "1"},
+			SecretRefs: map[string]string{"RAW_SECRET": "raw-secret"},
+		}},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasConfig: true, HasEnvVars: true}},
+		InheritedConfig: &parser.ServiceConfig{Config: map[string]any{
+			"raw_only":    true,
+			"global_only": true,
+		}},
+		InheritedEnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain:      map[string]string{"RAW_ONLY": "1", "GLOBAL_ONLY": "1"},
+			SecretRefs: map[string]string{"RAW_SECRET": "raw-secret", "GLOBAL_SECRET": "global-secret"},
+		}},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := postJSONWithHeaders(t, srv, "/api/v1/configs/batch", map[string]any{
+		"inherit": false,
+		"queries": []map[string]string{
+			{"org": "org", "project": "proj", "service": "svc"},
+		},
+	}, map[string]string{"Accept-Encoding": "gzip"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding: got %q, want gzip", got)
+	}
+	if vary := strings.ToLower(resp.Header.Get("Vary")); !strings.Contains(vary, "accept-encoding") {
+		t.Fatalf("Vary should include Accept-Encoding, got %q", resp.Header.Get("Vary"))
+	}
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatalf("new gzip reader: %v", err)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(gz).Decode(&got); err != nil {
+		t.Fatalf("decode gzip batch response: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip reader: %v", err)
+	}
+
+	result := got["results"].([]any)[0].(map[string]any)
+	config := result["config"].(map[string]any)["config"].(map[string]any)
+	if config["raw_only"] != true {
+		t.Fatalf("inherit=false should keep raw config, got %#v", config)
+	}
+	if _, ok := config["global_only"]; ok {
+		t.Fatalf("inherit=false should omit inherited config, got %#v", config)
+	}
+	envVars := result["env_vars"].(map[string]any)["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	secretRefs := envVars["secret_refs"].(map[string]any)
+	if plain["RAW_ONLY"] != "1" || secretRefs["RAW_SECRET"] != "raw-secret" {
+		t.Fatalf("inherit=false should keep raw env vars, got %#v", envVars)
+	}
+	if _, ok := plain["GLOBAL_ONLY"]; ok {
+		t.Fatalf("inherit=false should omit inherited env vars, got %#v", plain)
+	}
+}
+
+func TestPostConfigsBatch_ValidatesRequest(t *testing.T) {
+	st := newFakeStore()
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	for name, body := range map[string]any{
+		"empty queries": map[string]any{"queries": []any{}},
+		"missing org": map[string]any{"queries": []map[string]string{
+			{"project": "proj", "service": "svc"},
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := postJSON(t, srv, "/api/v1/configs/batch", body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d", resp.StatusCode)
+			}
+		})
 	}
 }
 
