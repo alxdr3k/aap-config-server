@@ -178,6 +178,9 @@ func yamlNodeValue(value reflect.Value) (*yaml.Node, error) {
 		if math.IsInf(f, 0) || math.IsNaN(f) {
 			return nil, fmt.Errorf("unsupported float value %v", f)
 		}
+		if math.Trunc(f) == f {
+			return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.FormatFloat(f, 'f', 0, value.Type().Bits())}, nil
+		}
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: strconv.FormatFloat(f, 'f', -1, value.Type().Bits())}, nil
 	default:
 		return nil, fmt.Errorf("unsupported config value type %s", value.Type())
