@@ -10,6 +10,10 @@ import (
 // block (service/org/project) is required for the same reason as config.yaml
 // — it's the key the store indexes on.
 func ParseEnvVars(data []byte) (*EnvVarsConfig, error) {
+	if err := validateEnvVarsSchema(data); err != nil {
+		return nil, err
+	}
+
 	var cfg EnvVarsConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse env_vars.yaml: %w", err)

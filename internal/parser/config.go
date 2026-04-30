@@ -11,6 +11,10 @@ import (
 // present. Downstream code indexes the snapshot by (org, project, service)
 // so missing metadata would produce an unreachable entry.
 func ParseConfig(data []byte) (*ServiceConfig, error) {
+	if err := validateConfigSchema(data); err != nil {
+		return nil, err
+	}
+
 	var cfg ServiceConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config.yaml: %w", err)

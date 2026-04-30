@@ -90,3 +90,73 @@ env_vars:
 		t.Errorf("error should mention metadata, got %v", err)
 	}
 }
+
+func TestParseEnvVars_RejectsSchemaViolations(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "unknown env_vars field",
+			yaml: `version: "1"
+metadata:
+  service: s
+  org: o
+  project: p
+env_vars:
+  plain: {}
+  encrypted: {}`,
+			want: "unknown field encrypted in env_vars",
+		},
+		{
+			name: "invalid plain key",
+			yaml: `version: "1"
+metadata:
+  service: s
+  org: o
+  project: p
+env_vars:
+  plain:
+    1BAD: value`,
+			want: `env_vars.plain key "1BAD" must be a valid environment variable name`,
+		},
+		{
+			name: "secret ref value not scalar",
+			yaml: `version: "1"
+metadata:
+  service: s
+  org: o
+  project: p
+env_vars:
+  secret_refs:
+    API_KEY:
+      id: secret-id`,
+			want: "env_vars.secret_refs.API_KEY value must be a scalar",
+		},
+		{
+			name: "duplicate env key",
+			yaml: `version: "1"
+metadata:
+  service: s
+  org: o
+  project: p
+env_vars:
+  plain:
+    LOG_LEVEL: INFO
+    LOG_LEVEL: DEBUG`,
+			want: `duplicate key "LOG_LEVEL" in env_vars.plain`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parser.ParseEnvVars([]byte(tc.yaml))
+			if err == nil {
+				t.Fatal("expected schema validation error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error should contain %q, got %v", tc.want, err)
+			}
+		})
+	}
+}

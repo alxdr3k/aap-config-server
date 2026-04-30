@@ -132,6 +132,72 @@ secrets:
 	}
 }
 
+func TestParseSecrets_RejectsSchemaViolations(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "unknown top-level field",
+			yaml: `version: "1"
+secrets: []
+metadata: {}`,
+			want: "unknown field metadata in root",
+		},
+		{
+			name: "unknown secret entry field",
+			yaml: `version: "1"
+secrets:
+  - id: foo
+    target: api
+    k8s_secret:
+      name: n
+      namespace: ns
+      key: k`,
+			want: "unknown field target in secrets[0]",
+		},
+		{
+			name: "unknown k8s secret field",
+			yaml: `version: "1"
+secrets:
+  - id: foo
+    k8s_secret:
+      name: n
+      namespace: ns
+      key: k
+      type: Opaque`,
+			want: "unknown field type in secrets[0].k8s_secret",
+		},
+		{
+			name: "secrets is not sequence",
+			yaml: `version: "1"
+secrets:
+  id: foo`,
+			want: "secrets must be a sequence",
+		},
+		{
+			name: "k8s secret is not mapping",
+			yaml: `version: "1"
+secrets:
+  - id: foo
+    k8s_secret: secret-name`,
+			want: "secrets[0].k8s_secret must be a mapping",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parser.ParseSecrets([]byte(tc.yaml))
+			if err == nil {
+				t.Fatal("expected schema validation error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error should contain %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestParseDefaults_Basic(t *testing.T) {
 	input := `
 config:
@@ -157,5 +223,62 @@ env_vars:
 	}
 	if cfg.EnvVars.Plain["LITELLM_TELEMETRY"] != "false" {
 		t.Errorf("LITELLM_TELEMETRY: want %q, got %q", "false", cfg.EnvVars.Plain["LITELLM_TELEMETRY"])
+	}
+}
+
+func TestParseDefaults_RejectsSchemaViolations(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "unknown top-level field",
+			yaml: `config: {}
+metadata: {}`,
+			want: "unknown field metadata in root",
+		},
+		{
+			name: "config is not mapping",
+			yaml: `config: []
+env_vars: {}`,
+			want: "config must be a mapping",
+		},
+		{
+			name: "unknown env vars field",
+			yaml: `config: {}
+env_vars:
+  plain: {}
+  encrypted: {}`,
+			want: "unknown field encrypted in env_vars",
+		},
+		{
+			name: "invalid plain key",
+			yaml: `config: {}
+env_vars:
+  plain:
+    BAD-NAME: value`,
+			want: `env_vars.plain key "BAD-NAME" must be a valid environment variable name`,
+		},
+		{
+			name: "secret ref value not scalar",
+			yaml: `config: {}
+env_vars:
+  secret_refs:
+    API_KEY:
+      id: secret-id`,
+			want: "env_vars.secret_refs.API_KEY value must be a scalar",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parser.ParseDefaults([]byte(tc.yaml))
+			if err == nil {
+				t.Fatal("expected schema validation error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error should contain %q, got %v", tc.want, err)
+			}
+		})
 	}
 }

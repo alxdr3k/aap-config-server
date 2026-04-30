@@ -12,6 +12,10 @@ import (
 // would silently corrupt whatever code reads the list later (secret-mount,
 // SealedSecret sync, etc.). We validate every entry fully up front.
 func ParseSecrets(data []byte) (*SecretsConfig, error) {
+	if err := validateSecretsSchema(data); err != nil {
+		return nil, err
+	}
+
 	var cfg SecretsConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse secrets.yaml: %w", err)
@@ -26,6 +30,10 @@ func ParseSecrets(data []byte) (*SecretsConfig, error) {
 
 // ParseDefaults parses the contents of a _defaults/common.yaml file.
 func ParseDefaults(data []byte) (*DefaultsConfig, error) {
+	if err := validateDefaultsSchema(data); err != nil {
+		return nil, err
+	}
+
 	var cfg DefaultsConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse _defaults/common.yaml: %w", err)
