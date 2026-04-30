@@ -16,7 +16,7 @@ from an atomically swapped in-memory snapshot.
 - current milestone: `P1-M3` extension APIs next
 - active tracks: `EXT`
 - active phase: `EXT-1C`
-- active slice: `EXT-1C.3`
+- active slice: `EXT-1C.4`
 - last accepted gate: `AC-030`
 - next gate: `P1-M3` / `AC-040`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -54,8 +54,11 @@ from an atomically swapped in-memory snapshot.
 - Internal config/env inheritance merge precomputation in the store snapshot.
   Config maps merge in global → org → project → service order with scalar
   override, recursive map merge, array replacement, and null deletion. Env var
-  `plain` and `secret_refs` maps overlay in the same order. Public
-  `inherit=true/false` query behavior remains planned.
+  `plain` and `secret_refs` maps overlay in the same order.
+- Public `inherit=true/false` query behavior for current and versioned
+  config/env read APIs. The default is `inherit=true`; `inherit=false` returns
+  the raw service-level files. `resolve_secrets=true` uses inherited env var
+  secret refs for current reads.
 - Auth-gated admin write/delete/reload endpoints.
 - Auth-gated secret metadata read, admin secret writes, and
   `resolve_secrets=true` env var reads.
@@ -107,8 +110,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Planned
 
-- Public config/env `inherit` query behavior, response optimizations, metrics,
-  schema validation, rate limiting, and integration/load validation.
+- Config inheritance admin-write regression hardening, response optimizations,
+  metrics, schema validation, rate limiting, and integration/load validation.
 
 ## Explicit non-goals
 
@@ -118,8 +121,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `EXT-1C.3`: apply `inherit=true/false` query semantics to config and
-   env var read paths.
+1. Start `EXT-1C.4`: preserve service-level admin write behavior while
+   inherited reads are enabled, with docs and regression tests.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -167,6 +170,10 @@ from an atomically swapped in-memory snapshot.
 - `EXT-1C.2` has local store coverage for inherited config deep merge
   semantics, array replacement, null deletion, raw service config preservation,
   and env var plain/secret ref overlay behavior.
+- `EXT-1C.3` has handler/store coverage for default inherited reads,
+  `inherit=false` raw reads, invalid inherit query rejection, versioned
+  inherited reads, inherited watch version comparison, and resolved secret reads
+  using inherited env var refs.
 - Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`,
   `make test-race`, `make lint`, and `make build` pass in this workspace.

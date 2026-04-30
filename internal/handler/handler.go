@@ -23,7 +23,9 @@ import (
 type ConfigStore interface {
 	GetConfig(ctx context.Context, org, project, service string) (*store.ServiceData, error)
 	GetConfigAtVersion(ctx context.Context, org, project, service, version string) (*store.ServiceData, error)
+	GetInheritedConfigAtVersion(ctx context.Context, org, project, service, version string) (*store.ServiceData, error)
 	GetEnvVarsAtVersion(ctx context.Context, org, project, service, version string) (*store.ServiceData, error)
+	GetInheritedEnvVarsAtVersion(ctx context.Context, org, project, service, version string) (*store.ServiceData, error)
 	History(ctx context.Context, opts store.HistoryOptions) ([]store.HistoryEntry, error)
 	ResourceVersion(ctx context.Context, org, project, service, resource string) (string, string, error)
 	WaitForVersionChange(ctx context.Context, version string) (string, bool, error)
@@ -348,42 +350,58 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 	project := r.PathValue("project")
 	service := r.PathValue("service")
 	version := strings.TrimSpace(r.URL.Query().Get("version"))
+	inherit, err := parseInheritQuery(r)
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
 	if version != "" {
-		h.writeConfigAtVersionResponse(w, r.Context(), org, project, service, version)
+		h.writeConfigAtVersionResponse(w, r.Context(), org, project, service, version, inherit)
 		return
 	}
 
-	h.writeConfigResponse(w, r.Context(), org, project, service)
+	h.writeConfigResponse(w, r.Context(), org, project, service, inherit)
 }
 
 func (h *Handler) watchConfig(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
 	project := r.PathValue("project")
 	service := r.PathValue("service")
-
-	if !h.waitForWatchChange(w, r, org, project, service, "config") {
+	inherit, err := parseInheritQuery(r)
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
 		return
 	}
 
-	h.writeConfigResponse(w, r.Context(), org, project, service)
+	if !h.waitForWatchChange(w, r, org, project, service, "config", inherit) {
+		return
+	}
+
+	h.writeConfigResponse(w, r.Context(), org, project, service, inherit)
 }
 
 func (h *Handler) watchEnvVars(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
 	project := r.PathValue("project")
 	service := r.PathValue("service")
-
-	if !h.waitForWatchChange(w, r, org, project, service, "env_vars") {
+	inherit, err := parseInheritQuery(r)
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
 		return
 	}
 
-	h.writeEnvVarsResponse(w, r.Context(), org, project, service, false)
+	if !h.waitForWatchChange(w, r, org, project, service, "env_vars", inherit) {
+		return
+	}
+
+	h.writeEnvVarsResponse(w, r.Context(), org, project, service, false, inherit)
 }
 
 func (h *Handler) waitForWatchChange(
 	w http.ResponseWriter,
 	r *http.Request,
 	org, project, service, resource string,
+	inherit bool,
 ) bool {
 	version := strings.TrimSpace(r.URL.Query().Get("version"))
 	if version == "" {
@@ -403,7 +421,7 @@ func (h *Handler) waitForWatchChange(
 			w.WriteHeader(http.StatusNotModified)
 			return false
 		}
-		resourceVersion, headVersion, err := h.store.ResourceVersion(r.Context(), org, project, service, resource)
+		resourceVersion, headVersion, err := h.resourceVersion(r.Context(), org, project, service, resource, inherit)
 		if err != nil {
 			respondError(w, err)
 			return false
@@ -429,7 +447,38 @@ func (h *Handler) waitForWatchChange(
 	}
 }
 
-func (h *Handler) writeConfigResponse(w http.ResponseWriter, ctx context.Context, org, project, service string) {
+func (h *Handler) resourceVersion(
+	ctx context.Context,
+	org, project, service, resource string,
+	inherit bool,
+) (string, string, error) {
+	resourceVersion, headVersion, err := h.store.ResourceVersion(ctx, org, project, service, resource)
+	if err != nil || !inherit {
+		return resourceVersion, headVersion, err
+	}
+	d, err := h.store.GetConfig(ctx, org, project, service)
+	if err != nil {
+		return "", "", err
+	}
+	switch resource {
+	case "config":
+		if hasInheritedConfigSource(d) {
+			return headVersion, headVersion, nil
+		}
+	case "env_vars":
+		if hasInheritedEnvVarsSource(d) {
+			return headVersion, headVersion, nil
+		}
+	}
+	return resourceVersion, headVersion, nil
+}
+
+func (h *Handler) writeConfigResponse(
+	w http.ResponseWriter,
+	ctx context.Context,
+	org, project, service string,
+	inherit bool,
+) {
 	d, err := h.store.GetConfig(ctx, org, project, service)
 	if err != nil {
 		respondError(w, err)
@@ -437,12 +486,19 @@ func (h *Handler) writeConfigResponse(w http.ResponseWriter, ctx context.Context
 	}
 
 	version := d.ConfigResourceVersion
+	if inherit && hasInheritedConfigSource(d) {
+		version = h.store.HeadVersion()
+	}
 	if version == "" {
 		version = h.store.HeadVersion()
 	}
 	meta := configMeta(org, project, service, version, d.UpdatedAt)
+	cfg := d.Config
+	if inherit && d.InheritedConfig != nil {
+		cfg = d.InheritedConfig
+	}
 
-	if d.Config == nil {
+	if cfg == nil {
 		respondJSON(w, http.StatusOK, map[string]any{
 			"metadata": meta,
 			"config":   map[string]any{},
@@ -452,7 +508,7 @@ func (h *Handler) writeConfigResponse(w http.ResponseWriter, ctx context.Context
 
 	respondJSON(w, http.StatusOK, map[string]any{
 		"metadata": meta,
-		"config":   d.Config.Config,
+		"config":   cfg.Config,
 	})
 }
 
@@ -460,16 +516,29 @@ func (h *Handler) writeConfigAtVersionResponse(
 	w http.ResponseWriter,
 	ctx context.Context,
 	org, project, service, version string,
+	inherit bool,
 ) {
-	d, err := h.store.GetConfigAtVersion(ctx, org, project, service, version)
+	var (
+		d   *store.ServiceData
+		err error
+	)
+	if inherit {
+		d, err = h.store.GetInheritedConfigAtVersion(ctx, org, project, service, version)
+	} else {
+		d, err = h.store.GetConfigAtVersion(ctx, org, project, service, version)
+	}
 	if err != nil {
 		respondError(w, err)
 		return
 	}
 	meta := configMeta(org, project, service, version, d.UpdatedAt)
 	config := map[string]any{}
-	if d.Config != nil && d.Config.Config != nil {
-		config = d.Config.Config
+	cfg := d.Config
+	if inherit && d.InheritedConfig != nil {
+		cfg = d.InheritedConfig
+	}
+	if cfg != nil && cfg.Config != nil {
+		config = cfg.Config
 	}
 	respondJSON(w, http.StatusOK, map[string]any{
 		"metadata": meta,
@@ -487,6 +556,11 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
 		return
 	}
+	inherit, err := parseInheritQuery(r)
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
 	if version != "" && resolveSecrets {
 		respondErrorCode(w, http.StatusBadRequest, "invalid_query", "version cannot be combined with resolve_secrets")
 		return
@@ -499,11 +573,11 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 		w.Header().Del("ETag")
 	}
 	if version != "" {
-		h.writeEnvVarsAtVersionResponse(w, r.Context(), org, project, service, version)
+		h.writeEnvVarsAtVersionResponse(w, r.Context(), org, project, service, version, inherit)
 		return
 	}
 
-	h.writeEnvVarsResponse(w, r.Context(), org, project, service, resolveSecrets)
+	h.writeEnvVarsResponse(w, r.Context(), org, project, service, resolveSecrets, inherit)
 }
 
 func (h *Handler) writeEnvVarsResponse(
@@ -511,6 +585,7 @@ func (h *Handler) writeEnvVarsResponse(
 	ctx context.Context,
 	org, project, service string,
 	resolveSecrets bool,
+	inherit bool,
 ) {
 	d, err := h.store.GetConfig(ctx, org, project, service)
 	if err != nil {
@@ -519,15 +594,19 @@ func (h *Handler) writeEnvVarsResponse(
 	}
 
 	version := h.store.HeadVersion()
-	if !resolveSecrets && d.EnvVarsResourceVersion != "" {
+	if !resolveSecrets && (!inherit || !hasInheritedEnvVarsSource(d)) && d.EnvVarsResourceVersion != "" {
 		version = d.EnvVarsResourceVersion
 	}
 	if version == "" {
 		version = h.store.HeadVersion()
 	}
 	meta := configMeta(org, project, service, version, d.UpdatedAt)
+	envConfig := d.EnvVars
+	if inherit && d.InheritedEnvVars != nil {
+		envConfig = d.InheritedEnvVars
+	}
 
-	if d.EnvVars == nil {
+	if envConfig == nil {
 		if resolveSecrets {
 			respondJSON(w, http.StatusOK, map[string]any{
 				"metadata": meta,
@@ -549,7 +628,9 @@ func (h *Handler) writeEnvVarsResponse(
 	}
 
 	if resolveSecrets {
-		resolved, err := h.resolveEnvSecrets(ctx, org, project, service, d)
+		resolveData := *d
+		resolveData.EnvVars = envConfig
+		resolved, err := h.resolveEnvSecrets(ctx, org, project, service, &resolveData)
 		if err != nil {
 			respondError(w, err)
 			return
@@ -557,7 +638,7 @@ func (h *Handler) writeEnvVarsResponse(
 		respondJSON(w, http.StatusOK, map[string]any{
 			"metadata": meta,
 			"env_vars": map[string]any{
-				"plain":   nullToEmpty(d.EnvVars.EnvVars.Plain),
+				"plain":   nullToEmpty(envConfig.EnvVars.Plain),
 				"secrets": resolved,
 			},
 		})
@@ -567,8 +648,8 @@ func (h *Handler) writeEnvVarsResponse(
 	respondJSON(w, http.StatusOK, map[string]any{
 		"metadata": meta,
 		"env_vars": map[string]any{
-			"plain":       nullToEmpty(d.EnvVars.EnvVars.Plain),
-			"secret_refs": nullToEmpty(d.EnvVars.EnvVars.SecretRefs),
+			"plain":       nullToEmpty(envConfig.EnvVars.Plain),
+			"secret_refs": nullToEmpty(envConfig.EnvVars.SecretRefs),
 		},
 	})
 }
@@ -577,8 +658,17 @@ func (h *Handler) writeEnvVarsAtVersionResponse(
 	w http.ResponseWriter,
 	ctx context.Context,
 	org, project, service, version string,
+	inherit bool,
 ) {
-	d, err := h.store.GetEnvVarsAtVersion(ctx, org, project, service, version)
+	var (
+		d   *store.ServiceData
+		err error
+	)
+	if inherit {
+		d, err = h.store.GetInheritedEnvVarsAtVersion(ctx, org, project, service, version)
+	} else {
+		d, err = h.store.GetEnvVarsAtVersion(ctx, org, project, service, version)
+	}
 	if err != nil {
 		respondError(w, err)
 		return
@@ -588,9 +678,13 @@ func (h *Handler) writeEnvVarsAtVersionResponse(
 		"plain":       map[string]string{},
 		"secret_refs": map[string]string{},
 	}
-	if d.EnvVars != nil {
-		envVars["plain"] = nullToEmpty(d.EnvVars.EnvVars.Plain)
-		envVars["secret_refs"] = nullToEmpty(d.EnvVars.EnvVars.SecretRefs)
+	envConfig := d.EnvVars
+	if inherit && d.InheritedEnvVars != nil {
+		envConfig = d.InheritedEnvVars
+	}
+	if envConfig != nil {
+		envVars["plain"] = nullToEmpty(envConfig.EnvVars.Plain)
+		envVars["secret_refs"] = nullToEmpty(envConfig.EnvVars.SecretRefs)
 	}
 	respondJSON(w, http.StatusOK, map[string]any{
 		"metadata": meta,
@@ -1025,6 +1119,36 @@ func parseBoolQuery(r *http.Request, name string) (bool, error) {
 		return false, errors.New(name + " must be a boolean")
 	}
 	return value, nil
+}
+
+func parseInheritQuery(r *http.Request) (bool, error) {
+	raw := r.URL.Query().Get("inherit")
+	if raw == "" {
+		return true, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, errors.New("inherit must be a boolean")
+	}
+	return value, nil
+}
+
+func hasInheritedConfigSource(d *store.ServiceData) bool {
+	for _, source := range d.InheritedSources {
+		if source.HasConfig {
+			return true
+		}
+	}
+	return false
+}
+
+func hasInheritedEnvVarsSource(d *store.ServiceData) bool {
+	for _, source := range d.InheritedSources {
+		if source.HasEnvVars {
+			return true
+		}
+	}
+	return false
 }
 
 func parseWatchTimeout(r *http.Request) (time.Duration, error) {

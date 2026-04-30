@@ -345,6 +345,29 @@ func (s *Store) GetConfigAtVersion(ctx context.Context, org, project, service, v
 	return d, nil
 }
 
+// GetInheritedConfigAtVersion returns config.yaml overlaid with defaults as
+// they existed at a Git commit. The service must exist in the current snapshot,
+// matching GetConfigAtVersion's path-safety boundary.
+func (s *Store) GetInheritedConfigAtVersion(
+	ctx context.Context,
+	org, project, service, version string,
+) (*ServiceData, error) {
+	d, err := s.GetConfigAtVersion(ctx, org, project, service, version)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	key := ServiceKey{Org: org, Project: project, Service: service}
+	defaults, err := s.defaultsAtVersion(version, key)
+	if err != nil {
+		return nil, err
+	}
+	applyInheritedFields(key, d, defaults)
+	return d, nil
+}
+
 // GetEnvVarsAtVersion returns env_vars.yaml for a service as it existed at a
 // Git commit. Secret value resolution is intentionally handled only for the
 // current snapshot by the HTTP layer.
@@ -380,6 +403,29 @@ func (s *Store) GetEnvVarsAtVersion(ctx context.Context, org, project, service, 
 		envVarsDigest:          digestBytes(raw),
 	}
 	applyMetadataUpdatedAt(d, envVars.Metadata.UpdatedAt)
+	return d, nil
+}
+
+// GetInheritedEnvVarsAtVersion returns env_vars.yaml overlaid with defaults as
+// they existed at a Git commit. Secret values are still resolved only for the
+// current snapshot by the HTTP layer.
+func (s *Store) GetInheritedEnvVarsAtVersion(
+	ctx context.Context,
+	org, project, service, version string,
+) (*ServiceData, error) {
+	d, err := s.GetEnvVarsAtVersion(ctx, org, project, service, version)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	key := ServiceKey{Org: org, Project: project, Service: service}
+	defaults, err := s.defaultsAtVersion(version, key)
+	if err != nil {
+		return nil, err
+	}
+	applyInheritedFields(key, d, defaults)
 	return d, nil
 }
 
@@ -1543,15 +1589,44 @@ func applyDefaultsInheritance(data map[string]*ServiceData, defaults defaultsInd
 			continue
 		}
 		serviceKey := ServiceKey{Org: parts[0], Project: parts[1], Service: parts[2]}
-		entries := defaultsEntriesFor(serviceKey, defaults)
-		sources := make([]DefaultsSource, 0, len(entries))
-		for _, entry := range entries {
-			sources = append(sources, entry.source)
-		}
-		sd.InheritedSources = sources
-		sd.InheritedConfig = inheritedConfigFor(serviceKey, sd, entries)
-		sd.InheritedEnvVars = inheritedEnvVarsFor(serviceKey, sd, entries)
+		applyInheritedFields(serviceKey, sd, defaults)
 	}
+}
+
+func (s *Store) defaultsAtVersion(version string, key ServiceKey) (defaultsIndex, error) {
+	defaults := newDefaultsIndex()
+	paths := []string{
+		"configs/_defaults/common.yaml",
+		"configs/orgs/" + key.Org + "/_defaults/common.yaml",
+		"configs/orgs/" + key.Org + "/projects/" + key.Project + "/_defaults/common.yaml",
+	}
+	for _, path := range paths {
+		raw, err := s.repo.ReadFileAtCommit(version, path)
+		if err != nil {
+			if errors.Is(err, gitops.ErrFileNotFoundAtCommit) {
+				continue
+			}
+			if errors.Is(err, gitops.ErrCommitNotFound) {
+				return defaults, apperror.Wrap(apperror.CodeNotFound, "historical version not found", err)
+			}
+			return defaults, apperror.Wrap(apperror.CodeInternal, "read historical defaults", err)
+		}
+		if _, perr := parseAndStoreDefaults(path, raw, &defaults); perr != nil {
+			return defaults, apperror.Wrap(apperror.CodeInternal, "parse historical "+path, perr)
+		}
+	}
+	return defaults, nil
+}
+
+func applyInheritedFields(key ServiceKey, sd *ServiceData, defaults defaultsIndex) {
+	entries := defaultsEntriesFor(key, defaults)
+	sources := make([]DefaultsSource, 0, len(entries))
+	for _, entry := range entries {
+		sources = append(sources, entry.source)
+	}
+	sd.InheritedSources = sources
+	sd.InheritedConfig = inheritedConfigFor(key, sd, entries)
+	sd.InheritedEnvVars = inheritedEnvVarsFor(key, sd, entries)
 }
 
 func defaultsEntriesFor(key ServiceKey, defaults defaultsIndex) []*defaultsEntry {

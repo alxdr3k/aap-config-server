@@ -42,7 +42,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Versioned config/env reads (`?version=...`)      | Implemented for historical Git commits; secret resolution is current-only |
 | Revert target validation / restore plan          | Implemented as internal module |
 | Revert endpoint (`POST /api/v1/admin/changes/revert`) | Implemented with forward-only Git commit, reload, and restored SealedSecret apply |
-| Defaults parsing/source metadata and inheritance merge | Implemented as internal module; public `inherit` query behavior remains planned |
+| Config/env inheritance (`inherit=true/false`) | Implemented for current and versioned read APIs; admin writes remain service-level |
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |
