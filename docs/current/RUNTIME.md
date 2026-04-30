@@ -68,8 +68,22 @@ Kubernetes apply code will write:
   remaining `secret_refs`, rejects duplicate plain/secret keys, and validates
   shell-compatible env var names.
 
-ConfigMap/Secret apply, Deployment patching, and debounce behavior remain
-planned Agent slices.
+ConfigMap/Secret apply is implemented separately below; Deployment patching and
+debounce behavior remain planned Agent slices.
+
+## Config Agent ConfigMap/Secret apply
+
+`internal/agent` can apply rendered payloads to Kubernetes through a typed
+client-go client:
+
+- `config.yaml` is written to the configured ConfigMap data key.
+- `env.sh` is written to the configured Secret data key as bytes.
+- Existing resources are patched with merge patches so unrelated data keys are
+  preserved; missing resources are created.
+- The target namespace, ConfigMap name, and Secret name are required and
+  validated before any Kubernetes API call.
+
+Deployment patching and debounce behavior remain planned Agent slices.
 
 ## Implemented API surface
 
