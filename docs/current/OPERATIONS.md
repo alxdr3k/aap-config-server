@@ -248,7 +248,9 @@ Symptom:
 Action:
 
 1. Read `last_reload_error` from `/api/v1/status`.
-2. Fix malformed YAML, schema errors, or dirty `configs/` checkout drift.
+2. Fix malformed YAML, schema errors, or dirty `configs/` checkout drift. Schema
+   errors include unknown fields in known YAML envelopes, duplicate validated
+   keys, invalid node shapes, and non-shell-compatible env var names.
 3. Call `POST /api/v1/admin/reload` with API key.
 4. Confirm `/readyz` returns 200.
 

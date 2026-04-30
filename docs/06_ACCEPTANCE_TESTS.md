@@ -68,7 +68,7 @@ staging / manual acceptance가 아직 실행되지 않은 상태인지 분리한
 | `TEST-030` | Config Agent tests | `internal/agent/*_test.go`, `internal/agent/e2e_smoke_test.go` | `AC-030` bootstrap, leader election, fetch loop, rendering, ConfigMap/Secret apply, rollout patch, debounce coverage, and fake-client e2e smoke for fetch/render/apply/rollout |
 | `TEST-040` | Console extension tests | `internal/store/store_test.go`, `internal/handler/handler_test.go`, `internal/gitops/repo_test.go` | `AC-040` store version wait primitive, resource-scoped config/env watch endpoints, git history iterator/classifier, public history API, versioned config/env reads, revert target validation/restore plan, public revert endpoint flow, defaults source parsing, internal merge semantics, public `inherit` query behavior, and admin write preservation regression landed |
 | `TEST-041` | Operational extension tests | `internal/handler/handler_test.go`, `internal/metrics/metrics_test.go`, `internal/store/store_test.go`, `internal/gitops/repo_test.go` | `AC-041` ETag/`If-None-Match`, gzip, batch read, Prometheus metrics, and authenticated Git webhook refresh coverage landed |
-| `TEST-042` | Production hardening future tests | future schema/rate/integration/load tests | `AC-042` |
+| `TEST-042` | Production hardening tests | `internal/parser/*_test.go` plus future rate/integration/load tests | `AC-042` schema validation coverage landed; rate limiting, integration/load, and deployment handoff coverage remain planned |
 
 ## Manual / Static Checks
 

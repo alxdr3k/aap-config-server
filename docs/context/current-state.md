@@ -13,10 +13,10 @@ from an atomically swapped in-memory snapshot.
 
 ## Current roadmap position
 
-- current milestone: `P1-M3` hardening next
+- current milestone: `P1-M3` hardening in progress
 - active tracks: `HARDEN`
 - active phase: `HARDEN-1A`
-- active slice: `HARDEN-1A.1`
+- active slice: `HARDEN-1A.2`
 - last accepted gate: `AC-041`
 - next gate: `P1-M3` / `AC-042`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -32,6 +32,10 @@ from an atomically swapped in-memory snapshot.
 - Store version-change notification and `WaitForVersionChange` primitive for
   long-poll watch endpoints.
 - Parser support for `config.yaml`, `env_vars.yaml`, and `secrets.yaml` metadata.
+- Parser-level schema validation for `config.yaml`, `env_vars.yaml`,
+  `_defaults/common.yaml`, and `secrets.yaml`, including known envelope fields,
+  duplicate validated keys, node shapes, shell-compatible env var names, and
+  required metadata/secret pointer semantics.
 - Read APIs for config, env vars, service discovery, status, health/readiness.
 - Config/env vars watch APIs with resource-scoped `version` mismatch behavior
   and max 30s long-poll timeout returning `304 Not Modified` when unchanged.
@@ -134,8 +138,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Planned
 
-- schema validation, rate limiting, integration/load validation, and deployment
-  hardening.
+- rate limiting, integration/load validation, and deployment hardening.
 
 ## Explicit non-goals
 
@@ -145,8 +148,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `HARDEN-1A.1`: add explicit schema validation layer for config, env
-   vars, defaults, and secret metadata files.
+1. Start `HARDEN-1A.2`: add configurable rate limiting for admin, secret
+   resolve, watch, and batch endpoints.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -168,6 +171,8 @@ from an atomically swapped in-memory snapshot.
   `check`, `lint`, `scan`, and `test` checks before merge.
 - `AC-041` is passing for ETag, gzip, batch read, Prometheus metrics, and Git
   webhook refresh operational extensions.
+- `HARDEN-1A.1` has parser coverage for schema rejection across service config,
+  env vars, defaults, and secret metadata files.
 - `EXT-1A.1` has local store coverage for immediate stale-version return,
   successful refresh notification, failed-refresh non-notification, and context
   cancellation.
