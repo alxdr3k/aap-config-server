@@ -16,7 +16,7 @@ from an atomically swapped in-memory snapshot.
 - current milestone: `P1-M3` extension APIs next
 - active tracks: `EXT`
 - active phase: `EXT-1B`
-- active slice: `EXT-1B.1`
+- active slice: `EXT-1B.2`
 - last accepted gate: `AC-030`
 - next gate: `P1-M3` / `AC-040`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -37,6 +37,8 @@ from an atomically swapped in-memory snapshot.
   and max 30s long-poll timeout returning `304 Not Modified` when unchanged.
   Env vars watch returns unresolved `plain` plus `secret_refs` payloads when
   changed.
+- Git history iterator and service-scoped file-change classifier under
+  `internal/gitops`, ready for the history API endpoint.
 - Auth-gated admin write/delete/reload endpoints.
 - Auth-gated secret metadata read, admin secret writes, and
   `resolve_secrets=true` env var reads.
@@ -99,8 +101,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `EXT-1B.1`: add Git history iterator and file-change classifier for
-   service-scoped history.
+1. Start `EXT-1B.2`: implement the history API with `file`, `limit`, and
+   `before` filtering.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -128,6 +130,8 @@ from an atomically swapped in-memory snapshot.
 - `EXT-1A.3` has local store/handler coverage for env vars version mismatch,
   resource-scoped config-only non-wakeup behavior, unresolved secret refs,
   missing version, and `304 Not Modified` timeout behavior.
+- `EXT-1B.1` has local gitops coverage for service-scoped file classification
+  and newest-first commit history iteration.
 - Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`,
   `make test-race`, `make lint`, and `make build` pass in this workspace.

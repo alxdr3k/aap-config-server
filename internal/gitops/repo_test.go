@@ -420,3 +420,129 @@ func TestReadFileAtCommit(t *testing.T) {
 		t.Errorf("ReadFileAtCommit: want %q, got %q", original, got)
 	}
 }
+
+func TestClassifyServiceFileChange(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		wantOK   bool
+		wantRel  string
+		wantKind gitops.ServiceFileKind
+	}{
+		{
+			name:     "config",
+			path:     "configs/orgs/myorg/projects/proj/services/litellm/config.yaml",
+			wantOK:   true,
+			wantRel:  "config.yaml",
+			wantKind: gitops.ServiceFileConfig,
+		},
+		{
+			name:     "env vars",
+			path:     "configs/orgs/myorg/projects/proj/services/litellm/env_vars.yaml",
+			wantOK:   true,
+			wantRel:  "env_vars.yaml",
+			wantKind: gitops.ServiceFileEnvVars,
+		},
+		{
+			name:     "secrets metadata",
+			path:     "configs/orgs/myorg/projects/proj/services/litellm/secrets.yaml",
+			wantOK:   true,
+			wantRel:  "secrets.yaml",
+			wantKind: gitops.ServiceFileSecrets,
+		},
+		{
+			name:     "sealed secret manifest",
+			path:     "configs/orgs/myorg/projects/proj/services/litellm/sealed-secrets/ns/name.yaml",
+			wantOK:   true,
+			wantRel:  "sealed-secrets/ns/name.yaml",
+			wantKind: gitops.ServiceFileSealedSecret,
+		},
+		{
+			name:   "sibling service with shared prefix",
+			path:   "configs/orgs/myorg/projects/proj/services/litellm-canary/config.yaml",
+			wantOK: false,
+		},
+		{
+			name:   "unknown file under service",
+			path:   "configs/orgs/myorg/projects/proj/services/litellm/notes.txt",
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := gitops.ClassifyServiceFileChange(tt.path, "myorg", "proj", "litellm")
+			if ok != tt.wantOK {
+				t.Fatalf("ok: want %v, got %v", tt.wantOK, ok)
+			}
+			if !ok {
+				return
+			}
+			if got.Path != tt.wantRel || got.Kind != tt.wantKind {
+				t.Fatalf("change: want (%s, %s), got (%s, %s)", tt.wantRel, tt.wantKind, got.Path, got.Kind)
+			}
+		})
+	}
+}
+
+func TestIterateServiceHistory(t *testing.T) {
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+
+	if _, err := repo.CommitAndPush(ctx, "add litellm config", map[string][]byte{
+		"configs/orgs/myorg/projects/proj/services/litellm/config.yaml": []byte("version: \"1\"\nconfig: {}\n"),
+	}); err != nil {
+		t.Fatalf("CommitAndPush litellm config: %v", err)
+	}
+	if _, err := repo.CommitAndPush(ctx, "update sibling env", map[string][]byte{
+		"configs/orgs/myorg/projects/proj/services/other/env_vars.yaml": []byte("version: \"1\"\nenv_vars: {}\n"),
+	}); err != nil {
+		t.Fatalf("CommitAndPush sibling env: %v", err)
+	}
+	if _, err := repo.CommitAndPush(ctx, "update litellm secrets", map[string][]byte{
+		"configs/orgs/myorg/projects/proj/services/litellm/secrets.yaml":                []byte("version: \"1\"\nsecrets: []\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm/sealed-secrets/ns/name.yaml": []byte("sealed\n"),
+	}); err != nil {
+		t.Fatalf("CommitAndPush litellm secrets: %v", err)
+	}
+
+	var got []gitops.ServiceHistoryEntry
+	if err := repo.IterateServiceHistory(ctx, "myorg", "proj", "litellm", func(entry gitops.ServiceHistoryEntry) error {
+		got = append(got, entry)
+		return nil
+	}); err != nil {
+		t.Fatalf("IterateServiceHistory: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("history length: want 2, got %d: %#v", len(got), got)
+	}
+	if got[0].Message != "update litellm secrets" {
+		t.Fatalf("newest message: want update litellm secrets, got %q", got[0].Message)
+	}
+	if got[1].Message != "add litellm config" {
+		t.Fatalf("oldest message: want add litellm config, got %q", got[1].Message)
+	}
+	if got[0].Version == "" || got[0].Author == "" || got[0].Timestamp.IsZero() {
+		t.Fatalf("newest entry missing metadata: %#v", got[0])
+	}
+
+	assertChangedPaths(t, got[0].FilesChanged, []string{"sealed-secrets/ns/name.yaml", "secrets.yaml"})
+	assertChangedPaths(t, got[1].FilesChanged, []string{"config.yaml"})
+}
+
+func assertChangedPaths(t *testing.T, got []gitops.ServiceFileChange, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("changed files length: want %d, got %d: %#v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i].Path != want[i] {
+			t.Fatalf("changed file %d: want %q, got %q", i, want[i], got[i].Path)
+		}
+	}
+}
