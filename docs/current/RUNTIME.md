@@ -101,8 +101,10 @@ ADR-001:
 
 - the first change outside cooldown applies immediately;
 - changes during cooldown or an active debounce window become pending;
-- pending changes apply after the quiet period or at max-wait, whichever comes
-  first;
+- pending changes apply no earlier than the cooldown boundary, then after the
+  quiet period or at max-wait, whichever comes first;
+- max-wait configuration must be greater than or equal to cooldown and the
+  quiet period;
 - each apply starts a new cooldown window.
 
 Image/RBAC examples and e2e orchestration remain planned Agent slices.

@@ -850,7 +850,7 @@ Config Agent가 ConfigMap/Secret 업데이트 후 Deployment의 Pod template ann
 
 #### 연속 변경과 재시작 폭풍 방지 (Debounce)
 
-**Leading-edge Debounce**: 첫 변경은 즉시 적용, 이후 연속 변경만 배칭한다. 파라미터: `--debounce-cooldown=10s`, `--debounce-quiet-period=10s`, `--debounce-max-wait=2m`.
+**Leading-edge Debounce**: 첫 변경은 즉시 적용, 이후 연속 변경만 배칭한다. 파라미터: `--debounce-cooldown=10s`, `--debounce-quiet-period=10s`, `--debounce-max-wait=2m`. `max-wait`는 `cooldown`과 `quiet-period` 이상이어야 한다.
 
 | 시나리오 | 동작 | litellm 반영 지연 |
 |----------|------|-------------------|

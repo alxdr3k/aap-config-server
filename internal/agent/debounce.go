@@ -62,6 +62,9 @@ func (c DebounceConfig) Validate() error {
 	if c.MaxWait < c.QuietPeriod {
 		return errors.New("debounce max wait must be >= quiet period")
 	}
+	if c.MaxWait < c.Cooldown {
+		return errors.New("debounce max wait must be >= cooldown")
+	}
 	return nil
 }
 

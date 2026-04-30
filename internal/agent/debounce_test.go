@@ -145,6 +145,7 @@ func TestDebouncerValidation(t *testing.T) {
 		{Cooldown: time.Second, MaxWait: time.Second},
 		{Cooldown: time.Second, QuietPeriod: time.Second},
 		{Cooldown: time.Second, QuietPeriod: 2 * time.Second, MaxWait: time.Second},
+		{Cooldown: 2 * time.Second, QuietPeriod: time.Second, MaxWait: 1500 * time.Millisecond},
 	}
 	for _, cfg := range tests {
 		if _, err := NewDebouncer(cfg); err == nil {
