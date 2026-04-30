@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -230,6 +231,34 @@ func (f *fakeRepo) ReadFileAtCommit(commit string, path string) ([]byte, error) 
 		return nil, fmt.Errorf("%w: file %s at %s", gitops.ErrFileNotFoundAtCommit, path, commit)
 	}
 	return append([]byte(nil), d...), nil
+}
+
+func (f *fakeRepo) ReadServiceFilesAtCommit(
+	_ context.Context,
+	commit, org, project, service string,
+) ([]gitops.ServiceFileContent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	files := f.files
+	if snap, ok := f.filesAtCommit[commit]; ok {
+		files = snap
+	} else if commit != f.commitHash {
+		return nil, fmt.Errorf("%w: commit %s", gitops.ErrCommitNotFound, commit)
+	}
+	var out []gitops.ServiceFileContent
+	for path, data := range files {
+		change, ok := gitops.ClassifyServiceFileChange(path, org, project, service)
+		if !ok {
+			continue
+		}
+		out = append(out, gitops.ServiceFileContent{
+			Path: change.Path,
+			Kind: change.Kind,
+			Data: append([]byte(nil), data...),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
 }
 
 func (f *fakeRepo) IterateServiceHistory(_ context.Context, _, _, _ string, fn func(gitops.ServiceHistoryEntry) error) error {
@@ -456,6 +485,146 @@ func TestStore_GetVersionedResources_EmptyWhenFileMissingAtCommit(t *testing.T) 
 	}
 	if envVars.EnvVars != nil || envVars.EnvVarsResourceVersion != "without-files" {
 		t.Fatalf("missing env_vars file should return empty env data, got %#v", envVars)
+	}
+}
+
+func TestStore_PrepareRevert_BuildsRestorePlan(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	seedSecretFiles(repo, "myorg", "proj", "litellm")
+	base := store.ServicePath("myorg", "proj", "litellm")
+	repo.filesAtCommit["target"] = map[string][]byte{
+		base + "/config.yaml": []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+config:
+  router_settings:
+    num_retries: 1
+`),
+		base + "/sealed-secrets/ai-platform/remote-secrets.yaml": []byte("old-sealed"),
+	}
+	repo.history = []gitops.ServiceHistoryEntry{{Version: "target"}}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	plan, err := s.PrepareRevert(ctx, &store.RevertRequest{
+		Org:           "myorg",
+		Project:       "proj",
+		Service:       "litellm",
+		TargetVersion: "target",
+	})
+	if err != nil {
+		t.Fatalf("PrepareRevert: %v", err)
+	}
+	if plan.Message != "Rollback to target" {
+		t.Fatalf("default message: got %q", plan.Message)
+	}
+	if plan.Noop {
+		t.Fatal("plan should not be noop")
+	}
+	if got := strings.Join(plan.RestoredFiles, ","); got != "config.yaml,sealed-secrets/ai-platform/remote-secrets.yaml" {
+		t.Fatalf("restored files: got %q", got)
+	}
+	if got := strings.Join(plan.DeletedFiles, ","); got != "env_vars.yaml,secrets.yaml" {
+		t.Fatalf("deleted files: got %q", got)
+	}
+	if string(plan.Files[base+"/sealed-secrets/ai-platform/remote-secrets.yaml"]) != "old-sealed" {
+		t.Fatalf("sealed file payload: got %q", plan.Files[base+"/sealed-secrets/ai-platform/remote-secrets.yaml"])
+	}
+	if _, ok := plan.Files[base+"/env_vars.yaml"]; ok {
+		t.Fatal("target-missing env_vars.yaml should not be in restored Files")
+	}
+}
+
+func TestStore_PrepareRevert_NoopWhenTargetMatchesCurrent(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	repo.history = []gitops.ServiceHistoryEntry{{Version: repo.commitHash}}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	plan, err := s.PrepareRevert(ctx, &store.RevertRequest{
+		Org:           "myorg",
+		Project:       "proj",
+		Service:       "litellm",
+		TargetVersion: repo.commitHash,
+		Message:       "custom rollback",
+	})
+	if err != nil {
+		t.Fatalf("PrepareRevert: %v", err)
+	}
+	if !plan.Noop {
+		t.Fatal("matching target should be noop")
+	}
+	if plan.Message != "custom rollback" {
+		t.Fatalf("custom message: got %q", plan.Message)
+	}
+	if len(plan.DeletedFiles) != 0 {
+		t.Fatalf("deleted files: got %v", plan.DeletedFiles)
+	}
+}
+
+func TestStore_PrepareRevert_NotFoundCases(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	repo.filesAtCommit["empty-target"] = map[string][]byte{
+		"configs/orgs/myorg/projects/proj/services/other/config.yaml": []byte("version: \"1\"\n"),
+	}
+	base := store.ServicePath("myorg", "proj", "litellm")
+	repo.filesAtCommit["unrelated"] = map[string][]byte{
+		base + "/config.yaml": []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+config: {}
+`),
+	}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		req  *store.RevertRequest
+	}{
+		{
+			name: "missing commit",
+			req:  &store.RevertRequest{Org: "myorg", Project: "proj", Service: "litellm", TargetVersion: "missing"},
+		},
+		{
+			name: "no service files at target",
+			req:  &store.RevertRequest{Org: "myorg", Project: "proj", Service: "litellm", TargetVersion: "empty-target"},
+		},
+		{
+			name: "target did not change service",
+			req:  &store.RevertRequest{Org: "myorg", Project: "proj", Service: "litellm", TargetVersion: "unrelated"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.PrepareRevert(ctx, tc.req)
+			if err == nil {
+				t.Fatal("expected not-found error")
+			}
+			var appErr *apperror.Error
+			if !errors.As(err, &appErr) || appErr.Code != apperror.CodeNotFound {
+				t.Fatalf("expected CodeNotFound, got %T %v", err, err)
+			}
+		})
 	}
 }
 

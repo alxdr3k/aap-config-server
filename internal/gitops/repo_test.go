@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -442,6 +443,50 @@ func TestReadFileAtCommit_NotFoundSentinels(t *testing.T) {
 	}
 	if _, err := repo.ReadFileAtCommit("0000000000000000000000000000000000000000", "configs/file.yaml"); !errors.Is(err, gitops.ErrCommitNotFound) {
 		t.Fatalf("missing commit should wrap ErrCommitNotFound, got %v", err)
+	}
+}
+
+func TestReadServiceFilesAtCommit(t *testing.T) {
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	hash, err := repo.CommitAndPush(ctx, "service files", map[string][]byte{
+		"configs/orgs/myorg/projects/proj/services/litellm/config.yaml":                         []byte("config\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm/env_vars.yaml":                       []byte("env\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm/sealed-secrets/ns/secret.yaml":       []byte("sealed\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm/notes.txt":                           []byte("ignored\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm2/config.yaml":                        []byte("sibling\n"),
+		"configs/orgs/myorg/projects/other/services/litellm/config.yaml":                        []byte("other project\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm/sealed-secrets/ns/another.yaml":      []byte("sealed2\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm/sealed-secrets/ns/nested/third.yaml": []byte("sealed3\n"),
+	})
+	if err != nil {
+		t.Fatalf("CommitAndPush: %v", err)
+	}
+
+	files, err := repo.ReadServiceFilesAtCommit(ctx, hash, "myorg", "proj", "litellm")
+	if err != nil {
+		t.Fatalf("ReadServiceFilesAtCommit: %v", err)
+	}
+	got := make([]string, 0, len(files))
+	for _, file := range files {
+		got = append(got, file.Path)
+		if len(file.Data) == 0 {
+			t.Fatalf("file %s has empty data", file.Path)
+		}
+	}
+	want := []string{
+		"config.yaml",
+		"env_vars.yaml",
+		"sealed-secrets/ns/another.yaml",
+		"sealed-secrets/ns/nested/third.yaml",
+		"sealed-secrets/ns/secret.yaml",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("service files: want %v, got %v", want, got)
 	}
 }
 

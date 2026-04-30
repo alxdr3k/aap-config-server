@@ -95,6 +95,13 @@ type ServiceHistoryEntry struct {
 	FilesChanged []ServiceFileChange
 }
 
+// ServiceFileContent is one recognized service file as it existed at a commit.
+type ServiceFileContent struct {
+	Path string
+	Kind ServiceFileKind
+	Data []byte
+}
+
 // GitRepo is the interface the store uses to interact with the git repository.
 // All path arguments are relative to the repository root.
 type GitRepo interface {
@@ -136,6 +143,10 @@ type GitRepo interface {
 
 	// ReadFileAtCommit reads a file as it existed at commitHash.
 	ReadFileAtCommit(commitHash, path string) ([]byte, error)
+
+	// ReadServiceFilesAtCommit reads recognized files under a service path as
+	// they existed at commitHash.
+	ReadServiceFilesAtCommit(ctx context.Context, commitHash, org, project, service string) ([]ServiceFileContent, error)
 
 	// IterateServiceHistory walks commits from HEAD newest-first and calls fn
 	// for commits that changed files under the service's config repo path.
@@ -607,6 +618,56 @@ func (r *Repo) ReadFileAtCommit(commitHash, path string) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(content), nil
+}
+
+// ReadServiceFilesAtCommit reads all recognized files under a service path as
+// they existed at the given commit.
+func (r *Repo) ReadServiceFilesAtCommit(
+	ctx context.Context,
+	commitHash, org, project, service string,
+) ([]ServiceFileContent, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	h := plumbing.NewHash(commitHash)
+	commit, err := r.repo.CommitObject(h)
+	if err != nil {
+		return nil, fmt.Errorf("%w: commit %s: %w", ErrCommitNotFound, commitHash, err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, err
+	}
+
+	var files []ServiceFileContent
+	err = tree.Files().ForEach(func(file *object.File) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		change, ok := ClassifyServiceFileChange(file.Name, org, project, service)
+		if !ok {
+			return nil
+		}
+		content, err := file.Contents()
+		if err != nil {
+			return err
+		}
+		files = append(files, ServiceFileContent{
+			Path: change.Path,
+			Kind: change.Kind,
+			Data: []byte(content),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files, nil
 }
 
 // IterateServiceHistory walks commits from HEAD newest-first and emits only

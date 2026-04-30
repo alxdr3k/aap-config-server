@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -507,6 +508,141 @@ func (s *Store) ListServices(org, project string) []ServiceInfo {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result
+}
+
+// PrepareRevert validates a target commit and builds the service-file restore
+// plan without mutating Git or the in-memory snapshot.
+func (s *Store) PrepareRevert(ctx context.Context, req *RevertRequest) (*RevertPlan, error) {
+	if req == nil {
+		return nil, apperror.New(apperror.CodeValidation, "revert request is required")
+	}
+	if req.Org == "" || req.Project == "" || req.Service == "" {
+		return nil, apperror.New(apperror.CodeValidation, "org, project and service are required")
+	}
+	if req.TargetVersion == "" {
+		return nil, apperror.New(apperror.CodeValidation, "target_version is required")
+	}
+	if err := validateName("org", req.Org); err != nil {
+		return nil, err
+	}
+	if err := validateName("project", req.Project); err != nil {
+		return nil, err
+	}
+	if err := validateName("service", req.Service); err != nil {
+		return nil, err
+	}
+	if _, err := s.GetConfig(ctx, req.Org, req.Project, req.Service); err != nil {
+		return nil, err
+	}
+
+	targetFiles, err := s.repo.ReadServiceFilesAtCommit(ctx, req.TargetVersion, req.Org, req.Project, req.Service)
+	if err != nil {
+		if errors.Is(err, gitops.ErrCommitNotFound) {
+			return nil, apperror.Wrap(apperror.CodeNotFound, "target version not found", err)
+		}
+		return nil, apperror.Wrap(apperror.CodeInternal, "read target service files", err)
+	}
+	changedService, err := s.targetVersionChangedService(ctx, req)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "validate target service history", err)
+	}
+	if !changedService {
+		return nil, apperror.New(apperror.CodeNotFound, "target version did not change service files")
+	}
+	if len(targetFiles) == 0 {
+		return nil, apperror.New(apperror.CodeNotFound, "target version has no service files")
+	}
+
+	currentFiles, err := s.repo.ReadServiceFilesAtCommit(ctx, s.HeadVersion(), req.Org, req.Project, req.Service)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "read current service files", err)
+	}
+
+	targetByPath := serviceFileContentsByPath(targetFiles)
+	currentByPath := serviceFileContentsByPath(currentFiles)
+	restoredFiles := sortedMapKeys(targetByPath)
+	deletedFiles := serviceFilesMissingFromTarget(currentByPath, targetByPath)
+	svcPath := ServicePath(req.Org, req.Project, req.Service)
+	files := make(map[string][]byte, len(targetByPath))
+	for _, rel := range restoredFiles {
+		files[filepath.ToSlash(filepath.Join(svcPath, rel))] = append([]byte(nil), targetByPath[rel]...)
+	}
+
+	msg := strings.TrimSpace(req.Message)
+	if msg == "" {
+		msg = "Rollback to " + req.TargetVersion
+	}
+
+	return &RevertPlan{
+		Org:           req.Org,
+		Project:       req.Project,
+		Service:       req.Service,
+		TargetVersion: req.TargetVersion,
+		Message:       msg,
+		Files:         files,
+		RestoredFiles: restoredFiles,
+		DeletedFiles:  deletedFiles,
+		Noop:          serviceFilesEqual(currentByPath, targetByPath),
+	}, nil
+}
+
+func (s *Store) targetVersionChangedService(ctx context.Context, req *RevertRequest) (bool, error) {
+	found := false
+	err := s.repo.IterateServiceHistory(ctx, req.Org, req.Project, req.Service, func(entry gitops.ServiceHistoryEntry) error {
+		if entry.Version == req.TargetVersion {
+			found = true
+			return errStopHistory
+		}
+		return nil
+	})
+	if errors.Is(err, errStopHistory) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return found, nil
+}
+
+func serviceFileContentsByPath(files []gitops.ServiceFileContent) map[string][]byte {
+	out := make(map[string][]byte, len(files))
+	for _, file := range files {
+		out[file.Path] = append([]byte(nil), file.Data...)
+	}
+	return out
+}
+
+func sortedMapKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func serviceFilesMissingFromTarget(current, target map[string][]byte) []string {
+	var deleted []string
+	for path := range current {
+		if _, ok := target[path]; !ok {
+			deleted = append(deleted, path)
+		}
+	}
+	sort.Strings(deleted)
+	return deleted
+}
+
+func serviceFilesEqual(current, target map[string][]byte) bool {
+	if len(current) != len(target) {
+		return false
+	}
+	for path, targetData := range target {
+		currentData, ok := current[path]
+		if !ok || !bytes.Equal(currentData, targetData) {
+			return false
+		}
+	}
+	return true
 }
 
 // ApplyChanges writes config/env_vars updates, commits, pushes, and refreshes memory.

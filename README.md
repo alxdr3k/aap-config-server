@@ -40,6 +40,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Git history iterator / service file classifier   | Implemented as internal module |
 | History API (`GET .../history`)                  | Implemented with `file`, `limit`, and `before` filtering |
 | Versioned config/env reads (`?version=...`)      | Implemented for historical Git commits; secret resolution is current-only |
+| Revert target validation / restore plan          | Implemented as internal module |
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |

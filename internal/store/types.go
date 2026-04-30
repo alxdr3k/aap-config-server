@@ -100,6 +100,29 @@ type DeleteResult struct {
 	ReloadError  string
 }
 
+// RevertRequest identifies a service and target commit for a future rollback.
+type RevertRequest struct {
+	Org           string
+	Project       string
+	Service       string
+	TargetVersion string
+	Message       string
+}
+
+// RevertPlan is a validated, non-mutating restore plan. Files uses
+// repo-relative paths and DeletedFiles uses service-relative paths.
+type RevertPlan struct {
+	Org           string
+	Project       string
+	Service       string
+	TargetVersion string
+	Message       string
+	Files         map[string][]byte
+	RestoredFiles []string
+	DeletedFiles  []string
+	Noop          bool
+}
+
 // HistoryOptions controls service history listing.
 type HistoryOptions struct {
 	Org     string
