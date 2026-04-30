@@ -96,8 +96,9 @@ default and return raw service-level files when `inherit=false`.
   metadata and refresh mounted files through `secret.VolumeReader`; responses
   are no-store and omit ETag.
 - Non-secret config/env read ETags are derived from response resource,
-  service identity, resource version, `metadata.updated_at`, and `inherit`
-  view; they are not stored in Git or in the snapshot model.
+  service identity, resource version, `metadata.updated_at`, `inherit` view,
+  and response content encoding; they are not stored in Git or in the snapshot
+  model.
 - Secret audit events carry action, result, service identity, and secret IDs
   only. Plaintext values remain confined to `secret.Value` boundaries and HTTP
   responses for authenticated `resolve_secrets=true` calls.

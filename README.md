@@ -44,6 +44,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Revert endpoint (`POST /api/v1/admin/changes/revert`) | Implemented with forward-only Git commit, reload, and restored SealedSecret apply |
 | Config/env inheritance (`inherit=true/false`) | Implemented for current and versioned read APIs; admin writes remain service-level |
 | ETag / `If-None-Match` for config/env reads | Implemented for non-secret current and versioned config/env responses; resolved secret responses remain no-store/no ETag |
+| gzip compression for config/env reads | Implemented for non-secret config/env JSON responses when `Accept-Encoding` allows gzip; resolved secret responses are not compressed |
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -502,14 +503,14 @@ func (h *Handler) writeConfigResponse(
 	}
 
 	if cfg == nil {
-		respondCacheableJSON(w, r, responseETag("config", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
+		respondCacheableJSON(w, r, cacheableResponseETag(r, "config", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
 			"metadata": meta,
 			"config":   map[string]any{},
 		})
 		return
 	}
 
-	respondCacheableJSON(w, r, responseETag("config", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
+	respondCacheableJSON(w, r, cacheableResponseETag(r, "config", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
 		"metadata": meta,
 		"config":   cfg.Config,
 	})
@@ -544,7 +545,7 @@ func (h *Handler) writeConfigAtVersionResponse(
 	if cfg != nil && cfg.Config != nil {
 		config = cfg.Config
 	}
-	respondCacheableJSON(w, r, responseETag("config", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
+	respondCacheableJSON(w, r, cacheableResponseETag(r, "config", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
 		"metadata": meta,
 		"config":   config,
 	})
@@ -622,7 +623,7 @@ func (h *Handler) writeEnvVarsResponse(
 			})
 			return
 		}
-		respondCacheableJSON(w, r, responseETag("env_vars", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
+		respondCacheableJSON(w, r, cacheableResponseETag(r, "env_vars", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
 			"metadata": meta,
 			"env_vars": map[string]any{
 				"plain":       map[string]string{},
@@ -650,7 +651,7 @@ func (h *Handler) writeEnvVarsResponse(
 		return
 	}
 
-	respondCacheableJSON(w, r, responseETag("env_vars", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
+	respondCacheableJSON(w, r, cacheableResponseETag(r, "env_vars", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
 		"metadata": meta,
 		"env_vars": map[string]any{
 			"plain":       nullToEmpty(envConfig.EnvVars.Plain),
@@ -692,7 +693,7 @@ func (h *Handler) writeEnvVarsAtVersionResponse(
 		envVars["plain"] = nullToEmpty(envConfig.EnvVars.Plain)
 		envVars["secret_refs"] = nullToEmpty(envConfig.EnvVars.SecretRefs)
 	}
-	respondCacheableJSON(w, r, responseETag("env_vars", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
+	respondCacheableJSON(w, r, cacheableResponseETag(r, "env_vars", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
 		"metadata": meta,
 		"env_vars": envVars,
 	})
@@ -1116,15 +1117,34 @@ func configMeta(org, project, service, version string, updatedAt time.Time) map[
 }
 
 func respondCacheableJSON(w http.ResponseWriter, r *http.Request, etag string, v any) {
+	addVary(w.Header(), "Accept-Encoding")
 	w.Header().Set("ETag", etag)
 	if ifNoneMatch(r, etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
+	if responseContentEncoding(r) == "gzip" {
+		respondGzipJSON(w, http.StatusOK, v)
+		return
+	}
 	respondJSON(w, http.StatusOK, v)
 }
 
-func responseETag(resource, org, project, service, version string, updatedAt time.Time, inherit bool) string {
+func cacheableResponseETag(
+	r *http.Request,
+	resource, org, project, service, version string,
+	updatedAt time.Time,
+	inherit bool,
+) string {
+	return responseETag(resource, org, project, service, version, updatedAt, inherit, responseContentEncoding(r))
+}
+
+func responseETag(
+	resource, org, project, service, version string,
+	updatedAt time.Time,
+	inherit bool,
+	contentEncoding string,
+) string {
 	raw := strings.Join([]string{
 		resource,
 		org,
@@ -1133,9 +1153,80 @@ func responseETag(resource, org, project, service, version string, updatedAt tim
 		version,
 		updatedAt.UTC().Format(time.RFC3339Nano),
 		strconv.FormatBool(inherit),
+		contentEncoding,
 	}, "\x00")
 	sum := sha256.Sum256([]byte(raw))
 	return `"` + hex.EncodeToString(sum[:]) + `"`
+}
+
+func responseContentEncoding(r *http.Request) string {
+	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		return "gzip"
+	}
+	return "identity"
+}
+
+func acceptsGzip(raw string) bool {
+	gzipSpecified := false
+	gzipAccepted := false
+	wildcardAccepted := false
+	for _, candidate := range strings.Split(raw, ",") {
+		parts := strings.Split(candidate, ";")
+		coding := strings.TrimSpace(strings.ToLower(parts[0]))
+		if coding != "gzip" && coding != "*" {
+			continue
+		}
+		enabled := true
+		for _, param := range parts[1:] {
+			key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
+			if !ok || !strings.EqualFold(key, "q") {
+				continue
+			}
+			q, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if err == nil && q <= 0 {
+				enabled = false
+			}
+		}
+		switch coding {
+		case "gzip":
+			gzipSpecified = true
+			gzipAccepted = enabled
+		case "*":
+			wildcardAccepted = enabled
+		}
+	}
+	if gzipSpecified {
+		return gzipAccepted
+	}
+	return wildcardAccepted
+}
+
+func respondGzipJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Encoding", "gzip")
+	w.WriteHeader(code)
+	gz := gzip.NewWriter(w)
+	if err := json.NewEncoder(gz).Encode(v); err != nil {
+		slog.Error("encode gzip response", "err", err)
+	}
+	if err := gz.Close(); err != nil {
+		slog.Error("close gzip response", "err", err)
+	}
+}
+
+func addVary(header http.Header, value string) {
+	current := header.Get("Vary")
+	if current == "" {
+		header.Set("Vary", value)
+		return
+	}
+	for _, existing := range strings.Split(current, ",") {
+		if strings.EqualFold(strings.TrimSpace(existing), "*") ||
+			strings.EqualFold(strings.TrimSpace(existing), value) {
+			return
+		}
+	}
+	header.Set("Vary", current+", "+value)
 }
 
 func ifNoneMatch(r *http.Request, etag string) bool {
