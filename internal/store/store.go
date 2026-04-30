@@ -586,6 +586,180 @@ func (s *Store) PrepareRevert(ctx context.Context, req *RevertRequest) (*RevertP
 	}, nil
 }
 
+// ApplyRevert applies a validated restore plan as a new forward-only commit,
+// then applies restored SealedSecret manifests and refreshes the serving
+// snapshot.
+func (s *Store) ApplyRevert(ctx context.Context, req *RevertRequest) (*RevertResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	plan, err := s.PrepareRevert(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if plan.Noop {
+		hash, updated, err := s.repo.Pull(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if updated {
+			slog.Info("git pull before revert no-op decision: detected changes", "hash", hash)
+		} else {
+			slog.Debug("git pull before revert no-op decision: already up to date; force reloading", "hash", hash)
+		}
+		if err := s.reloadUnlocked(ctx); err != nil {
+			currentFiles, readErr := s.repo.ReadServiceFilesAtCommit(ctx, hash, req.Org, req.Project, req.Service)
+			if readErr != nil {
+				return nil, err
+			}
+			if serviceFilesEqual(serviceFileContentsByPath(currentFiles), revertPlanFilesByPath(plan)) {
+				return nil, err
+			}
+			slog.Warn("reload before revert no-op decision failed; proceeding with revert because git HEAD differs from target",
+				"hash", hash,
+				"err", err)
+			plan.Noop = false
+		} else {
+			plan, err = s.PrepareRevert(ctx, req)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	result := &RevertResult{
+		TargetVersion: plan.TargetVersion,
+		UpdatedAt:     time.Now().UTC(),
+		RestoredFiles: append([]string(nil), plan.RestoredFiles...),
+		DeletedFiles:  append([]string(nil), plan.DeletedFiles...),
+		Noop:          plan.Noop,
+	}
+	if plan.Noop {
+		result.Version = s.HeadVersion()
+		return result, nil
+	}
+
+	sealedManifests, err := sealedManifestsFromRevertPlan(plan)
+	if err != nil {
+		return nil, err
+	}
+	if len(sealedManifests) > 0 && s.secretDeps.Applier == nil {
+		return nil, apperror.New(apperror.CodeValidation, "secret applier is not configured")
+	}
+
+	hash, deletedFiles, err := s.repo.RestoreServiceFilesAndPush(
+		ctx,
+		plan.Message,
+		plan.Org,
+		plan.Project,
+		plan.Service,
+		plan.Files,
+	)
+	if err != nil {
+		return nil, err
+	}
+	result.Version = hash
+	result.DeletedFiles = deletedFiles
+
+	if len(sealedManifests) > 0 {
+		if err := applySealedManifests(context.WithoutCancel(ctx), s.secretDeps.Applier, sealedManifests); err != nil {
+			slog.Error("apply sealed secrets after revert failed", "err", err)
+			result.ApplyFailed = true
+			result.ApplyError = err.Error()
+		}
+	}
+
+	if err := s.reloadUnlocked(ctx); err != nil {
+		slog.Error("reload after revert failed; serving stale snapshot until next successful reload", "err", err)
+		result.ReloadFailed = true
+		result.ReloadError = err.Error()
+	}
+	return result, nil
+}
+
+func sealedManifestsFromRevertPlan(plan *RevertPlan) ([]secret.SealedManifest, error) {
+	svcPath := ServicePath(plan.Org, plan.Project, plan.Service)
+	var manifests []secret.SealedManifest
+	for _, rel := range plan.RestoredFiles {
+		if !strings.HasPrefix(rel, "sealed-secrets/") {
+			continue
+		}
+		repoPath := filepath.ToSlash(filepath.Join(svcPath, rel))
+		data, ok := plan.Files[repoPath]
+		if !ok {
+			return nil, apperror.New(apperror.CodeInternal,
+				fmt.Sprintf("restored sealed-secret file %q missing payload", rel))
+		}
+		manifest, err := sealedManifestFromRevertFile(rel, repoPath, data)
+		if err != nil {
+			return nil, err
+		}
+		manifests = append(manifests, manifest)
+	}
+	return manifests, nil
+}
+
+func sealedManifestFromRevertFile(rel, repoPath string, data []byte) (secret.SealedManifest, error) {
+	if !strings.HasPrefix(rel, "sealed-secrets/") {
+		return secret.SealedManifest{}, apperror.New(apperror.CodeInternal,
+			fmt.Sprintf("sealed-secret path %q is not supported for apply", rel))
+	}
+
+	namespace, name, err := sealedManifestIdentityFromYAML(data)
+	pathNamespace, pathName, pathOK := sealedManifestIdentityFromPath(rel)
+	if err != nil {
+		if !pathOK {
+			return secret.SealedManifest{}, apperror.Wrap(apperror.CodeInternal,
+				fmt.Sprintf("read sealed-secret metadata from %q", rel), err)
+		}
+		namespace, name = pathNamespace, pathName
+	} else {
+		if namespace == "" && pathOK {
+			namespace = pathNamespace
+		}
+		if name == "" && pathOK {
+			name = pathName
+		}
+	}
+	if namespace == "" || name == "" {
+		return secret.SealedManifest{}, apperror.New(apperror.CodeInternal,
+			fmt.Sprintf("sealed-secret path %q requires metadata.name and metadata.namespace for apply", rel))
+	}
+	return secret.SealedManifest{
+		Namespace: namespace,
+		Name:      name,
+		Path:      repoPath,
+		YAML:      append([]byte(nil), data...),
+	}, nil
+}
+
+func sealedManifestIdentityFromYAML(data []byte) (namespace, name string, err error) {
+	var doc struct {
+		Metadata struct {
+			Name      string `yaml:"name"`
+			Namespace string `yaml:"namespace"`
+		} `yaml:"metadata"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return "", "", err
+	}
+	namespace = strings.TrimSpace(doc.Metadata.Namespace)
+	name = strings.TrimSpace(doc.Metadata.Name)
+	return namespace, name, nil
+}
+
+func sealedManifestIdentityFromPath(rel string) (namespace, name string, ok bool) {
+	parts := strings.Split(rel, "/")
+	if len(parts) != 3 || parts[0] != "sealed-secrets" || !strings.HasSuffix(parts[2], ".yaml") {
+		return "", "", false
+	}
+	name = strings.TrimSuffix(parts[2], ".yaml")
+	if parts[1] == "" || name == "" {
+		return "", "", false
+	}
+	return parts[1], name, true
+}
+
 func (s *Store) targetVersionChangedService(ctx context.Context, req *RevertRequest) (bool, error) {
 	found := false
 	err := s.repo.IterateServiceHistory(ctx, req.Org, req.Project, req.Service, func(entry gitops.ServiceHistoryEntry) error {
@@ -608,6 +782,17 @@ func serviceFileContentsByPath(files []gitops.ServiceFileContent) map[string][]b
 	out := make(map[string][]byte, len(files))
 	for _, file := range files {
 		out[file.Path] = append([]byte(nil), file.Data...)
+	}
+	return out
+}
+
+func revertPlanFilesByPath(plan *RevertPlan) map[string][]byte {
+	out := make(map[string][]byte, len(plan.Files))
+	svcPath := ServicePath(plan.Org, plan.Project, plan.Service)
+	for repoPath, data := range plan.Files {
+		if rel, ok := serviceRelativePath(svcPath, repoPath); ok {
+			out[rel] = append([]byte(nil), data...)
+		}
 	}
 	return out
 }

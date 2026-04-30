@@ -123,6 +123,22 @@ type RevertPlan struct {
 	Noop          bool
 }
 
+// RevertResult is the result of applying a RevertRequest.
+type RevertResult struct {
+	Version       string
+	TargetVersion string
+	UpdatedAt     time.Time
+	RestoredFiles []string
+	DeletedFiles  []string
+	Noop          bool
+
+	ApplyFailed bool
+	ApplyError  string
+
+	ReloadFailed bool
+	ReloadError  string
+}
+
 // HistoryOptions controls service history listing.
 type HistoryOptions struct {
 	Org     string

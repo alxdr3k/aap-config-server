@@ -41,6 +41,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | History API (`GET .../history`)                  | Implemented with `file`, `limit`, and `before` filtering |
 | Versioned config/env reads (`?version=...`)      | Implemented for historical Git commits; secret resolution is current-only |
 | Revert target validation / restore plan          | Implemented as internal module |
+| Revert endpoint (`POST /api/v1/admin/changes/revert`) | Implemented with forward-only Git commit, reload, and restored SealedSecret apply |
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |
@@ -52,7 +53,6 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Config Agent RBAC/deployment handoff examples      | Documented; external deployment owner per `DEC-003` |
 | Config Agent fake-client e2e smoke coverage        | Implemented |
 | Config Agent live non-dry-run entrypoint           | Not implemented |
-| Revert endpoint                                    | Not implemented |
 
 If a feature is listed as "Not implemented", treat descriptions in the PRD/HLD
 as planned design — the server will refuse requests that depend on them.
@@ -173,7 +173,8 @@ Authorization: Bearer <API_KEY>
 X-API-Key: <API_KEY>
 ```
 
-Admin endpoints (`POST /api/v1/admin/changes`, `DELETE /api/v1/admin/changes`,
+Admin endpoints (`POST /api/v1/admin/changes`,
+`POST /api/v1/admin/changes/revert`, `DELETE /api/v1/admin/changes`,
 `POST /api/v1/admin/reload`) and the secret-metadata read
 (`GET /api/v1/orgs/.../secrets`) require auth. Config, env_vars, versioned
 config/env, and history reads are currently unauthenticated; deploy behind a
@@ -275,6 +276,30 @@ Secret writes require the server to run with Kubernetes SealedSecret adapters
 configured. If they are unavailable, the request fails validation before any
 Git commit. Secret namespaces and K8s Secret object names are also validated
 against Kubernetes DNS naming rules before any Git write.
+
+Revert a service to the files from a previous service-history commit:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/admin/changes/revert \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "org": "myorg",
+    "project": "ai",
+    "service": "litellm",
+    "target_version": "a3f2b1c",
+    "message": "rollback litellm to stable config"
+  }'
+```
+
+The endpoint validates that `target_version` is in the selected service's own
+history, restores recognized service files from that commit, deletes recognized
+current files absent from the target, commits and pushes a new forward-only Git
+commit, applies restored SealedSecret manifests, and reloads the in-memory
+snapshot. A no-op target returns `status: "noop"` without creating a commit.
+Post-commit apply/reload failures are explicit `503` responses with
+`rolled_back_but_apply_failed`, `rolled_back_but_reload_failed`, or
+`rolled_back_but_apply_and_reload_failed`.
 
 #### Rejected fields
 

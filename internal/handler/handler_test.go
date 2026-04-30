@@ -49,6 +49,9 @@ type fakeStore struct {
 	waitVersionArg         string
 	waitForVersionChange   func(context.Context, string) (string, bool, error)
 	lastChange             *store.ChangeRequest
+	lastRevert             *store.RevertRequest
+	revertResult           *store.RevertResult
+	revertErr              error
 	sawSecretPlaintext     bool
 }
 
@@ -124,6 +127,22 @@ func (f *fakeStore) History(_ context.Context, opts store.HistoryOptions) ([]sto
 		return nil, err
 	}
 	return f.history, nil
+}
+
+func (f *fakeStore) ApplyRevert(_ context.Context, req *store.RevertRequest) (*store.RevertResult, error) {
+	f.lastRevert = req
+	if f.revertErr != nil {
+		return nil, f.revertErr
+	}
+	if f.revertResult != nil {
+		return f.revertResult, nil
+	}
+	return &store.RevertResult{
+		Version:       "revertcommit",
+		TargetVersion: req.TargetVersion,
+		UpdatedAt:     time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
+		RestoredFiles: []string{"config.yaml"},
+	}, nil
 }
 
 func (f *fakeStore) ListOrgs() []string {
@@ -1464,6 +1483,139 @@ func TestPostChanges_ApplyFailedReported(t *testing.T) {
 	}
 	if !strings.Contains(env["apply_error"].(string), "apply sealed secret") {
 		t.Fatalf("missing apply_error context: %v", env["apply_error"])
+	}
+}
+
+func TestPostRevert_RolledBack(t *testing.T) {
+	st := newFakeStore()
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	body := map[string]any{
+		"org":            "myorg",
+		"project":        "proj",
+		"service":        "litellm",
+		"target_version": "target",
+		"message":        "restore previous config",
+	}
+	resp := postJSON(t, srv, "/api/v1/admin/changes/revert", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var env map[string]any
+	decodeJSON(t, resp, &env)
+	if env["status"] != "rolled_back" {
+		t.Fatalf("status: got %v", env["status"])
+	}
+	if env["version"] != "revertcommit" || env["target_version"] != "target" {
+		t.Fatalf("versions: %v", env)
+	}
+	if st.lastRevert == nil {
+		t.Fatal("store did not receive revert request")
+	}
+	if st.lastRevert.TargetVersion != "target" || st.lastRevert.Message != "restore previous config" {
+		t.Fatalf("revert request: %+v", st.lastRevert)
+	}
+}
+
+func TestPostRevert_Noop(t *testing.T) {
+	st := newFakeStore()
+	st.revertResult = &store.RevertResult{
+		Version:       "abc123",
+		TargetVersion: "abc123",
+		UpdatedAt:     time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
+		Noop:          true,
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := postJSON(t, srv, "/api/v1/admin/changes/revert", map[string]any{
+		"org":            "myorg",
+		"project":        "proj",
+		"service":        "litellm",
+		"target_version": "abc123",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var env map[string]any
+	decodeJSON(t, resp, &env)
+	if env["status"] != "noop" {
+		t.Fatalf("status: got %v", env["status"])
+	}
+}
+
+func TestPostRevert_ApplyAndReloadFailedReported(t *testing.T) {
+	st := newFakeStore()
+	st.revertResult = &store.RevertResult{
+		Version:       "revertcommit",
+		TargetVersion: "target",
+		UpdatedAt:     time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
+		ApplyFailed:   true,
+		ApplyError:    "apply sealed secret ai-platform/remote-secrets: boom",
+		ReloadFailed:  true,
+		ReloadError:   "snapshot refused: bad yaml",
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := postJSON(t, srv, "/api/v1/admin/changes/revert", map[string]any{
+		"org":            "myorg",
+		"project":        "proj",
+		"service":        "litellm",
+		"target_version": "target",
+	})
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d", resp.StatusCode)
+	}
+
+	var env map[string]any
+	decodeJSON(t, resp, &env)
+	if env["status"] != "rolled_back_but_apply_and_reload_failed" {
+		t.Fatalf("status: got %v", env["status"])
+	}
+	if !strings.Contains(env["apply_error"].(string), "apply sealed secret") {
+		t.Fatalf("missing apply_error context: %v", env["apply_error"])
+	}
+	if !strings.Contains(env["reload_error"].(string), "bad yaml") {
+		t.Fatalf("missing reload_error context: %v", env["reload_error"])
+	}
+}
+
+func TestPostRevert_RejectsUnknownField(t *testing.T) {
+	srv := newServer(t, newFakeStore())
+	defer srv.Close()
+
+	resp := postJSON(t, srv, "/api/v1/admin/changes/revert", map[string]any{
+		"org":            "myorg",
+		"project":        "proj",
+		"service":        "litellm",
+		"target_version": "target",
+		"bogus":          "value",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400 for unknown field, got %d", resp.StatusCode)
+	}
+}
+
+func TestPostRevert_RequiresAuth(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "secret-key")
+	defer srv.Close()
+
+	resp := postJSON(t, srv, "/api/v1/admin/changes/revert", map[string]any{
+		"org":            "myorg",
+		"project":        "proj",
+		"service":        "litellm",
+		"target_version": "target",
+	})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", resp.StatusCode)
+	}
+	if st.lastRevert != nil {
+		t.Fatalf("unauthorized request reached store: %+v", st.lastRevert)
 	}
 }
 

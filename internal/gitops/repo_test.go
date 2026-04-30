@@ -490,6 +490,58 @@ func TestReadServiceFilesAtCommit(t *testing.T) {
 	}
 }
 
+func TestRestoreServiceFilesAndPush(t *testing.T) {
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	base := "configs/orgs/myorg/projects/proj/services/litellm"
+	if _, err := repo.CommitAndPush(ctx, "current", map[string][]byte{
+		base + "/config.yaml":                           []byte("current config\n"),
+		base + "/env_vars.yaml":                         []byte("current env\n"),
+		base + "/sealed-secrets/ns/current.yaml":        []byte("current sealed\n"),
+		base + "/sealed-secrets/ns/remove-me.yaml":      []byte("remove\n"),
+		base + "/notes.txt":                             []byte("ignored\n"),
+		base + "2/env_vars.yaml":                        []byte("sibling\n"),
+		"configs/orgs/myorg/projects/other/config.yaml": []byte("other\n"),
+	}); err != nil {
+		t.Fatalf("CommitAndPush current: %v", err)
+	}
+
+	hash, deleted, err := repo.RestoreServiceFilesAndPush(ctx, "restore", "myorg", "proj", "litellm", map[string][]byte{
+		base + "/config.yaml":                    []byte("target config\n"),
+		base + "/sealed-secrets/ns/current.yaml": []byte("target sealed\n"),
+	})
+	if err != nil {
+		t.Fatalf("RestoreServiceFilesAndPush: %v", err)
+	}
+	if hash == "" {
+		t.Fatal("expected non-empty hash")
+	}
+	if strings.Join(deleted, ",") != "env_vars.yaml,sealed-secrets/ns/remove-me.yaml" {
+		t.Fatalf("deleted files: got %v", deleted)
+	}
+	config, err := repo.ReadFile(base + "/config.yaml")
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	if string(config) != "target config\n" {
+		t.Fatalf("config content: got %q", config)
+	}
+	if _, err := repo.ReadFile(base + "/env_vars.yaml"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("env_vars should be deleted, got %v", err)
+	}
+	sibling, err := repo.ReadFile(base + "2/env_vars.yaml")
+	if err != nil {
+		t.Fatalf("ReadFile sibling: %v", err)
+	}
+	if string(sibling) != "sibling\n" {
+		t.Fatalf("sibling content changed: %q", sibling)
+	}
+}
+
 func TestClassifyServiceFileChange(t *testing.T) {
 	tests := []struct {
 		name     string

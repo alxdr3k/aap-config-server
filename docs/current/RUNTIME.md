@@ -55,8 +55,13 @@ target commit must appear in that service's own history, not merely be an
 unrelated repository snapshot where the service files happen to exist. The plan
 captures files to restore, files to delete because they are absent at the
 target commit, and no-op status when the target already matches current HEAD.
-The public revert endpoint and commit/push/reload flow remain target design
-until the next slice.
+`POST /api/v1/admin/changes/revert` applies that plan through
+`store.ApplyRevert`: it writes a new forward-only Git commit, pushes it,
+applies restored SealedSecret manifests when present, and reloads the serving
+snapshot. If the Git commit succeeds but SealedSecret apply or reload fails,
+the response remains explicit (`rolled_back_but_apply_failed`,
+`rolled_back_but_reload_failed`, or
+`rolled_back_but_apply_and_reload_failed`) and the commit is preserved.
 
 ## Config Agent bootstrap flow
 
@@ -174,6 +179,7 @@ only; live deployment wiring remains an external deployment-system concern per
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/history`
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/secrets`
 - `POST /api/v1/admin/changes`
+- `POST /api/v1/admin/changes/revert`
 - `DELETE /api/v1/admin/changes`
 - `POST /api/v1/admin/reload`
 - `POST /api/v1/admin/app-registry/webhook`
@@ -210,6 +216,11 @@ only; live deployment wiring remains an external deployment-system concern per
   configured, generates SealedSecrets, commits encrypted manifests with
   metadata, applies them to Kubernetes, and reports apply/reload failures
   explicitly.
+- `POST /api/v1/admin/changes/revert` restores recognized service files from a
+  selected service-history commit, deletes recognized current files absent from
+  that target, commits and pushes a new forward-only Git revision, applies
+  restored SealedSecret manifests, and reports no-op/apply/reload outcomes
+  explicitly.
 - Secret handling paths emit non-sensitive audit events when
   `SECRET_AUDIT_LOG_ENABLED=true`; emitted fields are action, result,
   service identity, and secret IDs, never plaintext values.
@@ -229,8 +240,7 @@ only; live deployment wiring remains an external deployment-system concern per
   unavailable. If startup bootstrap is not configured, webhook updates can
   change `apps_loaded` and `last_updated_at`, but the status remains
   `not_configured` to show that no full Console snapshot was loaded.
-- Config Agent Kubernetes apply/rollout behavior, public revert endpoint,
-  revert commit/apply flow, and inheritance are target design only.
+- Config Agent live non-dry-run wiring and inheritance are target design only.
 
 ## Failure modes
 
