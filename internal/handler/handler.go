@@ -22,6 +22,7 @@ import (
 // ConfigStore is the interface the handlers need from the store.
 type ConfigStore interface {
 	GetConfig(ctx context.Context, org, project, service string) (*store.ServiceData, error)
+	WaitForVersionChange(ctx context.Context, version string) (string, bool, error)
 	ListOrgs() []string
 	ListProjects(org string) []string
 	ListServices(org, project string) []store.ServiceInfo
@@ -47,6 +48,11 @@ type Handler struct {
 	appRegistry *registry.Cache
 	secretDeps  secret.Dependencies
 }
+
+const (
+	defaultWatchTimeout = 30 * time.Second
+	maxWatchTimeout     = 30 * time.Second
+)
 
 // Option customizes Handler dependencies.
 type Option func(*Handler)
@@ -97,6 +103,8 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	// Config read
 	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config",
 		h.getConfig)
+	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch",
+		h.watchConfig)
 	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars",
 		h.getEnvVars)
 	// Secret metadata is privileged even though values are never returned; auth
@@ -328,7 +336,52 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 	project := r.PathValue("project")
 	service := r.PathValue("service")
 
-	d, err := h.store.GetConfig(r.Context(), org, project, service)
+	h.writeConfigResponse(w, r.Context(), org, project, service)
+}
+
+func (h *Handler) watchConfig(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("org")
+	project := r.PathValue("project")
+	service := r.PathValue("service")
+
+	version := strings.TrimSpace(r.URL.Query().Get("version"))
+	if version == "" {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", "version query parameter is required")
+		return
+	}
+	timeout, err := parseWatchTimeout(r)
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+
+	if _, err := h.store.GetConfig(r.Context(), org, project, service); err != nil {
+		respondError(w, err)
+		return
+	}
+
+	waitCtx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	_, changed, err := h.store.WaitForVersionChange(waitCtx, version)
+	if err != nil {
+		if !changed && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		slog.Error("watch config failed", "err", err)
+		respondErrorCode(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
+	}
+	if !changed {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	h.writeConfigResponse(w, r.Context(), org, project, service)
+}
+
+func (h *Handler) writeConfigResponse(w http.ResponseWriter, ctx context.Context, org, project, service string) {
+	d, err := h.store.GetConfig(ctx, org, project, service)
 	if err != nil {
 		respondError(w, err)
 		return
@@ -740,6 +793,24 @@ func parseBoolQuery(r *http.Request, name string) (bool, error) {
 		return false, errors.New(name + " must be a boolean")
 	}
 	return value, nil
+}
+
+func parseWatchTimeout(r *http.Request) (time.Duration, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("timeout"))
+	if raw == "" {
+		return defaultWatchTimeout, nil
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, errors.New("timeout must be a duration like 30s")
+	}
+	if timeout <= 0 {
+		return 0, errors.New("timeout must be greater than 0")
+	}
+	if timeout > maxWatchTimeout {
+		return 0, errors.New("timeout must be less than or equal to 30s")
+	}
+	return timeout, nil
 }
 
 func respondJSON(w http.ResponseWriter, code int, v any) {

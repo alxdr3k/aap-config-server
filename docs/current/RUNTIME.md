@@ -17,11 +17,12 @@ Status: active.
 8. HTTP handlers serve reads from memory and admin writes through the store.
 9. A background poll loop calls `RefreshFromRepo` at `GIT_POLL_INTERVAL`.
 
-The store exposes `WaitForVersionChange(ctx, version)` for future long-poll
-watch endpoints. It returns immediately when `version` is already stale, blocks
-while the loaded HEAD is unchanged, wakes after a successful snapshot version
-change, and stays blocked when a reload fails closed and the last-known-good
-snapshot remains active.
+The store exposes `WaitForVersionChange(ctx, version)` for long-poll watch
+endpoints. `GET .../config/watch?version={ver}` uses it to return the current
+config immediately when `version` is stale, otherwise wait up to 30 seconds and
+return `304 Not Modified` when unchanged. The primitive wakes after a successful
+snapshot version change and stays blocked when a reload fails closed and the
+last-known-good snapshot remains active.
 
 Admin writes, deletes, background refreshes, and Git worktree mutations are
 serialized globally in Phase-1. `ADR-005` records this as the accepted current
@@ -53,7 +54,7 @@ after a clean shutdown.
 
 ## Config Agent fetch loop
 
-`internal/agent` can poll Config Server read APIs without the future watch
+`internal/agent` can poll Config Server read APIs without using watch
 endpoints. The loop fetches both `config` and `env_vars`, rejects a poll if the
 two reads came from different repo revisions, tracks the last successfully
 handled content hashes, treats the first snapshot as changed, and only advances
