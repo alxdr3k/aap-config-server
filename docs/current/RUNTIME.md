@@ -45,8 +45,17 @@ until context cancellation, invokes start/stop/new-leader callbacks, and uses
 `ReleaseOnCancel=true` by default so a standby replica can take over promptly
 after a clean shutdown.
 
-ConfigMap/Secret apply, Deployment patching, polling loops, and debounce
-behavior remain planned Agent slices.
+## Config Agent fetch loop
+
+`internal/agent` can poll Config Server read APIs without the future watch
+endpoints. The loop fetches both `config` and `env_vars`, tracks the last
+successfully handled versions/updated timestamps, treats the first snapshot as
+changed, and only advances state after the caller's handler succeeds. Fetch or
+handler failures retry with bounded exponential backoff; successful polls reset
+backoff and wait `PollInterval`.
+
+ConfigMap/Secret apply, Deployment patching, native payload rendering, and
+debounce behavior remain planned Agent slices.
 
 ## Implemented API surface
 
