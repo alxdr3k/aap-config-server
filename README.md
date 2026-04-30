@@ -37,6 +37,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |
+| Config Agent native config/env.sh rendering        | Implemented as internal module |
 | Config Agent K8s apply and rollout                 | Not implemented |
 | Watch / stream endpoint                            | Not implemented |
 | History / revert endpoints                         | Not implemented |
