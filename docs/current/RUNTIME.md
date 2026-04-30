@@ -43,8 +43,11 @@ commits that changed recognized files under
 `configs/orgs/{org}/projects/{project}/services/{service}/`, and classifies
 changes as config, env vars, secrets metadata, or SealedSecret manifests.
 `GET .../history` exposes this as service history with `file`, `limit`, and
-`before` filters. Versioned config/env reads and the revert endpoint are still
-target design only.
+`before` filters. `GET .../config?version={commit}` and
+`GET .../env_vars?version={commit}` read historical YAML directly from Git
+commits. Historical env var reads return `plain` and `secret_refs`; mounted
+secret value resolution remains current-only and cannot be combined with
+`version`.
 
 ## Config Agent bootstrap flow
 
@@ -157,6 +160,8 @@ only; live deployment wiring remains an external deployment-system concern per
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config`
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars`
   (`resolve_secrets=true` requires auth and returns `Cache-Control: no-store`)
+- `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config?version={commit}`
+- `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars?version={commit}`
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/history`
 - `GET /api/v1/orgs/{org}/projects/{project}/services/{service}/secrets`
 - `POST /api/v1/admin/changes`
@@ -170,8 +175,11 @@ only; live deployment wiring remains an external deployment-system concern per
 - Secret metadata read also requires auth.
 - Env var reads with `resolve_secrets=true` require auth because they return
   plaintext secret values.
-- Config reads and unresolved env var reads are currently unauthenticated;
-  deployment must restrict network access.
+- `resolve_secrets=true` cannot be combined with `version`; historical env var
+  reads expose unresolved `secret_refs` only.
+- Config reads, versioned config reads, unresolved env var reads, versioned env
+  var reads, and history reads are currently unauthenticated; deployment must
+  restrict network access.
 - Empty `API_KEY` is only allowed with explicit `ALLOW_UNAUTHENTICATED_DEV=true`.
 
 ## Current flow
@@ -212,8 +220,8 @@ only; live deployment wiring remains an external deployment-system concern per
   unavailable. If startup bootstrap is not configured, webhook updates can
   change `apps_loaded` and `last_updated_at`, but the status remains
   `not_configured` to show that no full Console snapshot was loaded.
-- Config Agent Kubernetes apply/rollout behavior, versioned config/env reads,
-  revert endpoint, and inheritance are target design only.
+- Config Agent Kubernetes apply/rollout behavior, revert endpoint, and
+  inheritance are target design only.
 
 ## Failure modes
 

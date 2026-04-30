@@ -41,6 +41,10 @@ type fakeStore struct {
 	resourceVersions       map[string]string
 	history                []store.HistoryEntry
 	historyOpts            store.HistoryOptions
+	configAtVersion        map[string]*store.ServiceData
+	configVersionArg       string
+	envVarsAtVersion       map[string]*store.ServiceData
+	envVarsVersionArg      string
 	waitVersionCalls       int
 	waitVersionArg         string
 	waitForVersionChange   func(context.Context, string) (string, bool, error)
@@ -90,6 +94,28 @@ func (f *fakeStore) GetConfig(_ context.Context, org, project, service string) (
 		return nil, apperror.New(apperror.CodeNotFound, "service not found: "+key)
 	}
 	return d, nil
+}
+
+func (f *fakeStore) GetConfigAtVersion(_ context.Context, org, project, service, version string) (*store.ServiceData, error) {
+	f.configVersionArg = version
+	if _, err := f.GetConfig(context.Background(), org, project, service); err != nil {
+		return nil, err
+	}
+	if d, ok := f.configAtVersion[version]; ok {
+		return d, nil
+	}
+	return nil, apperror.New(apperror.CodeNotFound, "historical config not found")
+}
+
+func (f *fakeStore) GetEnvVarsAtVersion(_ context.Context, org, project, service, version string) (*store.ServiceData, error) {
+	f.envVarsVersionArg = version
+	if _, err := f.GetConfig(context.Background(), org, project, service); err != nil {
+		return nil, err
+	}
+	if d, ok := f.envVarsAtVersion[version]; ok {
+		return d, nil
+	}
+	return nil, apperror.New(apperror.CodeNotFound, "historical env_vars not found")
 }
 
 func (f *fakeStore) History(_ context.Context, opts store.HistoryOptions) ([]store.HistoryEntry, error) {
@@ -451,6 +477,43 @@ func TestGetConfig_Found(t *testing.T) {
 	}
 }
 
+func TestGetConfig_VersionParam(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	st.configAtVersion = map[string]*store.ServiceData{
+		"old123": {
+			Config: &parser.ServiceConfig{
+				Config: map[string]any{
+					"router_settings": map[string]any{"num_retries": 1},
+				},
+			},
+			UpdatedAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC),
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?version=old123")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.configVersionArg != "old123" {
+		t.Fatalf("version arg: got %q", st.configVersionArg)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "old123" || meta["updated_at"] != "2026-03-01T10:00:00Z" {
+		t.Fatalf("metadata: got %#v", meta)
+	}
+	config := body["config"].(map[string]any)
+	settings := config["router_settings"].(map[string]any)
+	if settings["num_retries"] != float64(1) {
+		t.Fatalf("historical num_retries: got %#v", settings["num_retries"])
+	}
+}
+
 func TestGetHistory_Found(t *testing.T) {
 	st := newFakeStore()
 	st.services["org/proj/svc"] = &store.ServiceData{}
@@ -778,6 +841,89 @@ func TestGetEnvVars_Found(t *testing.T) {
 	plain := envVars["plain"].(map[string]any)
 	if plain["LOG_LEVEL"] != "INFO" {
 		t.Errorf("LOG_LEVEL: want INFO, got %v", plain["LOG_LEVEL"])
+	}
+}
+
+func TestGetEnvVars_VersionParam(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	st.envVarsAtVersion = map[string]*store.ServiceData{
+		"old-env": {
+			EnvVars: &parser.EnvVarsConfig{
+				EnvVars: parser.EnvVars{
+					Plain:      map[string]string{"LOG_LEVEL": "DEBUG"},
+					SecretRefs: map[string]string{"API_KEY": "old-api-key"},
+				},
+			},
+			UpdatedAt: time.Date(2026, 3, 2, 10, 0, 0, 0, time.UTC),
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=old-env")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.envVarsVersionArg != "old-env" {
+		t.Fatalf("version arg: got %q", st.envVarsVersionArg)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "old-env" || meta["updated_at"] != "2026-03-02T10:00:00Z" {
+		t.Fatalf("metadata: got %#v", meta)
+	}
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	secretRefs := envVars["secret_refs"].(map[string]any)
+	if plain["LOG_LEVEL"] != "DEBUG" || secretRefs["API_KEY"] != "old-api-key" {
+		t.Fatalf("historical env_vars: got %#v", envVars)
+	}
+}
+
+func TestGetEnvVars_RejectsVersionWithResolveSecrets(t *testing.T) {
+	srv := newServer(t, newFakeStore())
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=old-env&resolve_secrets=true")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetVersionedReads_EmptyResource(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	st.configAtVersion = map[string]*store.ServiceData{
+		"empty": {ConfigResourceVersion: "empty"},
+	}
+	st.envVarsAtVersion = map[string]*store.ServiceData{
+		"empty": {EnvVarsResourceVersion: "empty"},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	configResp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?version=empty")
+	if configResp.StatusCode != http.StatusOK {
+		t.Fatalf("config: want 200, got %d", configResp.StatusCode)
+	}
+	var configBody map[string]any
+	decodeJSON(t, configResp, &configBody)
+	if len(configBody["config"].(map[string]any)) != 0 {
+		t.Fatalf("config should be empty: %#v", configBody["config"])
+	}
+
+	envResp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=empty")
+	if envResp.StatusCode != http.StatusOK {
+		t.Fatalf("env_vars: want 200, got %d", envResp.StatusCode)
+	}
+	var envBody map[string]any
+	decodeJSON(t, envResp, &envBody)
+	envVars := envBody["env_vars"].(map[string]any)
+	if len(envVars["plain"].(map[string]any)) != 0 || len(envVars["secret_refs"].(map[string]any)) != 0 {
+		t.Fatalf("env_vars should be empty: %#v", envVars)
 	}
 }
 

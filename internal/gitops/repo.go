@@ -70,6 +70,15 @@ const (
 	ServiceFileSealedSecret ServiceFileKind = "sealed_secret"
 )
 
+var (
+	// ErrCommitNotFound marks a historical read whose requested commit cannot
+	// be found in the local clone.
+	ErrCommitNotFound = errors.New("commit not found")
+	// ErrFileNotFoundAtCommit marks a historical read whose commit exists but
+	// the requested path did not exist in that commit.
+	ErrFileNotFoundAtCommit = errors.New("file not found at commit")
+)
+
 // ServiceFileChange is a classified file touched by a commit under a service.
 type ServiceFileChange struct {
 	// Path is relative to configs/orgs/{org}/projects/{project}/services/{service}.
@@ -580,7 +589,7 @@ func (r *Repo) ReadFileAtCommit(commitHash, path string) ([]byte, error) {
 	h := plumbing.NewHash(commitHash)
 	commit, err := r.repo.CommitObject(h)
 	if err != nil {
-		return nil, fmt.Errorf("commit %s not found: %w", commitHash, err)
+		return nil, fmt.Errorf("%w: commit %s: %w", ErrCommitNotFound, commitHash, err)
 	}
 	tree, err := commit.Tree()
 	if err != nil {
@@ -588,6 +597,9 @@ func (r *Repo) ReadFileAtCommit(commitHash, path string) ([]byte, error) {
 	}
 	file, err := tree.File(path)
 	if err != nil {
+		if errors.Is(err, object.ErrFileNotFound) {
+			return nil, fmt.Errorf("%w: file %s at %s: %w", ErrFileNotFoundAtCommit, path, commitHash, err)
+		}
 		return nil, fmt.Errorf("file %s at %s: %w", path, commitHash, err)
 	}
 	content, err := file.Contents()

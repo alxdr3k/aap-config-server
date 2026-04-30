@@ -30,7 +30,7 @@ snapshot.
 | Entity | Purpose | Source |
 |---|---|---|
 | `ServiceKey` | Unique `org/project/service` identifier. | `internal/store/types.go` |
-| `ServiceData` | In-memory aggregate for one service. | `internal/store/types.go` |
+| `ServiceData` | In-memory aggregate for one service; also used as the typed result for historical config/env reads. | `internal/store/types.go` |
 | `ServiceConfig` | Parsed `config.yaml` with metadata and arbitrary config map. | `internal/parser/types.go` |
 | `EnvVarsConfig` | Parsed `env_vars.yaml` with plain env vars and secret refs. | `internal/parser/types.go` |
 | `SecretsConfig` | Parsed `secrets.yaml` metadata; no secret plaintext. | `internal/parser/types.go` |
