@@ -24,8 +24,9 @@ Recognized files:
 - `_defaults/common.yaml` at global, org, and project levels
 
 `sealed-secrets/` is not loaded into the current serving snapshot. `_defaults`
-files are parsed into defaults source metadata, but their values are not yet
-merged into read responses.
+files are parsed into defaults source metadata and internal inherited
+config/env fields. Public read responses do not use the inherited fields until
+the `inherit` query behavior slice lands.
 
 ## Current entities
 
@@ -38,6 +39,7 @@ merged into read responses.
 | `SecretsConfig` | Parsed `secrets.yaml` metadata; no secret plaintext. | `internal/parser/types.go` |
 | `DefaultsConfig` | Parsed `_defaults/common.yaml` config/env defaults. | `internal/parser/types.go` |
 | `DefaultsSource` | Store metadata describing inherited defaults sources available to a service. | `internal/store/types.go` |
+| `ServiceData.InheritedConfig` / `InheritedEnvVars` | Store-precomputed inherited config/env values for future `inherit` reads. | `internal/store/types.go` |
 | `secret.RuntimeConfig` | Runtime knobs for secret mount, SealedSecret, K8s apply, and audit adapters. | `internal/secret/types.go` |
 | `secret.Reference` / `secret.Value` | Boundary types for plaintext secret reads/writes; values are copied and can be best-effort zeroed. | `internal/secret/types.go` |
 | `secret.FileVolumeReader` | Mounted K8s Secret file reader/cache with fsnotify refresh events. | `internal/secret/volume.go` |

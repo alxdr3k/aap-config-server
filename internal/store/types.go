@@ -35,6 +35,8 @@ type ServiceData struct {
 	UpdatedAt time.Time
 
 	InheritedSources []DefaultsSource
+	InheritedConfig  *parser.ServiceConfig
+	InheritedEnvVars *parser.EnvVarsConfig
 
 	ConfigResourceVersion  string
 	EnvVarsResourceVersion string
@@ -53,8 +55,7 @@ const (
 )
 
 // DefaultsSource is service-visible metadata for defaults that can contribute
-// to inherited reads. EXT-1C.1 records source metadata only; merge semantics
-// are implemented by later slices.
+// to inherited reads.
 type DefaultsSource struct {
 	Scope      DefaultsScope
 	Org        string
