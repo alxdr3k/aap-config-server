@@ -47,6 +47,7 @@ snapshot.
 | `ChangeRequest` | Internal representation of admin write input. | `internal/store/types.go` |
 | `DeleteRequest` | Internal representation of admin delete input. | `internal/store/types.go` |
 | `StoreStatus` | Runtime status exposed through `/api/v1/status`. | `internal/store/types.go` |
+| Store version wait primitive | In-memory notification channel used to wait until the loaded Git version changes. | `internal/store/store.go` |
 
 ## Storage
 
@@ -98,6 +99,7 @@ snapshot.
 | Entity | States | Notes |
 |---|---|---|
 | Store snapshot | loaded, stale-last-known-good | Reload only swaps on full parse success. |
+| Store version waiter | waiting, changed, canceled | Waiters return immediately for stale caller versions, wake after successful snapshot version changes, and do not wake on failed reloads that keep serving last-known-good data. |
 | Store status | ready, degraded | Degraded means the latest reload failed but the previous snapshot remains available. |
 | App Registry cache | not_configured, ok, degraded | `ok` means a full Console snapshot loaded. `not_configured` is preserved when only webhook updates arrive without startup bootstrap. Degraded means the last Console full load failed; webhook updates still record `last_updated_at`, while the load failure remains visible until a later full load succeeds. `/readyz` is not failed for registry-only degradation. |
 | Config Agent leader lease | active, standby | A Kubernetes `Lease` elects one active Agent replica. Standby replicas observe the same lease and take over after the holder releases or expires. |
