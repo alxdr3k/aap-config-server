@@ -19,7 +19,7 @@ Status: active.
 | `internal/server/` | `http.Server` lifecycle, graceful shutdown, readiness probe. |
 | `internal/handler/` | HTTP routing, request decoding, API key auth, JSON response/error envelope. |
 | `internal/apperror/` | Typed domain errors and error-code mapping used by handlers and store. |
-| `internal/agent/` | Config Agent bootstrap runtime config, bounded Config Server API client, and dry-run summary runner. |
+| `internal/agent/` | Config Agent bootstrap runtime config, bounded Config Server API client, dry-run summary runner, and K8s Lease leader election wrapper. |
 
 ## Domain / Services
 
@@ -49,7 +49,7 @@ Status: active.
 | `internal/store/*_test.go` | Snapshot reload, config/env/secret apply, secret audit logging, delete, degraded behavior, concurrency. |
 | `internal/gitops/*_test.go` | Local Git clone/pull/commit/delete/snapshot behavior. |
 | `internal/handler/*_test.go` | HTTP routes, auth, admin write response shape, App Registry webhook auth/cache updates, App Registry status reporting, secret write input cleanup, resolved env var secret reads, secret audit logging, reload/degraded status. |
-| `internal/agent/*_test.go` | Config Agent config loading/validation, Config Server API client behavior, bounded responses, and dry-run counts. |
+| `internal/agent/*_test.go` | Config Agent config loading/validation, Config Server API client behavior, bounded responses, dry-run counts, and K8s Lease leader election takeover behavior. |
 
 ## Needs audit
 

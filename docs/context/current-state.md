@@ -16,7 +16,7 @@ from an atomically swapped in-memory snapshot.
 - current milestone: `P1-M2` Config Agent rollout path next
 - active tracks: `AGENT`
 - active phase: `AGENT-1A`
-- active slice: `AGENT-1A.2`
+- active slice: `AGENT-1A.3`
 - last accepted gate: `AC-021`
 - next gate: `P1-M2` / `AC-030`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -60,12 +60,14 @@ from an atomically swapped in-memory snapshot.
 - Config Agent bootstrap binary under `cmd/config-agent`, with runtime
   config loading, bounded Config Server API client, and local dry-run summary
   mode under `internal/agent`.
+- Config Agent K8s Lease leader election module under `internal/agent`, using
+  client-go LeaseLock with standby takeover coverage against the fake K8s
+  client.
 
 ## Planned
 
-- Config Agent K8s Lease leader election, polling loop, ConfigMap/Secret apply,
-  Deployment rollout patching, debounce, image/RBAC examples, and e2e smoke
-  coverage.
+- Config Agent polling loop, ConfigMap/Secret apply, Deployment rollout
+  patching, debounce, image/RBAC examples, and e2e smoke coverage.
 - Watch/history/revert endpoints, config inheritance, response optimizations,
   metrics, schema validation, rate limiting, and integration/load validation.
 
@@ -77,7 +79,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `AGENT-1A.2`: K8s Lease leader election with standby takeover behavior.
+1. Start `AGENT-1A.3`: config/env fetch loop, version tracking, and retry/backoff behavior using read API polling.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -91,9 +93,10 @@ from an atomically swapped in-memory snapshot.
 - Commands are listed in `docs/current/TESTING.md`.
 - Acceptance gates are listed in `docs/06_ACCEPTANCE_TESTS.md`.
 - `AC-020` is passing for the secret write/resolve path, `AC-021` is passing
-  for App Registry bootstrap/webhook/status integration, and `AGENT-1A.1` has
-  local coverage for Config Agent bootstrap behavior. Subsequent dev-cycle PRs
-  use the repo `check`, `lint`, `scan`, and `test` checks before merge.
+  for App Registry bootstrap/webhook/status integration, and `AGENT-1A.1` /
+  `AGENT-1A.2` have local coverage for Config Agent bootstrap and leader
+  election behavior. Subsequent dev-cycle PRs use the repo `check`, `lint`,
+  `scan`, and `test` checks before merge.
 - Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`,
   `make test-race`, `make lint`, and `make build` pass in this workspace.
