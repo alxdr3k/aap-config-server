@@ -25,8 +25,8 @@ Recognized files:
 
 `sealed-secrets/` is not loaded into the current serving snapshot. `_defaults`
 files are parsed into defaults source metadata and internal inherited
-config/env fields. Public read responses do not use the inherited fields until
-the `inherit` query behavior slice lands.
+config/env fields. Public config/env read responses use inherited fields by
+default and return raw service-level files when `inherit=false`.
 
 ## Current entities
 
@@ -39,7 +39,7 @@ the `inherit` query behavior slice lands.
 | `SecretsConfig` | Parsed `secrets.yaml` metadata; no secret plaintext. | `internal/parser/types.go` |
 | `DefaultsConfig` | Parsed `_defaults/common.yaml` config/env defaults. | `internal/parser/types.go` |
 | `DefaultsSource` | Store metadata describing inherited defaults sources available to a service. | `internal/store/types.go` |
-| `ServiceData.InheritedConfig` / `InheritedEnvVars` | Store-precomputed inherited config/env values for future `inherit` reads. | `internal/store/types.go` |
+| `ServiceData.InheritedConfig` / `InheritedEnvVars` | Store-precomputed inherited config/env values for default `inherit=true` reads. | `internal/store/types.go` |
 | `secret.RuntimeConfig` | Runtime knobs for secret mount, SealedSecret, K8s apply, and audit adapters. | `internal/secret/types.go` |
 | `secret.Reference` / `secret.Value` | Boundary types for plaintext secret reads/writes; values are copied and can be best-effort zeroed. | `internal/secret/types.go` |
 | `secret.FileVolumeReader` | Mounted K8s Secret file reader/cache with fsnotify refresh events. | `internal/secret/volume.go` |

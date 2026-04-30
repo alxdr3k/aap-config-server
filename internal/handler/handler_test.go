@@ -23,36 +23,40 @@ import (
 // --- fakes ---
 
 type fakeStore struct {
-	services               map[string]*store.ServiceData
-	version                string
-	failNextWrite          error
-	nextReloadFailed       bool
-	nextReloadErr          string
-	nextApplyFailed        bool
-	nextApplyErr           string
-	nextDeleteReloadFailed bool
-	nextDeleteReloadErr    string
-	degraded               bool
-	refreshErr             error
-	reloadErr              error
-	reloadUpdated          bool
-	reloadCalls            int
-	refreshCalls           int
-	resourceVersions       map[string]string
-	history                []store.HistoryEntry
-	historyOpts            store.HistoryOptions
-	configAtVersion        map[string]*store.ServiceData
-	configVersionArg       string
-	envVarsAtVersion       map[string]*store.ServiceData
-	envVarsVersionArg      string
-	waitVersionCalls       int
-	waitVersionArg         string
-	waitForVersionChange   func(context.Context, string) (string, bool, error)
-	lastChange             *store.ChangeRequest
-	lastRevert             *store.RevertRequest
-	revertResult           *store.RevertResult
-	revertErr              error
-	sawSecretPlaintext     bool
+	services                   map[string]*store.ServiceData
+	version                    string
+	failNextWrite              error
+	nextReloadFailed           bool
+	nextReloadErr              string
+	nextApplyFailed            bool
+	nextApplyErr               string
+	nextDeleteReloadFailed     bool
+	nextDeleteReloadErr        string
+	degraded                   bool
+	refreshErr                 error
+	reloadErr                  error
+	reloadUpdated              bool
+	reloadCalls                int
+	refreshCalls               int
+	resourceVersions           map[string]string
+	history                    []store.HistoryEntry
+	historyOpts                store.HistoryOptions
+	configAtVersion            map[string]*store.ServiceData
+	configVersionArg           string
+	inheritedConfigVersionArg  string
+	inheritedConfigAtVersion   map[string]*store.ServiceData
+	envVarsAtVersion           map[string]*store.ServiceData
+	envVarsVersionArg          string
+	inheritedEnvVarsVersionArg string
+	inheritedEnvVarsAtVersion  map[string]*store.ServiceData
+	waitVersionCalls           int
+	waitVersionArg             string
+	waitForVersionChange       func(context.Context, string) (string, bool, error)
+	lastChange                 *store.ChangeRequest
+	lastRevert                 *store.RevertRequest
+	revertResult               *store.RevertResult
+	revertErr                  error
+	sawSecretPlaintext         bool
 }
 
 type fakeVolumeReader struct {
@@ -110,6 +114,20 @@ func (f *fakeStore) GetConfigAtVersion(_ context.Context, org, project, service,
 	return nil, apperror.New(apperror.CodeNotFound, "historical config not found")
 }
 
+func (f *fakeStore) GetInheritedConfigAtVersion(
+	_ context.Context,
+	org, project, service, version string,
+) (*store.ServiceData, error) {
+	f.inheritedConfigVersionArg = version
+	if _, err := f.GetConfig(context.Background(), org, project, service); err != nil {
+		return nil, err
+	}
+	if d, ok := f.inheritedConfigAtVersion[version]; ok {
+		return d, nil
+	}
+	return nil, apperror.New(apperror.CodeNotFound, "historical inherited config not found")
+}
+
 func (f *fakeStore) GetEnvVarsAtVersion(_ context.Context, org, project, service, version string) (*store.ServiceData, error) {
 	f.envVarsVersionArg = version
 	if _, err := f.GetConfig(context.Background(), org, project, service); err != nil {
@@ -119,6 +137,20 @@ func (f *fakeStore) GetEnvVarsAtVersion(_ context.Context, org, project, service
 		return d, nil
 	}
 	return nil, apperror.New(apperror.CodeNotFound, "historical env_vars not found")
+}
+
+func (f *fakeStore) GetInheritedEnvVarsAtVersion(
+	_ context.Context,
+	org, project, service, version string,
+) (*store.ServiceData, error) {
+	f.inheritedEnvVarsVersionArg = version
+	if _, err := f.GetConfig(context.Background(), org, project, service); err != nil {
+		return nil, err
+	}
+	if d, ok := f.inheritedEnvVarsAtVersion[version]; ok {
+		return d, nil
+	}
+	return nil, apperror.New(apperror.CodeNotFound, "historical inherited env_vars not found")
 }
 
 func (f *fakeStore) History(_ context.Context, opts store.HistoryOptions) ([]store.HistoryEntry, error) {
@@ -496,6 +528,88 @@ func TestGetConfig_Found(t *testing.T) {
 	}
 }
 
+func TestGetConfig_DefaultInheritUsesInheritedConfig(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head-inherit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "raw-v1",
+		Config: &parser.ServiceConfig{Config: map[string]any{
+			"service_only": true,
+		}},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasConfig: true}},
+		InheritedConfig: &parser.ServiceConfig{Config: map[string]any{
+			"service_only": true,
+			"global_only":  true,
+		}},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "head-inherit" {
+		t.Fatalf("inherited metadata.version should use head version, got %v", meta["version"])
+	}
+	config := body["config"].(map[string]any)
+	if config["global_only"] != true || config["service_only"] != true {
+		t.Fatalf("config should use inherited view, got %#v", config)
+	}
+}
+
+func TestGetConfig_InheritFalseUsesRawConfig(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "raw-v1",
+		Config: &parser.ServiceConfig{Config: map[string]any{
+			"service_only": true,
+		}},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasConfig: true}},
+		InheritedConfig: &parser.ServiceConfig{Config: map[string]any{
+			"service_only": true,
+			"global_only":  true,
+		}},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?inherit=false")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "raw-v1" {
+		t.Fatalf("raw metadata.version should use resource version, got %v", meta["version"])
+	}
+	config := body["config"].(map[string]any)
+	if _, ok := config["global_only"]; ok {
+		t.Fatalf("inherit=false should omit inherited keys, got %#v", config)
+	}
+	if config["service_only"] != true {
+		t.Fatalf("inherit=false should keep service config, got %#v", config)
+	}
+}
+
+func TestGetConfig_InvalidInherit(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?inherit=maybe")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+}
+
 func TestGetConfig_VersionParam(t *testing.T) {
 	st := newFakeStore()
 	st.services["org/proj/svc"] = &store.ServiceData{}
@@ -512,7 +626,7 @@ func TestGetConfig_VersionParam(t *testing.T) {
 	srv := newServer(t, st)
 	defer srv.Close()
 
-	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?version=old123")
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?version=old123&inherit=false")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("want 200, got %d", resp.StatusCode)
 	}
@@ -530,6 +644,41 @@ func TestGetConfig_VersionParam(t *testing.T) {
 	settings := config["router_settings"].(map[string]any)
 	if settings["num_retries"] != float64(1) {
 		t.Fatalf("historical num_retries: got %#v", settings["num_retries"])
+	}
+}
+
+func TestGetConfig_VersionParamDefaultInherit(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	st.inheritedConfigAtVersion = map[string]*store.ServiceData{
+		"old123": {
+			InheritedConfig: &parser.ServiceConfig{
+				Config: map[string]any{
+					"global_only": true,
+				},
+			},
+			UpdatedAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC),
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?version=old123")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.inheritedConfigVersionArg != "old123" {
+		t.Fatalf("inherited version arg: got %q", st.inheritedConfigVersionArg)
+	}
+	if st.configVersionArg != "" {
+		t.Fatalf("raw version path should not be called, got %q", st.configVersionArg)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	config := body["config"].(map[string]any)
+	if config["global_only"] != true {
+		t.Fatalf("historical inherited config: got %#v", config)
 	}
 }
 
@@ -661,6 +810,31 @@ func TestGetConfigWatch_TimeoutReturnsNotModified(t *testing.T) {
 		t.Fatalf("want 304, got %d", resp.StatusCode)
 	}
 	if st.waitVersionCalls != 1 || st.waitVersionArg != "abc123" {
+		t.Fatalf("WaitForVersionChange calls: count=%d arg=%q", st.waitVersionCalls, st.waitVersionArg)
+	}
+}
+
+func TestGetConfigWatch_InheritedVersionUsesHeadVersion(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head-inherit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "raw-v1",
+		Config:                &parser.ServiceConfig{Config: map[string]any{"raw": true}},
+		InheritedSources:      []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasConfig: true}},
+		InheritedConfig:       &parser.ServiceConfig{Config: map[string]any{"raw": true, "global": true}},
+	}
+	st.waitForVersionChange = func(ctx context.Context, version string) (string, bool, error) {
+		<-ctx.Done()
+		return version, false, ctx.Err()
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config/watch?version=head-inherit&timeout=1ms")
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 1 || st.waitVersionArg != "head-inherit" {
 		t.Fatalf("WaitForVersionChange calls: count=%d arg=%q", st.waitVersionCalls, st.waitVersionArg)
 	}
 }
@@ -863,6 +1037,92 @@ func TestGetEnvVars_Found(t *testing.T) {
 	}
 }
 
+func TestGetEnvVars_DefaultInheritUsesInheritedEnvVars(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head-inherit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVarsResourceVersion: "raw-env-v1",
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"RAW_ONLY": "1"},
+				SecretRefs: map[string]string{"RAW_SECRET": "raw-secret"},
+			},
+		},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasEnvVars: true}},
+		InheritedEnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"RAW_ONLY": "1", "GLOBAL_ONLY": "1"},
+				SecretRefs: map[string]string{"RAW_SECRET": "raw-secret", "GLOBAL_SECRET": "global-secret"},
+			},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "head-inherit" {
+		t.Fatalf("inherited metadata.version should use head version, got %v", meta["version"])
+	}
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	secretRefs := envVars["secret_refs"].(map[string]any)
+	if plain["GLOBAL_ONLY"] != "1" || plain["RAW_ONLY"] != "1" {
+		t.Fatalf("plain env vars should use inherited view, got %#v", plain)
+	}
+	if secretRefs["GLOBAL_SECRET"] != "global-secret" || secretRefs["RAW_SECRET"] != "raw-secret" {
+		t.Fatalf("secret refs should use inherited view, got %#v", secretRefs)
+	}
+}
+
+func TestGetEnvVars_InheritFalseUsesRawEnvVars(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVarsResourceVersion: "raw-env-v1",
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"RAW_ONLY": "1"},
+				SecretRefs: map[string]string{"RAW_SECRET": "raw-secret"},
+			},
+		},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasEnvVars: true}},
+		InheritedEnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"RAW_ONLY": "1", "GLOBAL_ONLY": "1"},
+				SecretRefs: map[string]string{"RAW_SECRET": "raw-secret", "GLOBAL_SECRET": "global-secret"},
+			},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?inherit=false")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "raw-env-v1" {
+		t.Fatalf("raw metadata.version should use resource version, got %v", meta["version"])
+	}
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	if _, ok := plain["GLOBAL_ONLY"]; ok {
+		t.Fatalf("inherit=false should omit inherited plain env, got %#v", plain)
+	}
+	if plain["RAW_ONLY"] != "1" {
+		t.Fatalf("inherit=false should keep raw env, got %#v", plain)
+	}
+}
+
 func TestGetEnvVars_VersionParam(t *testing.T) {
 	st := newFakeStore()
 	st.services["org/proj/svc"] = &store.ServiceData{}
@@ -880,7 +1140,7 @@ func TestGetEnvVars_VersionParam(t *testing.T) {
 	srv := newServer(t, st)
 	defer srv.Close()
 
-	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=old-env")
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=old-env&inherit=false")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("want 200, got %d", resp.StatusCode)
 	}
@@ -899,6 +1159,44 @@ func TestGetEnvVars_VersionParam(t *testing.T) {
 	secretRefs := envVars["secret_refs"].(map[string]any)
 	if plain["LOG_LEVEL"] != "DEBUG" || secretRefs["API_KEY"] != "old-api-key" {
 		t.Fatalf("historical env_vars: got %#v", envVars)
+	}
+}
+
+func TestGetEnvVars_VersionParamDefaultInherit(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	st.inheritedEnvVarsAtVersion = map[string]*store.ServiceData{
+		"old-env": {
+			InheritedEnvVars: &parser.EnvVarsConfig{
+				EnvVars: parser.EnvVars{
+					Plain:      map[string]string{"GLOBAL_ONLY": "1"},
+					SecretRefs: map[string]string{"GLOBAL_SECRET": "global-secret"},
+				},
+			},
+			UpdatedAt: time.Date(2026, 3, 2, 10, 0, 0, 0, time.UTC),
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=old-env")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.inheritedEnvVarsVersionArg != "old-env" {
+		t.Fatalf("inherited version arg: got %q", st.inheritedEnvVarsVersionArg)
+	}
+	if st.envVarsVersionArg != "" {
+		t.Fatalf("raw env version path should not be called, got %q", st.envVarsVersionArg)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	secretRefs := envVars["secret_refs"].(map[string]any)
+	if plain["GLOBAL_ONLY"] != "1" || secretRefs["GLOBAL_SECRET"] != "global-secret" {
+		t.Fatalf("historical inherited env_vars: got %#v", envVars)
 	}
 }
 
@@ -924,7 +1222,7 @@ func TestGetVersionedReads_EmptyResource(t *testing.T) {
 	srv := newServer(t, st)
 	defer srv.Close()
 
-	configResp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?version=empty")
+	configResp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?version=empty&inherit=false")
 	if configResp.StatusCode != http.StatusOK {
 		t.Fatalf("config: want 200, got %d", configResp.StatusCode)
 	}
@@ -934,7 +1232,7 @@ func TestGetVersionedReads_EmptyResource(t *testing.T) {
 		t.Fatalf("config should be empty: %#v", configBody["config"])
 	}
 
-	envResp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=empty")
+	envResp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=empty&inherit=false")
 	if envResp.StatusCode != http.StatusOK {
 		t.Fatalf("env_vars: want 200, got %d", envResp.StatusCode)
 	}
@@ -1028,6 +1326,69 @@ func TestGetEnvVars_ResolveSecrets(t *testing.T) {
 	}
 	if strings.Contains(logText, "top-secret") {
 		t.Fatalf("audit log leaked plaintext: %s", logText)
+	}
+}
+
+func TestGetEnvVars_ResolveSecretsUsesInheritedEnvVars(t *testing.T) {
+	st := newFakeStore()
+	st.version = "secret-head"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVarsResourceVersion: "raw-env-v1",
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain: map[string]string{"RAW_ONLY": "1"},
+			},
+		},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasEnvVars: true}},
+		InheritedEnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"RAW_ONLY": "1", "GLOBAL_ONLY": "1"},
+				SecretRefs: map[string]string{"GLOBAL_SECRET": "global-secret-id"},
+			},
+		},
+		Secrets: &parser.SecretsConfig{
+			Secrets: []parser.SecretEntry{
+				{
+					ID: "global-secret-id",
+					K8sSecret: parser.K8sSecret{
+						Namespace: "ai-platform",
+						Name:      "global-secrets",
+						Key:       "token",
+					},
+				},
+			},
+		},
+	}
+	ref := secret.Reference{
+		ID:        "global-secret-id",
+		Namespace: "ai-platform",
+		Name:      "global-secrets",
+		Key:       "token",
+	}
+	reader := &fakeVolumeReader{values: map[secret.Reference]string{ref: "global-secret"}}
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithSecretDependencies(secret.Dependencies{
+		VolumeReader: reader,
+	}))
+	defer srv.Close()
+
+	resp := getWithBearer(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true", "secret-key")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	if plain["GLOBAL_ONLY"] != "1" || plain["RAW_ONLY"] != "1" {
+		t.Fatalf("plain env vars should use inherited view, got %#v", plain)
+	}
+	secrets := envVars["secrets"].(map[string]any)
+	if secrets["GLOBAL_SECRET"] != "global-secret" {
+		t.Fatalf("resolved inherited secret: got %#v", secrets)
+	}
+	if len(reader.refreshRequests) != 1 || reader.refreshRequests[0] != ref {
+		t.Fatalf("reader refresh requests: got %+v", reader.refreshRequests)
 	}
 }
 

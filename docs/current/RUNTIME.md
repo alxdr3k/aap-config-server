@@ -14,8 +14,8 @@ Status: active.
 5. `store.LoadFromRepo` performs one startup pull, then snapshots `configs/`.
 6. The store parses `config.yaml`, `env_vars.yaml`, and `secrets.yaml` files under `configs/orgs/{org}/projects/{project}/services/{service}/`.
    It also parses global/org/project `_defaults/common.yaml` files into
-   snapshot metadata and precomputes inherited config/env fields for future
-   public `inherit` reads.
+   snapshot metadata and precomputes inherited config/env fields for public
+   `inherit` reads.
 7. If all parsed files are valid, the store atomically swaps the serving snapshot.
 8. HTTP handlers serve reads from memory and admin writes through the store.
 9. A background poll loop calls `RefreshFromRepo` at `GIT_POLL_INTERVAL`.
@@ -48,9 +48,11 @@ parses them and records per-service inherited source metadata in global →
 org → project order. It also precomputes inherited config/env values in global
 → org → project → service order. Config maps use scalar override, recursive
 map merge, array replacement, and null deletion; env var `plain` and
-`secret_refs` maps use later-layer override. Current read APIs still return
-service-level config/env without using the inherited fields; public
-`inherit=true/false` query behavior is the next slice.
+`secret_refs` maps use later-layer override. Current and versioned config/env
+read APIs default to `inherit=true` and return inherited data; `inherit=false`
+returns the raw service-level file. Current `resolve_secrets=true` env reads
+also use inherited env var secret refs. Config/env watch endpoints use the same
+inherit view for version comparison and response payloads.
 
 `gitops.Repo` exposes `IterateServiceHistory(ctx, org, project, service, fn)`
 for history/revert work. It walks Git commits newest-first, emits only

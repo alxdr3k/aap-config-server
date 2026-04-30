@@ -626,6 +626,88 @@ env_vars:
 	}
 }
 
+func TestStore_GetInheritedAtVersion_MergesDefaultsAtCommit(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	base := store.ServicePath("myorg", "proj", "litellm")
+	repo.filesAtCommit["old"] = map[string][]byte{
+		"configs/_defaults/common.yaml": []byte(`config:
+  scalar: global
+  nested:
+    keep: global
+env_vars:
+  plain:
+    A: global
+`),
+		"configs/orgs/myorg/projects/proj/_defaults/common.yaml": []byte(`config:
+  scalar: project
+  model_list:
+    - project-model
+env_vars:
+  plain:
+    A: project
+    B: project
+`),
+		base + "/config.yaml": []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+config:
+  scalar: service
+  nested:
+    service_only: true
+`),
+		base + "/env_vars.yaml": []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+env_vars:
+  plain:
+    B: service
+    C: service
+`),
+	}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	config, err := s.GetInheritedConfigAtVersion(ctx, "myorg", "proj", "litellm", "old")
+	if err != nil {
+		t.Fatalf("GetInheritedConfigAtVersion: %v", err)
+	}
+	if config.InheritedConfig == nil {
+		t.Fatal("expected inherited config")
+	}
+	if got := config.InheritedConfig.Config["scalar"]; got != "service" {
+		t.Fatalf("scalar: got %v", got)
+	}
+	nested, ok := config.InheritedConfig.Config["nested"].(map[string]any)
+	if !ok || nested["keep"] != "global" || nested["service_only"] != true {
+		t.Fatalf("nested merge: got %#v", config.InheritedConfig.Config["nested"])
+	}
+	modelList, ok := config.InheritedConfig.Config["model_list"].([]any)
+	if !ok || len(modelList) != 1 || modelList[0] != "project-model" {
+		t.Fatalf("historical project array: got %#v", config.InheritedConfig.Config["model_list"])
+	}
+
+	envVars, err := s.GetInheritedEnvVarsAtVersion(ctx, "myorg", "proj", "litellm", "old")
+	if err != nil {
+		t.Fatalf("GetInheritedEnvVarsAtVersion: %v", err)
+	}
+	if envVars.InheritedEnvVars == nil {
+		t.Fatal("expected inherited env vars")
+	}
+	plain := envVars.InheritedEnvVars.EnvVars.Plain
+	if plain["A"] != "project" || plain["B"] != "service" || plain["C"] != "service" {
+		t.Fatalf("historical env merge: got %#v", plain)
+	}
+}
+
 func TestStore_GetConfigAtVersion(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
