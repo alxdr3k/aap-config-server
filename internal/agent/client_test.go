@@ -90,6 +90,25 @@ func TestClientEscapesServicePathSegments(t *testing.T) {
 	}
 }
 
+func TestClientNormalizesServiceRef(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/api/v1/orgs/org/projects/project/services/service/config" {
+			t.Fatalf("path should use trimmed service ref, got %s", r.URL.EscapedPath())
+		}
+		_, _ = w.Write([]byte(`{"metadata":{},"config":{}}`))
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(ClientOptions{BaseURL: srv.URL, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, err = client.FetchConfig(context.Background(), ServiceRef{Org: " org ", Project: " project ", Service: " service "})
+	if err != nil {
+		t.Fatalf("FetchConfig: %v", err)
+	}
+}
+
 func TestClientReturnsStatusError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":{"code":"not_found"}}`, http.StatusNotFound)

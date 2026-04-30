@@ -115,6 +115,7 @@ func NewClient(opts ClientOptions) (*Client, error) {
 }
 
 func (c *Client) FetchConfig(ctx context.Context, ref ServiceRef) (*ConfigSnapshot, error) {
+	ref = ref.Normalized()
 	if err := ref.Validate(); err != nil {
 		return nil, err
 	}
@@ -127,6 +128,7 @@ func (c *Client) FetchConfig(ctx context.Context, ref ServiceRef) (*ConfigSnapsh
 }
 
 func (c *Client) FetchEnvVars(ctx context.Context, ref ServiceRef, resolveSecrets bool) (*EnvVarsSnapshot, error) {
+	ref = ref.Normalized()
 	if err := ref.Validate(); err != nil {
 		return nil, err
 	}
@@ -144,6 +146,7 @@ func (c *Client) FetchEnvVars(ctx context.Context, ref ServiceRef, resolveSecret
 }
 
 func (r ServiceRef) Validate() error {
+	r = r.Normalized()
 	if strings.TrimSpace(r.Org) == "" {
 		return errors.New("org is required")
 	}
@@ -154,6 +157,13 @@ func (r ServiceRef) Validate() error {
 		return errors.New("service is required")
 	}
 	return nil
+}
+
+func (r ServiceRef) Normalized() ServiceRef {
+	r.Org = strings.TrimSpace(r.Org)
+	r.Project = strings.TrimSpace(r.Project)
+	r.Service = strings.TrimSpace(r.Service)
+	return r
 }
 
 func (c *Client) serviceEndpoint(ref ServiceRef, suffix string) *url.URL {
