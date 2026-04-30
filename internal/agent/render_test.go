@@ -20,6 +20,7 @@ func TestRenderConfigYAMLPreservesNativeConfigAndSecretRefs(t *testing.T) {
 			},
 			"router_settings": map[string]any{
 				"cooldown":    json.Number("0.25"),
+				"huge_float":  json.Number("1e1000"),
 				"large_id":    json.Number("9007199254740993"),
 				"num_retries": json.Number("3"),
 			},
@@ -29,7 +30,7 @@ func TestRenderConfigYAMLPreservesNativeConfigAndSecretRefs(t *testing.T) {
 		t.Fatalf("RenderConfigYAML: %v", err)
 	}
 	got := string(out)
-	want := "model_list:\n  - litellm_params:\n      api_key: os.environ/AZURE_API_KEY\n      model: azure/gpt-4o\n    model_name: gpt-4o\nrouter_settings:\n  cooldown: 0.25\n  large_id: 9007199254740993\n  num_retries: 3\n"
+	want := "model_list:\n  - litellm_params:\n      api_key: os.environ/AZURE_API_KEY\n      model: azure/gpt-4o\n    model_name: gpt-4o\nrouter_settings:\n  cooldown: 0.25\n  huge_float: !!float 1e1000\n  large_id: 9007199254740993\n  num_retries: 3\n"
 	if got != want {
 		t.Fatalf("rendered yaml:\n%s\nwant:\n%s", got, want)
 	}

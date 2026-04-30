@@ -195,36 +195,56 @@ func yamlNodeValue(value reflect.Value) (*yaml.Node, error) {
 
 func yamlNumberNode(number json.Number) (*yaml.Node, error) {
 	text := number.String()
-	if !strings.ContainsAny(text, ".eE") {
-		if !isJSONIntegerLiteral(text) {
-			return nil, fmt.Errorf("unsupported numeric value %q", text)
-		}
-		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: text}, nil
-	}
-	f, err := strconv.ParseFloat(text, 64)
-	if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
+	if !isJSONNumberLiteral(text) {
 		return nil, fmt.Errorf("unsupported numeric value %q", text)
+	}
+	if !strings.ContainsAny(text, ".eE") {
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: text}, nil
 	}
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: text}, nil
 }
 
-func isJSONIntegerLiteral(text string) bool {
+func isJSONNumberLiteral(text string) bool {
 	if text == "" {
 		return false
 	}
-	if text[0] == '-' {
-		text = text[1:]
-		if text == "" {
+	i := 0
+	if text[i] == '-' {
+		i++
+		if i == len(text) {
 			return false
 		}
 	}
-	if len(text) > 1 && text[0] == '0' {
-		return false
-	}
-	for _, r := range text {
-		if r < '0' || r > '9' {
+	if text[i] == '0' {
+		i++
+	} else {
+		if text[i] < '1' || text[i] > '9' {
 			return false
 		}
+		for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+			i++
+		}
 	}
-	return true
+	if i < len(text) && text[i] == '.' {
+		i++
+		if i == len(text) || text[i] < '0' || text[i] > '9' {
+			return false
+		}
+		for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+			i++
+		}
+	}
+	if i < len(text) && (text[i] == 'e' || text[i] == 'E') {
+		i++
+		if i < len(text) && (text[i] == '+' || text[i] == '-') {
+			i++
+		}
+		if i == len(text) || text[i] < '0' || text[i] > '9' {
+			return false
+		}
+		for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+			i++
+		}
+	}
+	return i == len(text)
 }
