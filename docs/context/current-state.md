@@ -16,7 +16,7 @@ from an atomically swapped in-memory snapshot.
 - current milestone: `P1-M2` Config Agent rollout path next
 - active tracks: `AGENT`
 - active phase: `AGENT-1A`
-- active slice: none
+- active slice: `AGENT-1A.1`
 - last accepted gate: `AC-021`
 - next gate: `P1-M2` / `AC-030`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -72,7 +72,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Review `AGENT-1A.1` readiness and dependencies before starting Config Agent work.
+1. Start `AGENT-1A.1`: Config Agent binary, runtime config, Config Server API client, and local dry-run mode.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
