@@ -95,6 +95,31 @@ func TestDebouncerUsesCooldownAfterDebouncedApply(t *testing.T) {
 	}
 }
 
+func TestDebouncerPendingApplyWaitsForCooldown(t *testing.T) {
+	debouncer, err := NewDebouncer(DebounceConfig{
+		Cooldown:    10 * time.Second,
+		QuietPeriod: 2 * time.Second,
+		MaxWait:     120 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewDebouncer: %v", err)
+	}
+	start := debounceStartTime()
+	debouncer.RecordChange(start)
+
+	second := debouncer.RecordChange(start.Add(time.Second))
+	if second.ApplyNow || second.NextAt != start.Add(10*time.Second) || second.Reason != DebounceReasonCooling {
+		t.Fatalf("second decision: %+v", second)
+	}
+	if due := debouncer.Due(start.Add(9 * time.Second)); due.ApplyNow || due.NextAt != start.Add(10*time.Second) {
+		t.Fatalf("cooldown should delay pending apply: %+v", due)
+	}
+	due := debouncer.Due(start.Add(10 * time.Second))
+	if !due.ApplyNow || due.Reason != DebounceReasonQuiet {
+		t.Fatalf("cooldown boundary decision: %+v", due)
+	}
+}
+
 func TestDebouncerRecordChangeHandlesOverduePendingChange(t *testing.T) {
 	debouncer := newTestDebouncer(t)
 	start := debounceStartTime()

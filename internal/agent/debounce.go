@@ -100,17 +100,11 @@ func (d *Debouncer) Due(at time.Time) DebounceDecision {
 	if d == nil || !d.pending {
 		return DebounceDecision{Reason: DebounceReasonIdle}
 	}
-	quietDue := d.lastChange.Add(d.cfg.QuietPeriod)
-	maxDue := d.debounceStart.Add(d.cfg.MaxWait)
-	next := minTime(quietDue, maxDue)
+	next, reason := d.nextDueAtAndReason()
 	if at.Before(next) {
 		return DebounceDecision{NextAt: next, Reason: DebounceReasonPending}
 	}
 
-	reason := DebounceReasonQuiet
-	if next.Equal(maxDue) {
-		reason = DebounceReasonMaxWait
-	}
 	d.pending = false
 	d.debounceStart = time.Time{}
 	d.lastChange = time.Time{}
@@ -131,7 +125,22 @@ func (d *Debouncer) nextDueAt() time.Time {
 	if d == nil || !d.pending {
 		return time.Time{}
 	}
-	return minTime(d.lastChange.Add(d.cfg.QuietPeriod), d.debounceStart.Add(d.cfg.MaxWait))
+	next, _ := d.nextDueAtAndReason()
+	return next
+}
+
+func (d *Debouncer) nextDueAtAndReason() (time.Time, string) {
+	quietDue := d.lastChange.Add(d.cfg.QuietPeriod)
+	maxDue := d.debounceStart.Add(d.cfg.MaxWait)
+	next := minTime(quietDue, maxDue)
+	reason := DebounceReasonQuiet
+	if next.Equal(maxDue) {
+		reason = DebounceReasonMaxWait
+	}
+	if d.inCooldown(next) {
+		next = d.cooldownUntil
+	}
+	return next, reason
 }
 
 func minTime(a, b time.Time) time.Time {
