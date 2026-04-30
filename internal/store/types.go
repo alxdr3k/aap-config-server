@@ -33,6 +33,12 @@ type ServiceData struct {
 	EnvVars   *parser.EnvVarsConfig
 	Secrets   *parser.SecretsConfig
 	UpdatedAt time.Time
+
+	ConfigResourceVersion  string
+	EnvVarsResourceVersion string
+
+	configDigest  string
+	envVarsDigest string
 }
 
 // ChangeRequest carries the payload for POST /api/v1/admin/changes.

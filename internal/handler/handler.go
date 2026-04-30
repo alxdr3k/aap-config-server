@@ -22,6 +22,7 @@ import (
 // ConfigStore is the interface the handlers need from the store.
 type ConfigStore interface {
 	GetConfig(ctx context.Context, org, project, service string) (*store.ServiceData, error)
+	ResourceVersion(ctx context.Context, org, project, service, resource string) (string, string, error)
 	WaitForVersionChange(ctx context.Context, version string) (string, bool, error)
 	ListOrgs() []string
 	ListProjects(org string) []string
@@ -107,6 +108,8 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 		h.watchConfig)
 	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars",
 		h.getEnvVars)
+	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch",
+		h.watchEnvVars)
 	// Secret metadata is privileged even though values are never returned; auth
 	// is required so unauthenticated callers cannot enumerate which K8s secret
 	// objects back a service.
@@ -344,40 +347,72 @@ func (h *Handler) watchConfig(w http.ResponseWriter, r *http.Request) {
 	project := r.PathValue("project")
 	service := r.PathValue("service")
 
-	version := strings.TrimSpace(r.URL.Query().Get("version"))
-	if version == "" {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_query", "version query parameter is required")
-		return
-	}
-	timeout, err := parseWatchTimeout(r)
-	if err != nil {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
-		return
-	}
-
-	if _, err := h.store.GetConfig(r.Context(), org, project, service); err != nil {
-		respondError(w, err)
-		return
-	}
-
-	waitCtx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-	_, changed, err := h.store.WaitForVersionChange(waitCtx, version)
-	if err != nil {
-		if !changed && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-		slog.Error("watch config failed", "err", err)
-		respondErrorCode(w, http.StatusInternalServerError, "internal", "internal server error")
-		return
-	}
-	if !changed {
-		w.WriteHeader(http.StatusNotModified)
+	if !h.waitForWatchChange(w, r, org, project, service, "config") {
 		return
 	}
 
 	h.writeConfigResponse(w, r.Context(), org, project, service)
+}
+
+func (h *Handler) watchEnvVars(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("org")
+	project := r.PathValue("project")
+	service := r.PathValue("service")
+
+	if !h.waitForWatchChange(w, r, org, project, service, "env_vars") {
+		return
+	}
+
+	h.writeEnvVarsResponse(w, r.Context(), org, project, service, false)
+}
+
+func (h *Handler) waitForWatchChange(
+	w http.ResponseWriter,
+	r *http.Request,
+	org, project, service, resource string,
+) bool {
+	version := strings.TrimSpace(r.URL.Query().Get("version"))
+	if version == "" {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", "version query parameter is required")
+		return false
+	}
+	timeout, err := parseWatchTimeout(r)
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return false
+	}
+
+	waitCtx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	for {
+		if waitCtx.Err() != nil {
+			w.WriteHeader(http.StatusNotModified)
+			return false
+		}
+		resourceVersion, headVersion, err := h.store.ResourceVersion(r.Context(), org, project, service, resource)
+		if err != nil {
+			respondError(w, err)
+			return false
+		}
+		if resourceVersion != version {
+			return true
+		}
+
+		_, changed, err := h.store.WaitForVersionChange(waitCtx, headVersion)
+		if err != nil {
+			if !changed && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
+				w.WriteHeader(http.StatusNotModified)
+				return false
+			}
+			slog.Error("watch failed", "resource", resource, "err", err)
+			respondErrorCode(w, http.StatusInternalServerError, "internal", "internal server error")
+			return false
+		}
+		if !changed {
+			w.WriteHeader(http.StatusNotModified)
+			return false
+		}
+	}
 }
 
 func (h *Handler) writeConfigResponse(w http.ResponseWriter, ctx context.Context, org, project, service string) {
@@ -387,7 +422,11 @@ func (h *Handler) writeConfigResponse(w http.ResponseWriter, ctx context.Context
 		return
 	}
 
-	meta := configMeta(org, project, service, h.store.HeadVersion(), d.UpdatedAt)
+	version := d.ConfigResourceVersion
+	if version == "" {
+		version = h.store.HeadVersion()
+	}
+	meta := configMeta(org, project, service, version, d.UpdatedAt)
 
 	if d.Config == nil {
 		respondJSON(w, http.StatusOK, map[string]any{
@@ -420,13 +459,29 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 		w.Header().Del("ETag")
 	}
 
-	d, err := h.store.GetConfig(r.Context(), org, project, service)
+	h.writeEnvVarsResponse(w, r.Context(), org, project, service, resolveSecrets)
+}
+
+func (h *Handler) writeEnvVarsResponse(
+	w http.ResponseWriter,
+	ctx context.Context,
+	org, project, service string,
+	resolveSecrets bool,
+) {
+	d, err := h.store.GetConfig(ctx, org, project, service)
 	if err != nil {
 		respondError(w, err)
 		return
 	}
 
-	meta := configMeta(org, project, service, h.store.HeadVersion(), d.UpdatedAt)
+	version := h.store.HeadVersion()
+	if !resolveSecrets && d.EnvVarsResourceVersion != "" {
+		version = d.EnvVarsResourceVersion
+	}
+	if version == "" {
+		version = h.store.HeadVersion()
+	}
+	meta := configMeta(org, project, service, version, d.UpdatedAt)
 
 	if d.EnvVars == nil {
 		if resolveSecrets {
@@ -450,7 +505,7 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if resolveSecrets {
-		resolved, err := h.resolveEnvSecrets(r.Context(), org, project, service, d)
+		resolved, err := h.resolveEnvSecrets(ctx, org, project, service, d)
 		if err != nil {
 			respondError(w, err)
 			return

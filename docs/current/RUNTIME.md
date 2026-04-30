@@ -18,11 +18,20 @@ Status: active.
 9. A background poll loop calls `RefreshFromRepo` at `GIT_POLL_INTERVAL`.
 
 The store exposes `WaitForVersionChange(ctx, version)` for long-poll watch
-endpoints. `GET .../config/watch?version={ver}` uses it to return the current
-config immediately when `version` is stale, otherwise wait up to 30 seconds and
-return `304 Not Modified` when unchanged. The primitive wakes after a successful
-snapshot version change and stays blocked when a reload fails closed and the
-last-known-good snapshot remains active.
+endpoints. `GET .../config/watch?version={ver}` and
+`GET .../env_vars/watch?version={ver}` use it to return the current payload
+immediately when `version` is stale, otherwise wait up to 30 seconds and return
+`304 Not Modified` when unchanged. Config and unresolved env vars read/watch
+responses expose resource-scoped version tokens: each token is the Git commit
+hash from the last loaded snapshot where that specific resource payload
+changed, so config-only commits do not wake env vars watchers and env-only
+commits do not wake config watchers. `resolve_secrets=true` env var reads keep
+using the loaded HEAD version because their payload also depends on secret
+metadata and mounted secret values. The env vars watch response does not
+resolve secret values; it returns `plain` and `secret_refs` like the default env
+vars read path. The primitive wakes after a successful snapshot version change
+and stays blocked when a reload fails closed and the last-known-good snapshot
+remains active.
 
 Admin writes, deletes, background refreshes, and Git worktree mutations are
 serialized globally in Phase-1. `ADR-005` records this as the accepted current
