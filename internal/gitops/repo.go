@@ -604,20 +604,40 @@ func (r *Repo) IterateServiceHistory(ctx context.Context, org, project, service 
 		ctx = context.Background()
 	}
 
+	entries, err := r.serviceHistoryEntries(ctx, org, project, service)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Repo) serviceHistoryEntries(ctx context.Context, org, project, service string) ([]ServiceHistoryEntry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	head, err := r.repo.Head()
 	if err != nil {
-		return fmt.Errorf("git head: %w", err)
+		return nil, fmt.Errorf("git head: %w", err)
 	}
-	iter, err := r.repo.Log(&gogit.LogOptions{From: head.Hash()})
+	iter, err := r.repo.Log(&gogit.LogOptions{
+		From:  head.Hash(),
+		Order: gogit.LogOrderCommitterTime,
+	})
 	if err != nil {
-		return fmt.Errorf("git log: %w", err)
+		return nil, fmt.Errorf("git log: %w", err)
 	}
 	defer iter.Close()
 
-	return iter.ForEach(func(commit *object.Commit) error {
+	var entries []ServiceHistoryEntry
+	if err := iter.ForEach(func(commit *object.Commit) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -632,14 +652,18 @@ func (r *Repo) IterateServiceHistory(ctx context.Context, org, project, service 
 		if author == "" {
 			author = commit.Author.Name
 		}
-		return fn(ServiceHistoryEntry{
+		entries = append(entries, ServiceHistoryEntry{
 			Version:      commit.Hash.String(),
 			Message:      strings.TrimSpace(commit.Message),
 			Author:       author,
 			Timestamp:    commit.Author.When.UTC(),
 			FilesChanged: files,
 		})
-	})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return entries, nil
 }
 
 func serviceFilesChangedInCommit(commit *object.Commit, org, project, service string) ([]ServiceFileChange, error) {

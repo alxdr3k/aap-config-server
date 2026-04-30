@@ -2,6 +2,7 @@ package gitops_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -533,6 +534,44 @@ func TestIterateServiceHistory(t *testing.T) {
 
 	assertChangedPaths(t, got[0].FilesChanged, []string{"sealed-secrets/ns/name.yaml", "secrets.yaml"})
 	assertChangedPaths(t, got[1].FilesChanged, []string{"config.yaml"})
+}
+
+func TestIterateServiceHistory_CallbackCanReadRepo(t *testing.T) {
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+
+	path := "configs/orgs/myorg/projects/proj/services/litellm/config.yaml"
+	want := []byte("version: \"1\"\nconfig: {}\n")
+	if _, err := repo.CommitAndPush(ctx, "add litellm config", map[string][]byte{path: want}); err != nil {
+		t.Fatalf("CommitAndPush litellm config: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- repo.IterateServiceHistory(ctx, "myorg", "proj", "litellm", func(entry gitops.ServiceHistoryEntry) error {
+			got, err := repo.ReadFileAtCommit(entry.Version, path)
+			if err != nil {
+				return err
+			}
+			if string(got) != string(want) {
+				return fmt.Errorf("ReadFileAtCommit content: want %q, got %q", want, got)
+			}
+			return nil
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("IterateServiceHistory: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("IterateServiceHistory callback deadlocked while re-entering repo")
+	}
 }
 
 func assertChangedPaths(t *testing.T, got []gitops.ServiceFileChange, want []string) {
