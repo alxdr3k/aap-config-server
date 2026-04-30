@@ -145,6 +145,32 @@ func (r mapFileReader) ReadFile(path string) ([]byte, error) {
 	return append([]byte(nil), data...), nil
 }
 
+type versionWaitResult struct {
+	version string
+	changed bool
+	err     error
+}
+
+func waitForVersionChangeAsync(ctx context.Context, s *store.Store, version string) <-chan versionWaitResult {
+	ch := make(chan versionWaitResult, 1)
+	go func() {
+		next, changed, err := s.WaitForVersionChange(ctx, version)
+		ch <- versionWaitResult{version: next, changed: changed, err: err}
+	}()
+	return ch
+}
+
+func receiveWaitResult(t *testing.T, ch <-chan versionWaitResult) versionWaitResult {
+	t.Helper()
+	select {
+	case result := <-ch:
+		return result
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for WaitForVersionChange")
+		return versionWaitResult{}
+	}
+}
+
 // WalkConfigs copies the file map under the lock, then iterates the copy so
 // the caller's fn runs without holding the lock (matches the real Repo, which
 // holds its own lock for the walk but doesn't hold it while re-entering via
@@ -944,6 +970,107 @@ func TestStore_HeadVersion(t *testing.T) {
 	}
 	if v := s.HeadVersion(); v != "abc123" {
 		t.Errorf("HeadVersion: want abc123, got %q", v)
+	}
+}
+
+func TestStore_WaitForVersionChangeReturnsImmediatelyWhenVersionDiffers(t *testing.T) {
+	ctx := context.Background()
+	s := store.New(newFakeRepo())
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	version, changed, err := s.WaitForVersionChange(ctx, "stale-version")
+	if err != nil {
+		t.Fatalf("WaitForVersionChange: %v", err)
+	}
+	if !changed || version != "abc123" {
+		t.Fatalf("WaitForVersionChange: version=%q changed=%v", version, changed)
+	}
+}
+
+func TestStore_WaitForVersionChangeNotifiesAfterSuccessfulRefresh(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	waitCh := waitForVersionChangeAsync(ctx, s, "abc123")
+
+	repo.mu.Lock()
+	repo.commitHash = "def456"
+	repo.nextPullUpdated = true
+	repo.mu.Unlock()
+	updated, err := s.RefreshFromRepo(ctx)
+	if err != nil {
+		t.Fatalf("RefreshFromRepo: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected refresh update")
+	}
+
+	result := receiveWaitResult(t, waitCh)
+	if result.err != nil {
+		t.Fatalf("WaitForVersionChange: %v", result.err)
+	}
+	if !result.changed || result.version != "def456" {
+		t.Fatalf("WaitForVersionChange result: %+v", result)
+	}
+}
+
+func TestStore_WaitForVersionChangeDoesNotNotifyOnFailedRefresh(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	waitCh := waitForVersionChangeAsync(waitCtx, s, "abc123")
+
+	repo.mu.Lock()
+	repo.files["configs/orgs/myorg/projects/proj/services/litellm/config.yaml"] = []byte("::: not valid yaml :::")
+	repo.commitHash = "bad456"
+	repo.nextPullUpdated = true
+	repo.mu.Unlock()
+	updated, err := s.RefreshFromRepo(ctx)
+	if err == nil {
+		t.Fatal("expected refresh error on malformed YAML")
+	}
+	if updated {
+		t.Fatal("failed refresh should not report updated")
+	}
+
+	result := receiveWaitResult(t, waitCh)
+	if !errors.Is(result.err, context.DeadlineExceeded) {
+		t.Fatalf("WaitForVersionChange error: got %v, want context deadline", result.err)
+	}
+	if result.changed || result.version != "abc123" {
+		t.Fatalf("failed refresh should not notify version change: %+v", result)
+	}
+}
+
+func TestStore_WaitForVersionChangeContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	repo := newFakeRepo()
+	s := store.New(repo)
+	if err := s.LoadFromRepo(context.Background()); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+	cancel()
+
+	version, changed, err := s.WaitForVersionChange(ctx, "abc123")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitForVersionChange error: got %v, want context.Canceled", err)
+	}
+	if changed || version != "abc123" {
+		t.Fatalf("WaitForVersionChange result after cancel: version=%q changed=%v", version, changed)
 	}
 }
 

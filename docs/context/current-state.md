@@ -16,7 +16,7 @@ from an atomically swapped in-memory snapshot.
 - current milestone: `P1-M3` extension APIs next
 - active tracks: `EXT`
 - active phase: `EXT-1A`
-- active slice: `EXT-1A.1`
+- active slice: `EXT-1A.2`
 - last accepted gate: `AC-030`
 - next gate: `P1-M3` / `AC-040`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -29,6 +29,8 @@ from an atomically swapped in-memory snapshot.
 - Phase-1 admin writes, deletes, refreshes, and Git operations are serialized
   globally by `ADR-005`; service-level mutexes remain target design only.
 - In-memory store with atomic snapshot swap and last-known-good behavior.
+- Store version-change notification and `WaitForVersionChange` primitive for
+  future long-poll watch endpoints.
 - Parser support for `config.yaml`, `env_vars.yaml`, and `secrets.yaml` metadata.
 - Read APIs for config, env vars, service discovery, status, health/readiness.
 - Auth-gated admin write/delete/reload endpoints.
@@ -93,7 +95,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `EXT-1A.1`: add store notification and version-wait primitive for long-poll watch endpoints.
+1. Start `EXT-1A.2`: implement `config/watch` long-poll endpoint with timeout and version mismatch behavior.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -113,6 +115,9 @@ from an atomically swapped in-memory snapshot.
   debounce behavior, plus fake-client e2e smoke coverage for the Agent
   fetch/render/apply/rollout flow. Subsequent dev-cycle PRs use the repo
   `check`, `lint`, `scan`, and `test` checks before merge.
+- `EXT-1A.1` has local store coverage for immediate stale-version return,
+  successful refresh notification, failed-refresh non-notification, and context
+  cancellation.
 - Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`,
   `make test-race`, `make lint`, and `make build` pass in this workspace.

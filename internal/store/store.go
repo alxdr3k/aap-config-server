@@ -70,6 +70,10 @@ type Store struct {
 	// lastReload records the outcome of the most recent reload attempt.
 	lastReload atomic.Pointer[reloadState]
 
+	// versionChanged is closed after a successful snapshot version change.
+	versionWatchMu sync.Mutex
+	versionChanged chan struct{}
+
 	// mu serialises writes (ApplyChanges / DeleteChanges / background refresh).
 	mu sync.Mutex
 
@@ -101,7 +105,7 @@ func newSnapshot(data map[string]*ServiceData, version string) *snapshot {
 
 // New creates a Store backed by the given GitRepo.
 func New(repo gitops.GitRepo, opts ...Option) *Store {
-	s := &Store{repo: repo}
+	s := &Store{repo: repo, versionChanged: make(chan struct{})}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -200,6 +204,30 @@ func (s *Store) ReloadFromRepo(ctx context.Context) (bool, error) {
 // HeadVersion returns the git commit hash of the currently loaded snapshot.
 func (s *Store) HeadVersion() string {
 	return s.current().version
+}
+
+// WaitForVersionChange blocks until the store's loaded git version differs
+// from version or ctx is cancelled. It returns immediately when the caller's
+// version is already stale.
+func (s *Store) WaitForVersionChange(ctx context.Context, version string) (string, bool, error) {
+	if ctx == nil {
+		return "", false, errors.New("context is required")
+	}
+	for {
+		current, changed := s.versionChangeState(version)
+		if current != version {
+			return current, true, nil
+		}
+		select {
+		case <-ctx.Done():
+			current, _ := s.versionChangeState(version)
+			if current != version {
+				return current, true, nil
+			}
+			return current, false, ctx.Err()
+		case <-changed:
+		}
+	}
 }
 
 // IsDegraded reports whether the most recent reload attempt failed. When true
@@ -808,10 +836,31 @@ func (s *Store) reloadUnlocked(_ context.Context) error {
 		}
 	}
 
+	prevVersion := s.HeadVersion()
 	s.snapshot.Store(newSnapshot(data, hash))
 	s.lastReload.Store(&reloadState{at: time.Now(), err: nil})
+	if hash != prevVersion {
+		s.notifyVersionChange()
+	}
 	slog.Info("config store reloaded", "services", len(data), "version", hash[:min(8, len(hash))])
 	return nil
+}
+
+func (s *Store) versionChangeState(version string) (string, <-chan struct{}) {
+	s.versionWatchMu.Lock()
+	defer s.versionWatchMu.Unlock()
+	current := s.HeadVersion()
+	if current != version {
+		return current, nil
+	}
+	return current, s.versionChanged
+}
+
+func (s *Store) notifyVersionChange() {
+	s.versionWatchMu.Lock()
+	defer s.versionWatchMu.Unlock()
+	close(s.versionChanged)
+	s.versionChanged = make(chan struct{})
 }
 
 // parseAndStore determines the file type and updates the data map accordingly.

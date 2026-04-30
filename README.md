@@ -34,6 +34,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | App Registry startup bootstrap                     | Implemented when `CONSOLE_API_URL` is set |
 | App Registry webhook                               | Implemented (auth-gated cache upsert/delete) |
 | App Registry state in `/api/v1/status`             | Implemented |
+| Store version-wait primitive for future watch endpoints | Implemented as internal module |
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |

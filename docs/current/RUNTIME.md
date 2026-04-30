@@ -17,6 +17,12 @@ Status: active.
 8. HTTP handlers serve reads from memory and admin writes through the store.
 9. A background poll loop calls `RefreshFromRepo` at `GIT_POLL_INTERVAL`.
 
+The store exposes `WaitForVersionChange(ctx, version)` for future long-poll
+watch endpoints. It returns immediately when `version` is already stale, blocks
+while the loaded HEAD is unchanged, wakes after a successful snapshot version
+change, and stays blocked when a reload fails closed and the last-known-good
+snapshot remains active.
+
 Admin writes, deletes, background refreshes, and Git worktree mutations are
 serialized globally in Phase-1. `ADR-005` records this as the accepted current
 implementation; `ADR-003` remains the future service-level mutex target design.
