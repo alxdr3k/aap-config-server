@@ -109,6 +109,7 @@ func newSnapshot(data map[string]*ServiceData, version string) *snapshot {
 
 type defaultsEntry struct {
 	source DefaultsSource
+	config *parser.DefaultsConfig
 }
 
 type defaultsIndex struct {
@@ -1370,7 +1371,7 @@ func (s *Store) reloadUnlocked(_ context.Context) error {
 			sd.UpdatedAt = now
 		}
 	}
-	applyDefaultsSources(data, defaults)
+	applyDefaultsInheritance(data, defaults)
 	s.applyResourceVersions(data, hash)
 
 	prevVersion := s.HeadVersion()
@@ -1523,7 +1524,7 @@ func parseAndStoreDefaults(path string, raw []byte, defaults *defaultsIndex) (bo
 	}
 	source.HasConfig = len(cfg.Config) > 0
 	source.HasEnvVars = hasEnvVars(cfg.EnvVars)
-	entry := &defaultsEntry{source: source}
+	entry := &defaultsEntry{source: source, config: cfg}
 	switch source.Scope {
 	case DefaultsScopeGlobal:
 		defaults.global = entry
@@ -1535,29 +1536,173 @@ func parseAndStoreDefaults(path string, raw []byte, defaults *defaultsIndex) (bo
 	return true, nil
 }
 
-func applyDefaultsSources(data map[string]*ServiceData, defaults defaultsIndex) {
+func applyDefaultsInheritance(data map[string]*ServiceData, defaults defaultsIndex) {
 	for key, sd := range data {
 		parts := strings.Split(key, "/")
 		if len(parts) != 3 {
 			continue
 		}
-		org, project := parts[0], parts[1]
-		sources := make([]DefaultsSource, 0, 3)
-		if defaults.global != nil {
-			sources = append(sources, defaults.global.source)
-		}
-		if entry := defaults.org[org]; entry != nil {
-			sources = append(sources, entry.source)
-		}
-		if entry := defaults.project[org+"/"+project]; entry != nil {
+		serviceKey := ServiceKey{Org: parts[0], Project: parts[1], Service: parts[2]}
+		entries := defaultsEntriesFor(serviceKey, defaults)
+		sources := make([]DefaultsSource, 0, len(entries))
+		for _, entry := range entries {
 			sources = append(sources, entry.source)
 		}
 		sd.InheritedSources = sources
+		sd.InheritedConfig = inheritedConfigFor(serviceKey, sd, entries)
+		sd.InheritedEnvVars = inheritedEnvVarsFor(serviceKey, sd, entries)
 	}
 }
 
-func hasEnvVars(env parser.EnvVars) bool {
+func defaultsEntriesFor(key ServiceKey, defaults defaultsIndex) []*defaultsEntry {
+	entries := make([]*defaultsEntry, 0, 3)
+	if defaults.global != nil {
+		entries = append(entries, defaults.global)
+	}
+	if entry := defaults.org[key.Org]; entry != nil {
+		entries = append(entries, entry)
+	}
+	if entry := defaults.project[key.Org+"/"+key.Project]; entry != nil {
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func inheritedConfigFor(key ServiceKey, sd *ServiceData, defaults []*defaultsEntry) *parser.ServiceConfig {
+	hasConfig := sd.Config != nil
+	merged := map[string]any{}
+	for _, entry := range defaults {
+		if len(entry.config.Config) == 0 {
+			continue
+		}
+		hasConfig = true
+		merged = deepMergeMap(merged, entry.config.Config)
+	}
+	if sd.Config != nil {
+		merged = deepMergeMap(merged, sd.Config.Config)
+	}
+	if !hasConfig {
+		return nil
+	}
+	cfg := &parser.ServiceConfig{Config: merged}
+	if sd.Config != nil {
+		cfg.Version = sd.Config.Version
+		cfg.Metadata = sd.Config.Metadata
+		return cfg
+	}
+	cfg.Metadata = parser.ServiceMetadata{
+		Service: key.Service,
+		Org:     key.Org,
+		Project: key.Project,
+	}
+	return cfg
+}
+
+func inheritedEnvVarsFor(key ServiceKey, sd *ServiceData, defaults []*defaultsEntry) *parser.EnvVarsConfig {
+	hasEnvVars := sd.EnvVars != nil
+	merged := parser.EnvVars{
+		Plain:      map[string]string{},
+		SecretRefs: map[string]string{},
+	}
+	for _, entry := range defaults {
+		if !hasEnvVarsConfig(entry.config.EnvVars) {
+			continue
+		}
+		hasEnvVars = true
+		merged = mergeEnvVars(merged, entry.config.EnvVars)
+	}
+	if sd.EnvVars != nil {
+		merged = mergeEnvVars(merged, sd.EnvVars.EnvVars)
+	}
+	if !hasEnvVars {
+		return nil
+	}
+	env := &parser.EnvVarsConfig{EnvVars: merged}
+	if sd.EnvVars != nil {
+		env.Version = sd.EnvVars.Version
+		env.Metadata = sd.EnvVars.Metadata
+		return env
+	}
+	env.Metadata = parser.ServiceMetadata{
+		Service: key.Service,
+		Org:     key.Org,
+		Project: key.Project,
+	}
+	return env
+}
+
+func deepMergeMap(base, override map[string]any) map[string]any {
+	result := copyConfigMap(base)
+	for key, overrideValue := range override {
+		if overrideValue == nil {
+			delete(result, key)
+			continue
+		}
+		baseMap, baseIsMap := result[key].(map[string]any)
+		overrideMap, overrideIsMap := overrideValue.(map[string]any)
+		if baseIsMap && overrideIsMap {
+			result[key] = deepMergeMap(baseMap, overrideMap)
+			continue
+		}
+		result[key] = deepCopyConfigValue(overrideValue)
+	}
+	return result
+}
+
+func copyConfigMap(src map[string]any) map[string]any {
+	dst := make(map[string]any, len(src))
+	for key, value := range src {
+		dst[key] = deepCopyConfigValue(value)
+	}
+	return dst
+}
+
+func deepCopyConfigValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		return copyConfigMap(v)
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = deepCopyConfigValue(item)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func mergeEnvVars(base, override parser.EnvVars) parser.EnvVars {
+	merged := copyEnvVars(base)
+	for key, value := range override.Plain {
+		merged.Plain[key] = value
+	}
+	for key, value := range override.SecretRefs {
+		merged.SecretRefs[key] = value
+	}
+	return merged
+}
+
+func copyEnvVars(src parser.EnvVars) parser.EnvVars {
+	dst := parser.EnvVars{
+		Plain:      map[string]string{},
+		SecretRefs: map[string]string{},
+	}
+	for key, value := range src.Plain {
+		dst.Plain[key] = value
+	}
+	for key, value := range src.SecretRefs {
+		dst.SecretRefs[key] = value
+	}
+	return dst
+}
+
+func hasEnvVarsConfig(env parser.EnvVars) bool {
 	return len(env.Plain) > 0 || len(env.SecretRefs) > 0
+}
+
+func hasEnvVars(env parser.EnvVars) bool {
+	return hasEnvVarsConfig(env)
 }
 
 func digestBytes(raw []byte) string {

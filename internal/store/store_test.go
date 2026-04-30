@@ -483,6 +483,149 @@ func TestStore_LoadFromRepo_InvalidDefaultsFailsReload(t *testing.T) {
 	}
 }
 
+func TestStore_LoadFromRepo_MergesInheritedConfigAndEnvVars(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	base := "configs/orgs/myorg/projects/proj/services/litellm"
+	repo.files[base+"/config.yaml"] = []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+config:
+  scalar: service
+  nested:
+    override: service
+    service_only: true
+  model_list:
+    - service-model
+  delete_service: null
+`)
+	repo.files[base+"/env_vars.yaml"] = []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+env_vars:
+  plain:
+    B: service
+    D: service
+  secret_refs:
+    T: service-secret
+`)
+	repo.files["configs/_defaults/common.yaml"] = []byte(`config:
+  scalar: global
+  delete_org: keep
+  delete_service: keep
+  nested:
+    keep: global
+    override: global
+    delete_nested: keep
+  model_list:
+    - global-model
+  project_list:
+    - global-project
+env_vars:
+  plain:
+    A: global
+    B: global
+  secret_refs:
+    S: global-secret
+`)
+	repo.files["configs/orgs/myorg/_defaults/common.yaml"] = []byte(`config:
+  scalar: org
+  delete_org: null
+  nested:
+    override: org
+    org_only: true
+  model_list:
+    - org-model
+env_vars:
+  plain:
+    A: org
+    C: org
+  secret_refs:
+    S: org-secret
+`)
+	repo.files["configs/orgs/myorg/projects/proj/_defaults/common.yaml"] = []byte(`config:
+  scalar: project
+  nested:
+    project_only: true
+    delete_nested: null
+  project_list:
+    - project-model
+env_vars:
+  plain:
+    C: project
+`)
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	d, err := s.GetConfig(ctx, "myorg", "proj", "litellm")
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if d.InheritedConfig == nil {
+		t.Fatal("expected inherited config")
+	}
+	cfg := d.InheritedConfig.Config
+	if got := cfg["scalar"]; got != "service" {
+		t.Fatalf("scalar: got %v", got)
+	}
+	if _, ok := cfg["delete_org"]; ok {
+		t.Fatal("delete_org should be removed by org null override")
+	}
+	if _, ok := cfg["delete_service"]; ok {
+		t.Fatal("delete_service should be removed by service null override")
+	}
+	nested, ok := cfg["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested: got %T", cfg["nested"])
+	}
+	if got := nested["keep"]; got != "global" {
+		t.Fatalf("nested.keep: got %v", got)
+	}
+	if got := nested["override"]; got != "service" {
+		t.Fatalf("nested.override: got %v", got)
+	}
+	if got := nested["org_only"]; got != true {
+		t.Fatalf("nested.org_only: got %v", got)
+	}
+	if got := nested["project_only"]; got != true {
+		t.Fatalf("nested.project_only: got %v", got)
+	}
+	if got := nested["service_only"]; got != true {
+		t.Fatalf("nested.service_only: got %v", got)
+	}
+	if _, ok := nested["delete_nested"]; ok {
+		t.Fatal("nested.delete_nested should be removed by project null override")
+	}
+	modelList, ok := cfg["model_list"].([]any)
+	if !ok || len(modelList) != 1 || modelList[0] != "service-model" {
+		t.Fatalf("model_list should be replaced by service array, got %#v", cfg["model_list"])
+	}
+	projectList, ok := cfg["project_list"].([]any)
+	if !ok || len(projectList) != 1 || projectList[0] != "project-model" {
+		t.Fatalf("project_list should be replaced by project array, got %#v", cfg["project_list"])
+	}
+
+	if _, ok := d.Config.Config["delete_service"]; !ok {
+		t.Fatal("raw service config should keep service-level null until inherit reads are enabled")
+	}
+	if d.InheritedEnvVars == nil {
+		t.Fatal("expected inherited env vars")
+	}
+	if got := d.InheritedEnvVars.EnvVars.Plain; got["A"] != "org" || got["B"] != "service" || got["C"] != "project" || got["D"] != "service" {
+		t.Fatalf("merged plain env vars: got %#v", got)
+	}
+	if got := d.InheritedEnvVars.EnvVars.SecretRefs; got["S"] != "org-secret" || got["T"] != "service-secret" {
+		t.Fatalf("merged secret refs: got %#v", got)
+	}
+}
+
 func TestStore_GetConfigAtVersion(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()
