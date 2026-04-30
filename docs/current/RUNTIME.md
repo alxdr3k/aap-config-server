@@ -21,6 +21,22 @@ Admin writes, deletes, background refreshes, and Git worktree mutations are
 serialized globally in Phase-1. `ADR-005` records this as the accepted current
 implementation; `ADR-003` remains the future service-level mutex target design.
 
+## Config Agent bootstrap flow
+
+`cmd/config-agent` currently supports local dry-run mode only:
+
+1. Load agent runtime config from env/flags, requiring `CONFIG_SERVER_URL`,
+   service identity (`CONFIG_AGENT_ORG`, `CONFIG_AGENT_PROJECT`,
+   `CONFIG_AGENT_SERVICE` or matching flags), and `--dry-run`.
+2. Create a bounded Config Server API client with the configured HTTP timeout.
+3. Fetch `GET .../config` and `GET .../env_vars`; `--resolve-secrets` adds
+   `resolve_secrets=true` and requires `CONFIG_AGENT_API_KEY` or `API_KEY`.
+4. Log a summary with counts for config keys, plain env vars, secret refs, and
+   resolved secrets. Secret values are not printed.
+
+Kubernetes Lease leader election, ConfigMap/Secret apply, Deployment patching,
+polling loops, and debounce behavior remain planned Agent slices.
+
 ## Implemented API surface
 
 - `GET /healthz`
@@ -86,7 +102,8 @@ implementation; `ADR-003` remains the future service-level mutex target design.
   unavailable. If startup bootstrap is not configured, webhook updates can
   change `apps_loaded` and `last_updated_at`, but the status remains
   `not_configured` to show that no full Console snapshot was loaded.
-- Config Agent, watch/history/revert, and inheritance are target design only.
+- Config Agent Kubernetes apply/rollout behavior, watch/history/revert, and
+  inheritance are target design only.
 
 ## Failure modes
 
