@@ -103,12 +103,14 @@ snapshot.
 | Config Agent leader lease | active, standby | A Kubernetes `Lease` elects one active Agent replica. Standby replicas observe the same lease and take over after the holder releases or expires. |
 | Config Agent fetch state | handled, changed | The fetch loop verifies config/env reads come from the same repo revision, tracks the last successfully handled content hashes, and treats the first snapshot or content hash changes as changed. Failed handlers do not advance the handled state. |
 | Config Agent rendered payloads | config YAML, env.sh | The renderer converts a fetched config object into deterministic native YAML while preserving `os.environ/...` strings, and converts resolved env vars into sorted shell exports for the target Secret. |
+| Config Agent apply target | namespace, ConfigMap, Secret | The apply adapter requires concrete resource names, writes `config.yaml` to the ConfigMap and `env.sh` to the Secret, and patches existing resources without replacing unrelated data keys. |
 | Admin write | committed, committed_but_apply_failed, committed_but_reload_failed, committed_but_apply_and_reload_failed | Non-committed validation/sealing failures happen before Git writes; post-commit apply/reload failures are explicit. |
 | Admin delete | deleted, deleted_but_reload_failed | The second state means Git delete succeeded but memory reload failed. |
 
 ## Needs audit
 
 - No generated reference docs currently exist under `docs/generated/`.
-- Config Agent K8s apply/rollout data models are target design only; bootstrap
-  Config Server response DTOs, leader election config, fetch loop state, and
-  rendered payloads live under `internal/agent`.
+- Config Agent Deployment rollout data models are target design only; bootstrap
+  Config Server response DTOs, leader election config, fetch loop state,
+  rendered payloads, and ConfigMap/Secret apply targets live under
+  `internal/agent`.

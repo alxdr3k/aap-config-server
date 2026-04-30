@@ -38,7 +38,8 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |
 | Config Agent native config/env.sh rendering        | Implemented as internal module |
-| Config Agent K8s apply and rollout                 | Not implemented |
+| Config Agent ConfigMap/Secret apply                | Implemented as internal module |
+| Config Agent Deployment rollout                    | Not implemented |
 | Watch / stream endpoint                            | Not implemented |
 | History / revert endpoints                         | Not implemented |
 
@@ -103,10 +104,10 @@ curl http://localhost:8080/api/v1/orgs
 
 ## Config Agent dry-run
 
-`config-agent` currently implements the bootstrap slice: runtime config loading,
-Config Server API reads, and local dry-run summary output. Kubernetes leader
-election, ConfigMap/Secret apply, and rollout patches are planned follow-up
-work.
+`config-agent` currently exposes local dry-run summary output. Runtime config,
+Config Server reads, leader election, fetch/render, and ConfigMap/Secret apply
+exist as internal modules; non-dry-run orchestration and rollout patches remain
+planned follow-up work.
 
 ```bash
 make build-agent

@@ -20,7 +20,7 @@ Question ↔ Decision ↔ Requirement ↔ Gate/Test ↔ Milestone/Track/Phase/Sl
 | `TRACE-005` |  |  | `FR-16`, `FR-17` | `AC-006` / `TEST-006` | `P0-M2` | `OPS` | `OPS-1A` | `OPS-1A.1` | API key auth boundary. |
 | `TRACE-006` | `Q-002` | `ADR-005` | `FR-4` | `AC-005` / `TEST-005` | `P0-M1` | `CORE` | `CORE-1A` | `CORE-1A.5` | Phase-1 accepts global Git/store serialization; ADR-003 remains target design. |
 | `TRACE-007` |  | `ADR-004` | `FR-7`, `FR-17` | `AC-020` / `TEST-020` | `P1-M1` | `SECRET` | `SECRET-1A` | `SECRET-1A.1`~`SECRET-1A.8` | Implemented SealedSecret/write/resolve/security path. |
-| `TRACE-008` |  | `ADR-001`, `ADR-002` | `FR-9` | `AC-030` / `TEST-030` | `P1-M2` | `AGENT` | `AGENT-1A` | `AGENT-1A.1`~`AGENT-1A.8` | Config Agent bootstrap, leader election, read polling, and rendering landed; K8s apply/rollout path remains leaf-planned. |
+| `TRACE-008` |  | `ADR-001`, `ADR-002` | `FR-9` | `AC-030` / `TEST-030` | `P1-M2` | `AGENT` | `AGENT-1A` | `AGENT-1A.1`~`AGENT-1A.8` | Config Agent bootstrap, leader election, read polling, rendering, and ConfigMap/Secret apply landed; Deployment rollout path remains leaf-planned. |
 | `TRACE-009` | `Q-001` | `DEC-001`, `DEC-002` | Documentation migration | `AC-014` | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.1` | Boilerplate docs adopted; `FR-*` remains canonical. |
 | `TRACE-010` |  | `DEC-001` | Documentation workflow | `AC-015` | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.2` | PR template and doc freshness soft-check. |
 | `TRACE-011` | `Q-003` | `DEC-003` | Deployment ownership | operations/runbook docs | `P0-M3` | `DOC` | `DOC-1A` | `DOC-1A.1` | Repo owns binary/image/runtime docs; Helm/K8s manifests remain external. |

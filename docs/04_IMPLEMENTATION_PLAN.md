@@ -51,7 +51,7 @@ Gate status:
 | `P0-M2` | Operational hardening for auth, degraded state, reload, dirty checkout safety, and fail-closed admin write decoding. |  | `accepted` | `AC-006`~`AC-009` | `internal/store`, `internal/handler`, `internal/gitops`, PR #10 CI | Some PRD phase labels differ from actual landing order. Secret write support is tracked by `SECRET-1A.6`. |
 | `P0-M3` | Documentation system migrated to boilerplate structure. |  | `accepted` | `AC-014`, `AC-015` | `docs/00_*`, `docs/current/*`, `AGENTS.md`, `.github/`, PR #10 | Migration landed on main. |
 | `P1-M1` | Secret write/resolve with SealedSecret, K8s apply, and Console App Registry integration. |  | `accepted` | `AC-020`, `AC-021` | ADR-004, `internal/secret`, `internal/registry`, `internal/handler` | Secret path and App Registry integration landed. |
-| `P1-M2` | Config Agent rollout path. |  | `in_progress` | `AC-030` | ADR-001, ADR-002 | `AGENT-1A.4` landed; `AGENT-1A.5` is ready next. |
+| `P1-M2` | Config Agent rollout path. |  | `in_progress` | `AC-030` | ADR-001, ADR-002 | `AGENT-1A.5` landed; `AGENT-1A.6` is ready next. |
 | `P1-M3` | Console integration extensions and production hardening. |  | `planned` | `AC-040`~`AC-042` | `docs/01_PRD.md`, `DEC-003` | Leaf slices defined. |
 
 ## Tracks
@@ -63,7 +63,7 @@ Gate status:
 | `DOC` | Boilerplate documentation migration and status ledger. | `DOC-1A` | `accepted` | Landed through PR #10. |
 | `SECRET` | Secret write/resolve and SealedSecret integration. | `SECRET-1A` | `accepted` | Runtime boundaries, volume reader, deterministic SealedSecret YAML generation, public-key encryption, admin secret writes, K8s apply, secret value resolve, and audit hardening landed. |
 | `REGISTRY` | AAP Console App Registry bootstrap and webhook cache. | `REGISTRY-1A` | `accepted` | Startup bootstrap, webhook cache updates, and status observability landed. |
-| `AGENT` | Config Agent and rollout orchestration. | `AGENT-1A` | `in_progress` | Agent bootstrap, leader election, read polling, and rendering landed; later slices remain planned until their direct dependencies land. |
+| `AGENT` | Config Agent and rollout orchestration. | `AGENT-1A` | `in_progress` | Agent bootstrap, leader election, read polling, rendering, and ConfigMap/Secret apply landed; later slices remain planned until their direct dependencies land. |
 | `EXT` | Watch, history, revert, inheritance, batch, webhook, metrics, and HTTP response extensions. | `EXT-1A`~`EXT-1D` | `planned` | Planned. |
 | `HARDEN` | Schema validation, rate limiting, integration/load tests, and deployment handoff docs. | `HARDEN-1A` | `planned` | Planned. |
 
@@ -97,8 +97,8 @@ Gate status:
 | `AGENT-1A.2` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement K8s Lease leader election with standby takeover behavior. | `AGENT-1A.1` | `AC-030` | `passing` | `landed` | `internal/agent` |  |
 | `AGENT-1A.3` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement config/env fetch loop, version tracking, and retry/backoff behavior using read API polling. | `AGENT-1A.1` | `AC-030` | `passing` | `landed` | `internal/agent` |  |
 | `AGENT-1A.4` | `P1-M2` | `AGENT` | `AGENT-1A` | Render native service config and `env.sh` payloads while preserving secret references in ConfigMaps. | `AGENT-1A.3` | `AC-030` | `passing` | `landed` | `internal/agent` |  |
-| `AGENT-1A.5` | `P1-M2` | `AGENT` | `AGENT-1A` | Apply target ConfigMap and Secret resources with create/update/patch behavior constrained to configured resource names. | `AGENT-1A.4` | `AC-030` | `defined` | `ready` | ADR-002 | Start here next. |
-| `AGENT-1A.6` | `P1-M2` | `AGENT` | `AGENT-1A` | Patch target Deployment annotations to trigger controlled rolling restarts. | `AGENT-1A.5` | `AC-030` | `defined` | `planned` | ADR-002 |  |
+| `AGENT-1A.5` | `P1-M2` | `AGENT` | `AGENT-1A` | Apply target ConfigMap and Secret resources with create/update/patch behavior constrained to configured resource names. | `AGENT-1A.4` | `AC-030` | `passing` | `landed` | `internal/agent` |  |
+| `AGENT-1A.6` | `P1-M2` | `AGENT` | `AGENT-1A` | Patch target Deployment annotations to trigger controlled rolling restarts. | `AGENT-1A.5` | `AC-030` | `defined` | `ready` | ADR-002 | Start here next. |
 | `AGENT-1A.7` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement leading-edge debounce with cooldown, quiet period, and max-wait controls. | `AGENT-1A.6` | `AC-030` | `defined` | `planned` | ADR-001 |  |
 | `AGENT-1A.8` | `P1-M2` | `AGENT` | `AGENT-1A` | Add Config Agent image build, RBAC/deployment examples, and e2e smoke coverage with fake K8s/client dependencies. | `AGENT-1A.7` | `AC-030` | `defined` | `planned` | ADR-001, ADR-002, `DEC-003` |  |
 | `EXT-1A.1` | `P1-M3` | `EXT` | `EXT-1A` | Add store notification and version-wait primitive for long-poll watch endpoints. | `CORE-1A.3` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` |  |
