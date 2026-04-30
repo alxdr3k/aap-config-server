@@ -15,8 +15,8 @@ from an atomically swapped in-memory snapshot.
 
 - current milestone: `P1-M3` extension APIs next
 - active tracks: `EXT`
-- active phase: none
-- active slice: none
+- active phase: `EXT-1B`
+- active slice: `EXT-1B.1`
 - last accepted gate: `AC-030`
 - next gate: `P1-M3` / `AC-040`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -99,7 +99,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Review remaining P1-M3 EXT/HARDEN planned leaves for ready promotion.
+1. Start `EXT-1B.1`: add Git history iterator and file-change classifier for
+   service-scoped history.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
