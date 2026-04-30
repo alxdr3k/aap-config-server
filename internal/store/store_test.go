@@ -28,6 +28,7 @@ type fakeRepo struct {
 	nextPullUpdated bool
 	pullCalls       int
 	afterCommit     func()
+	history         []gitops.ServiceHistoryEntry
 }
 
 type fakeSealer struct {
@@ -217,7 +218,12 @@ func (f *fakeRepo) ReadFileAtCommit(_ string, path string) ([]byte, error) {
 	return f.ReadFile(path)
 }
 
-func (f *fakeRepo) IterateServiceHistory(_ context.Context, _, _, _ string, _ func(gitops.ServiceHistoryEntry) error) error {
+func (f *fakeRepo) IterateServiceHistory(_ context.Context, _, _, _ string, fn func(gitops.ServiceHistoryEntry) error) error {
+	for _, entry := range f.history {
+		if err := fn(entry); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -309,6 +315,91 @@ func TestStore_GetConfig_Found(t *testing.T) {
 	}
 	if d.EnvVars.EnvVars.Plain["LOG_LEVEL"] != "INFO" {
 		t.Errorf("LOG_LEVEL: want INFO, got %q", d.EnvVars.EnvVars.Plain["LOG_LEVEL"])
+	}
+}
+
+func TestStore_History_FiltersLimitAndBefore(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	repo.history = []gitops.ServiceHistoryEntry{
+		{
+			Version:   "v4",
+			Message:   "latest config",
+			Author:    "admin@example.com",
+			Timestamp: time.Date(2026, 3, 12, 10, 0, 0, 0, time.UTC),
+			FilesChanged: []gitops.ServiceFileChange{
+				{Path: "config.yaml", Kind: gitops.ServiceFileConfig},
+			},
+		},
+		{
+			Version:   "v3",
+			Message:   "env only",
+			Author:    "admin@example.com",
+			Timestamp: time.Date(2026, 3, 11, 10, 0, 0, 0, time.UTC),
+			FilesChanged: []gitops.ServiceFileChange{
+				{Path: "env_vars.yaml", Kind: gitops.ServiceFileEnvVars},
+			},
+		},
+		{
+			Version:   "v2",
+			Message:   "config and secret",
+			Author:    "admin@example.com",
+			Timestamp: time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+			FilesChanged: []gitops.ServiceFileChange{
+				{Path: "config.yaml", Kind: gitops.ServiceFileConfig},
+				{Path: "sealed-secrets/ns/name.yaml", Kind: gitops.ServiceFileSealedSecret},
+			},
+		},
+		{
+			Version:   "v1",
+			Message:   "initial config",
+			Author:    "admin@example.com",
+			Timestamp: time.Date(2026, 3, 9, 10, 0, 0, 0, time.UTC),
+			FilesChanged: []gitops.ServiceFileChange{
+				{Path: "config.yaml", Kind: gitops.ServiceFileConfig},
+			},
+		},
+	}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	entries, err := s.History(ctx, store.HistoryOptions{
+		Org:     "myorg",
+		Project: "proj",
+		Service: "litellm",
+		File:    "config",
+		Limit:   2,
+		Before:  "v3",
+	})
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("history length: want 2, got %d: %#v", len(entries), entries)
+	}
+	if entries[0].Version != "v2" || entries[1].Version != "v1" {
+		t.Fatalf("versions: want [v2 v1], got [%s %s]", entries[0].Version, entries[1].Version)
+	}
+	if got := strings.Join(entries[0].FilesChanged, ","); got != "config.yaml,sealed-secrets/ns/name.yaml" {
+		t.Fatalf("files_changed: got %q", got)
+	}
+
+	secretEntries, err := s.History(ctx, store.HistoryOptions{
+		Org:     "myorg",
+		Project: "proj",
+		Service: "litellm",
+		File:    "secrets",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("History secrets: %v", err)
+	}
+	if len(secretEntries) != 1 || secretEntries[0].Version != "v2" {
+		t.Fatalf("secret history: want [v2], got %#v", secretEntries)
 	}
 }
 

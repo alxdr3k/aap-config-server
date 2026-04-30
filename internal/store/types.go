@@ -100,6 +100,25 @@ type DeleteResult struct {
 	ReloadError  string
 }
 
+// HistoryOptions controls service history listing.
+type HistoryOptions struct {
+	Org     string
+	Project string
+	Service string
+	File    string
+	Limit   int
+	Before  string
+}
+
+// HistoryEntry is one service-scoped Git commit exposed by the history API.
+type HistoryEntry struct {
+	Version      string
+	Message      string
+	Author       string
+	Timestamp    time.Time
+	FilesChanged []string
+}
+
 // StoreStatus holds operational status information about the store.
 type StoreStatus struct {
 	Version         string
