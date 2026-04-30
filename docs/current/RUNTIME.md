@@ -68,8 +68,8 @@ Kubernetes apply code will write:
   remaining `secret_refs`, rejects duplicate plain/secret keys, and validates
   shell-compatible env var names.
 
-ConfigMap/Secret apply is implemented separately below; Deployment patching and
-debounce behavior remain planned Agent slices.
+ConfigMap/Secret apply and Deployment patching are implemented separately
+below; debounce behavior remains a planned Agent slice.
 
 ## Config Agent ConfigMap/Secret apply
 
@@ -83,7 +83,18 @@ client-go client:
 - The target namespace, ConfigMap name, and Secret name are required and
   validated before any Kubernetes API call.
 
-Deployment patching and debounce behavior remain planned Agent slices.
+## Config Agent rollout patch
+
+`internal/agent` can trigger a Kubernetes rolling restart by merge-patching the
+target Deployment pod-template annotations:
+
+- `config-agent/config-hash` is a SHA-256 hash over the rendered `config.yaml`
+  and `env.sh` payloads.
+- `config-agent/restart-at` is an RFC3339Nano UTC timestamp.
+- The patch targets one configured Deployment name and preserves unrelated
+  existing pod-template annotations.
+
+Debounce behavior remains a planned Agent slice.
 
 ## Implemented API surface
 
