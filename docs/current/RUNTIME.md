@@ -54,6 +54,14 @@ returns the raw service-level file. Current `resolve_secrets=true` env reads
 also use inherited env var secret refs. Config/env watch endpoints use the same
 inherit view for version comparison and response payloads.
 
+Non-secret config/env read responses include an `ETag` header and honor
+`If-None-Match` by returning `304 Not Modified` without a body when the
+requested view is unchanged. The validator is derived from the response
+resource, service identity, version token, `metadata.updated_at`, and `inherit`
+view, so inherited and raw reads do not share cache validators. Current and
+versioned config reads and unresolved env var reads are cacheable this way;
+`resolve_secrets=true` env var reads remain no-store and omit `ETag`.
+
 Admin writes remain service-level. `POST /api/v1/admin/changes` writes only the
 request payload to `config.yaml` and `env_vars.yaml`; inherited defaults are not
 materialized into service files, and `_defaults/common.yaml` files are not
@@ -282,6 +290,7 @@ only; live deployment wiring remains an external deployment-system concern per
 | Admin delete succeeds but reload fails | Response is `503 deleted_but_reload_failed`; Git delete remains. |
 | Dirty `configs/` worktree during snapshot | Reload fails closed to avoid serving data not represented by HEAD. |
 | Unknown admin JSON field | Request fails with `400 invalid_body`. |
+| Non-secret config/env read with matching `If-None-Match` | Request returns `304 Not Modified` with the current `ETag` and no body. |
 | `resolve_secrets=true` without valid API key | Request fails with `401 unauthorized`. |
 | Resolved env var secret response | Mounted secret files are refreshed before response; response includes `Cache-Control: no-store` and omits `ETag`. |
 | Duplicate `secrets.yaml` IDs during resolve | Request fails instead of choosing an ambiguous mounted secret value. |

@@ -365,6 +365,20 @@ func get(t *testing.T, srv *httptest.Server, path string) *http.Response {
 	return resp
 }
 
+func getWithHeader(t *testing.T, srv *httptest.Server, path, name, value string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+	if err != nil {
+		t.Fatalf("new GET %s: %v", path, err)
+	}
+	req.Header.Set(name, value)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	return resp
+}
+
 func getWithBearer(t *testing.T, srv *httptest.Server, path, token string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
@@ -528,6 +542,69 @@ func TestGetConfig_Found(t *testing.T) {
 	}
 }
 
+func TestGetConfig_ETagAndIfNoneMatch(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "config-v1",
+		UpdatedAt:             time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC),
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{"router_settings": map[string]any{"num_retries": 3}},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("expected ETag")
+	}
+
+	resp = getWithHeader(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config", "If-None-Match", etag)
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("ETag"); got != etag {
+		t.Fatalf("304 ETag: got %q, want %q", got, etag)
+	}
+
+	st.services["org/proj/svc"].UpdatedAt = time.Date(2026, 4, 30, 10, 1, 0, 0, time.UTC)
+	resp = getWithHeader(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config", "If-None-Match", etag)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("updated metadata should return 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("ETag"); got == "" || got == etag {
+		t.Fatalf("updated metadata ETag should change, got %q old %q", got, etag)
+	}
+}
+
+func TestGetConfig_ETagVariesByInheritView(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head-inherit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "raw-v1",
+		Config:                &parser.ServiceConfig{Config: map[string]any{"raw": true}},
+		InheritedSources:      []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasConfig: true}},
+		InheritedConfig:       &parser.ServiceConfig{Config: map[string]any{"raw": true, "global": true}},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	inheritedResp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config")
+	rawResp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?inherit=false")
+	inheritedETag := inheritedResp.Header.Get("ETag")
+	rawETag := rawResp.Header.Get("ETag")
+	if inheritedETag == "" || rawETag == "" {
+		t.Fatalf("expected both ETags, inherited=%q raw=%q", inheritedETag, rawETag)
+	}
+	if inheritedETag == rawETag {
+		t.Fatalf("inherit views should have distinct ETags, both %q", inheritedETag)
+	}
+}
+
 func TestGetConfig_DefaultInheritUsesInheritedConfig(t *testing.T) {
 	st := newFakeStore()
 	st.version = "head-inherit"
@@ -629,6 +706,14 @@ func TestGetConfig_VersionParam(t *testing.T) {
 	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?version=old123&inherit=false")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("expected versioned config ETag")
+	}
+	conditionalResp := getWithHeader(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?version=old123&inherit=false", "If-None-Match", etag)
+	if conditionalResp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", conditionalResp.StatusCode)
 	}
 	if st.configVersionArg != "old123" {
 		t.Fatalf("version arg: got %q", st.configVersionArg)
@@ -1037,6 +1122,38 @@ func TestGetEnvVars_Found(t *testing.T) {
 	}
 }
 
+func TestGetEnvVars_ETagAndIfNoneMatch(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVarsResourceVersion: "env-v1",
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"LOG_LEVEL": "INFO"},
+				SecretRefs: map[string]string{"API_KEY": "my-secret"},
+			},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("expected ETag")
+	}
+
+	resp = getWithHeader(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars", "If-None-Match", etag)
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("ETag"); got != etag {
+		t.Fatalf("304 ETag: got %q, want %q", got, etag)
+	}
+}
+
 func TestGetEnvVars_DefaultInheritUsesInheritedEnvVars(t *testing.T) {
 	st := newFakeStore()
 	st.version = "head-inherit"
@@ -1143,6 +1260,14 @@ func TestGetEnvVars_VersionParam(t *testing.T) {
 	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=old-env&inherit=false")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("expected versioned env_vars ETag")
+	}
+	conditionalResp := getWithHeader(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=old-env&inherit=false", "If-None-Match", etag)
+	if conditionalResp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", conditionalResp.StatusCode)
 	}
 	if st.envVarsVersionArg != "old-env" {
 		t.Fatalf("version arg: got %q", st.envVarsVersionArg)

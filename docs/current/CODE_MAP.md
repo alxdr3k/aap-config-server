@@ -17,7 +17,7 @@ Status: active.
 |---|---|
 | `internal/config/` | Environment/flag parsing and validation for runtime configuration. |
 | `internal/server/` | `http.Server` lifecycle, graceful shutdown, readiness probe. |
-| `internal/handler/` | HTTP routing, request decoding, API key auth, JSON response/error envelope, config/env watch long polling, versioned reads, history API responses, and public revert endpoint responses. |
+| `internal/handler/` | HTTP routing, request decoding, API key auth, JSON response/error envelope, config/env cache validators, config/env watch long polling, versioned reads, history API responses, and public revert endpoint responses. |
 | `internal/apperror/` | Typed domain errors and error-code mapping used by handlers and store. |
 | `internal/agent/` | Config Agent bootstrap runtime config, bounded Config Server API client, dry-run summary runner, K8s Lease leader election wrapper, read polling/version tracking loop, native config/env.sh payload renderer, ConfigMap/Secret apply adapter, Deployment rollout patcher, leading-edge debounce state machine, and e2e smoke coverage for the composed Agent flow. |
 
@@ -48,7 +48,7 @@ Status: active.
 | `internal/registry/*_test.go` | Console App Registry client decoding, cache replacement/update semantics, and startup bootstrap retry behavior. |
 | `internal/store/*_test.go` | Snapshot reload, defaults source parsing, internal inheritance merge semantics, inheritance/admin-write preservation, resource-scoped versions, version-change waiting, historical config/env reads, revert restore planning/application, history filtering, config/env/secret apply, secret audit logging, delete, degraded behavior, concurrency. |
 | `internal/gitops/*_test.go` | Local Git clone/pull/commit/delete/restore/snapshot behavior plus service history/file-change primitives. |
-| `internal/handler/*_test.go` | HTTP routes, config/env watch behavior, versioned and inherited read behavior, history API behavior, revert endpoint behavior, auth, admin write response shape and service-level payload preservation, App Registry webhook auth/cache updates, App Registry status reporting, secret write input cleanup, resolved env var secret reads, secret audit logging, reload/degraded status. |
+| `internal/handler/*_test.go` | HTTP routes, config/env ETag and `If-None-Match` behavior, config/env watch behavior, versioned and inherited read behavior, history API behavior, revert endpoint behavior, auth, admin write response shape and service-level payload preservation, App Registry webhook auth/cache updates, App Registry status reporting, secret write input cleanup, resolved env var secret reads, secret audit logging, reload/degraded status. |
 | `internal/agent/*_test.go` | Config Agent config loading/validation, Config Server API client behavior, bounded responses, dry-run counts, K8s Lease leader election takeover behavior, fetch loop retry/version tracking, renderer validation, ConfigMap/Secret apply behavior, rollout patch behavior, debounce timing behavior, and e2e smoke coverage under the `e2e` build tag. |
 
 ## Needs audit
