@@ -45,6 +45,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Config/env inheritance (`inherit=true/false`) | Implemented for current and versioned read APIs; admin writes remain service-level |
 | ETag / `If-None-Match` for config/env reads | Implemented for non-secret current and versioned config/env responses; resolved secret responses remain no-store/no ETag |
 | gzip compression for config/env reads | Implemented for non-secret config/env JSON responses when `Accept-Encoding` allows gzip; resolved secret responses are not compressed |
+| Batch config/env reads (`POST /api/v1/configs/batch`) | Implemented for current non-secret config/env reads with partial per-item errors |
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |
@@ -204,6 +205,7 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars?version={commit}
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars/watch?version={ver}[&timeout=30s]
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars?resolve_secrets=true   # auth required, no-store
+POST /api/v1/configs/batch
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/history[?file=config&limit=20&before={ver}]
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/secrets   # auth required
 ```

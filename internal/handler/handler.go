@@ -64,6 +64,7 @@ const (
 	maxWatchTimeout     = 30 * time.Second
 	defaultHistoryLimit = 20
 	maxHistoryLimit     = 100
+	maxBatchReadQueries = 100
 )
 
 // Option customizes Handler dependencies.
@@ -121,6 +122,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 		h.getEnvVars)
 	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch",
 		h.watchEnvVars)
+	mux.HandleFunc("POST /api/v1/configs/batch", h.postConfigsBatch)
 	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/history",
 		h.getHistory)
 	// Secret metadata is privileged even though values are never returned; auth
@@ -482,13 +484,43 @@ func (h *Handler) writeConfigResponse(
 	org, project, service string,
 	inherit bool,
 ) {
-	ctx := r.Context()
-	d, err := h.store.GetConfig(ctx, org, project, service)
+	payload, err := h.currentConfigPayload(r.Context(), org, project, service, inherit)
 	if err != nil {
 		respondError(w, err)
 		return
 	}
 
+	respondCacheableJSON(
+		w,
+		r,
+		cacheableResponseETag(r, "config", org, project, service, payload.version, payload.updatedAt, inherit),
+		payload.body,
+	)
+}
+
+type cacheableReadPayload struct {
+	body      map[string]any
+	version   string
+	updatedAt time.Time
+}
+
+func (h *Handler) currentConfigPayload(
+	ctx context.Context,
+	org, project, service string,
+	inherit bool,
+) (cacheableReadPayload, error) {
+	d, err := h.store.GetConfig(ctx, org, project, service)
+	if err != nil {
+		return cacheableReadPayload{}, err
+	}
+	return h.configPayloadFromData(d, org, project, service, inherit), nil
+}
+
+func (h *Handler) configPayloadFromData(
+	d *store.ServiceData,
+	org, project, service string,
+	inherit bool,
+) cacheableReadPayload {
 	version := d.ConfigResourceVersion
 	if inherit && hasInheritedConfigSource(d) {
 		version = h.store.HeadVersion()
@@ -502,18 +534,159 @@ func (h *Handler) writeConfigResponse(
 		cfg = d.InheritedConfig
 	}
 
-	if cfg == nil {
-		respondCacheableJSON(w, r, cacheableResponseETag(r, "config", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
+	config := map[string]any{}
+	if cfg != nil && cfg.Config != nil {
+		config = cfg.Config
+	}
+	return cacheableReadPayload{
+		body: map[string]any{
 			"metadata": meta,
-			"config":   map[string]any{},
-		})
+			"config":   config,
+		},
+		version:   version,
+		updatedAt: d.UpdatedAt,
+	}
+}
+
+func (h *Handler) currentEnvVarsPayload(
+	ctx context.Context,
+	org, project, service string,
+	inherit bool,
+) (cacheableReadPayload, error) {
+	d, err := h.store.GetConfig(ctx, org, project, service)
+	if err != nil {
+		return cacheableReadPayload{}, err
+	}
+	return h.envVarsPayloadFromData(d, org, project, service, inherit), nil
+}
+
+func (h *Handler) envVarsPayloadFromData(
+	d *store.ServiceData,
+	org, project, service string,
+	inherit bool,
+) cacheableReadPayload {
+	version := h.store.HeadVersion()
+	if (!inherit || !hasInheritedEnvVarsSource(d)) && d.EnvVarsResourceVersion != "" {
+		version = d.EnvVarsResourceVersion
+	}
+	if version == "" {
+		version = h.store.HeadVersion()
+	}
+	meta := configMeta(org, project, service, version, d.UpdatedAt)
+	envConfig := d.EnvVars
+	if inherit && d.InheritedEnvVars != nil {
+		envConfig = d.InheritedEnvVars
+	}
+
+	envVars := map[string]any{
+		"plain":       map[string]string{},
+		"secret_refs": map[string]string{},
+	}
+	if envConfig != nil {
+		envVars["plain"] = nullToEmpty(envConfig.EnvVars.Plain)
+		envVars["secret_refs"] = nullToEmpty(envConfig.EnvVars.SecretRefs)
+	}
+	return cacheableReadPayload{
+		body: map[string]any{
+			"metadata": meta,
+			"env_vars": envVars,
+		},
+		version:   version,
+		updatedAt: d.UpdatedAt,
+	}
+}
+
+func (h *Handler) postConfigsBatch(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body batchReadRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_body", h.explainDecodeError(err))
+		return
+	}
+	if len(body.Queries) == 0 {
+		respondErrorCode(w, http.StatusBadRequest, "validation", "queries must not be empty")
+		return
+	}
+	if len(body.Queries) > maxBatchReadQueries {
+		respondErrorCode(w, http.StatusBadRequest, "validation", "queries must contain at most 100 items")
 		return
 	}
 
-	respondCacheableJSON(w, r, cacheableResponseETag(r, "config", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
-		"metadata": meta,
-		"config":   cfg.Config,
-	})
+	inherit := true
+	if body.Inherit != nil {
+		inherit = *body.Inherit
+	}
+
+	results := make([]batchReadResult, 0, len(body.Queries))
+	for _, query := range body.Queries {
+		query = query.normalized()
+		if err := query.validate(); err != nil {
+			respondErrorCode(w, http.StatusBadRequest, "validation", err.Error())
+			return
+		}
+		result := batchReadResult{
+			Org:     query.Org,
+			Project: query.Project,
+			Service: query.Service,
+		}
+		d, err := h.store.GetConfig(r.Context(), query.Org, query.Project, query.Service)
+		if err != nil {
+			detail := errorDetailFor(err)
+			result.Error = &detail
+			results = append(results, result)
+			continue
+		}
+		configPayload := h.configPayloadFromData(d, query.Org, query.Project, query.Service, inherit)
+		envPayload := h.envVarsPayloadFromData(d, query.Org, query.Project, query.Service, inherit)
+		result.Config = configPayload.body
+		result.EnvVars = envPayload.body
+		results = append(results, result)
+	}
+
+	resp := map[string]any{"results": results}
+	respondCacheableJSON(w, r, cacheableBodyETag(r, resp), resp)
+}
+
+type batchReadRequest struct {
+	Queries []batchReadQuery `json:"queries"`
+	Inherit *bool            `json:"inherit"`
+}
+
+type batchReadQuery struct {
+	Org     string `json:"org"`
+	Project string `json:"project"`
+	Service string `json:"service"`
+}
+
+func (q batchReadQuery) normalized() batchReadQuery {
+	q.Org = strings.TrimSpace(q.Org)
+	q.Project = strings.TrimSpace(q.Project)
+	q.Service = strings.TrimSpace(q.Service)
+	return q
+}
+
+func (q batchReadQuery) validate() error {
+	switch {
+	case q.Org == "":
+		return errors.New("query org is required")
+	case q.Project == "":
+		return errors.New("query project is required")
+	case q.Service == "":
+		return errors.New("query service is required")
+	default:
+		return nil
+	}
+}
+
+type batchReadResult struct {
+	Org     string         `json:"org"`
+	Project string         `json:"project"`
+	Service string         `json:"service"`
+	Config  map[string]any `json:"config,omitempty"`
+	EnvVars map[string]any `json:"env_vars,omitempty"`
+	Error   *errorDetail   `json:"error,omitempty"`
 }
 
 func (h *Handler) writeConfigAtVersionResponse(
@@ -593,6 +766,21 @@ func (h *Handler) writeEnvVarsResponse(
 	inherit bool,
 ) {
 	ctx := r.Context()
+	if !resolveSecrets {
+		payload, err := h.currentEnvVarsPayload(ctx, org, project, service, inherit)
+		if err != nil {
+			respondError(w, err)
+			return
+		}
+		respondCacheableJSON(
+			w,
+			r,
+			cacheableResponseETag(r, "env_vars", org, project, service, payload.version, payload.updatedAt, inherit),
+			payload.body,
+		)
+		return
+	}
+
 	d, err := h.store.GetConfig(ctx, org, project, service)
 	if err != nil {
 		respondError(w, err)
@@ -600,9 +788,6 @@ func (h *Handler) writeEnvVarsResponse(
 	}
 
 	version := h.store.HeadVersion()
-	if !resolveSecrets && (!inherit || !hasInheritedEnvVarsSource(d)) && d.EnvVarsResourceVersion != "" {
-		version = d.EnvVarsResourceVersion
-	}
 	if version == "" {
 		version = h.store.HeadVersion()
 	}
@@ -613,49 +798,28 @@ func (h *Handler) writeEnvVarsResponse(
 	}
 
 	if envConfig == nil {
-		if resolveSecrets {
-			respondJSON(w, http.StatusOK, map[string]any{
-				"metadata": meta,
-				"env_vars": map[string]any{
-					"plain":   map[string]string{},
-					"secrets": map[string]string{},
-				},
-			})
-			return
-		}
-		respondCacheableJSON(w, r, cacheableResponseETag(r, "env_vars", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
-			"metadata": meta,
-			"env_vars": map[string]any{
-				"plain":       map[string]string{},
-				"secret_refs": map[string]string{},
-			},
-		})
-		return
-	}
-
-	if resolveSecrets {
-		resolveData := *d
-		resolveData.EnvVars = envConfig
-		resolved, err := h.resolveEnvSecrets(ctx, org, project, service, &resolveData)
-		if err != nil {
-			respondError(w, err)
-			return
-		}
 		respondJSON(w, http.StatusOK, map[string]any{
 			"metadata": meta,
 			"env_vars": map[string]any{
-				"plain":   nullToEmpty(envConfig.EnvVars.Plain),
-				"secrets": resolved,
+				"plain":   map[string]string{},
+				"secrets": map[string]string{},
 			},
 		})
 		return
 	}
 
-	respondCacheableJSON(w, r, cacheableResponseETag(r, "env_vars", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
+	resolveData := *d
+	resolveData.EnvVars = envConfig
+	resolved, err := h.resolveEnvSecrets(ctx, org, project, service, &resolveData)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
 		"metadata": meta,
 		"env_vars": map[string]any{
-			"plain":       nullToEmpty(envConfig.EnvVars.Plain),
-			"secret_refs": nullToEmpty(envConfig.EnvVars.SecretRefs),
+			"plain":   nullToEmpty(envConfig.EnvVars.Plain),
+			"secrets": resolved,
 		},
 	})
 }
@@ -1120,6 +1284,10 @@ func respondCacheableJSON(w http.ResponseWriter, r *http.Request, etag string, v
 	addVary(w.Header(), "Accept-Encoding")
 	w.Header().Set("ETag", etag)
 	if ifNoneMatch(r, etag) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return
+		}
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -1137,6 +1305,17 @@ func cacheableResponseETag(
 	inherit bool,
 ) string {
 	return responseETag(resource, org, project, service, version, updatedAt, inherit, responseContentEncoding(r))
+}
+
+func cacheableBodyETag(r *http.Request, v any) string {
+	body, err := json.Marshal(v)
+	if err != nil {
+		slog.Error("marshal cache validator body", "err", err)
+		body = []byte(err.Error())
+	}
+	raw := append([]byte(responseContentEncoding(r)+"\x00"), body...)
+	sum := sha256.Sum256(raw)
+	return `"` + hex.EncodeToString(sum[:]) + `"`
 }
 
 func responseETag(
@@ -1356,6 +1535,25 @@ type errorDetail struct {
 
 func respondErrorCode(w http.ResponseWriter, status int, code, message string) {
 	respondJSON(w, status, errorBody{Error: errorDetail{Code: code, Message: message}})
+}
+
+func errorDetailFor(err error) errorDetail {
+	var appErr *apperror.Error
+	if errors.As(err, &appErr) {
+		switch appErr.Code {
+		case apperror.CodeNotFound:
+			return errorDetail{Code: "not_found", Message: appErr.Message}
+		case apperror.CodeValidation:
+			return errorDetail{Code: "validation", Message: appErr.Message}
+		case apperror.CodeConflict:
+			return errorDetail{Code: "conflict", Message: appErr.Message}
+		case apperror.CodeUnauthorized:
+			return errorDetail{Code: "unauthorized", Message: appErr.Message}
+		case apperror.CodeGitPush:
+			return errorDetail{Code: "git_push_failed", Message: appErr.Message}
+		}
+	}
+	return errorDetail{Code: "internal", Message: "internal server error"}
 }
 
 func respondError(w http.ResponseWriter, err error) {

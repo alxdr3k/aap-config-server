@@ -52,7 +52,7 @@ Gate status:
 | `P0-M3` | Documentation system migrated to boilerplate structure. |  | `accepted` | `AC-014`, `AC-015` | `docs/00_*`, `docs/current/*`, `AGENTS.md`, `.github/`, PR #10 | Migration landed on main. |
 | `P1-M1` | Secret write/resolve with SealedSecret, K8s apply, and Console App Registry integration. |  | `accepted` | `AC-020`, `AC-021` | ADR-004, `internal/secret`, `internal/registry`, `internal/handler` | Secret path and App Registry integration landed. |
 | `P1-M2` | Config Agent rollout path. |  | `accepted` | `AC-030` | ADR-001, ADR-002, `internal/agent`, `Dockerfile`, `docs/current/OPERATIONS.md` | `AGENT-1A.1`~`AGENT-1A.8` landed with fake-client e2e smoke coverage. |
-| `P1-M3` | Console integration extensions and production hardening. |  | `in_progress` | `AC-040`~`AC-042` | `docs/01_PRD.md`, `DEC-003` | `EXT-1A.1`~`EXT-1D.2` landed; `EXT-1D.3` is ready next. |
+| `P1-M3` | Console integration extensions and production hardening. |  | `in_progress` | `AC-040`~`AC-042` | `docs/01_PRD.md`, `DEC-003` | `EXT-1A.1`~`EXT-1D.3` landed; `EXT-1D.4` is ready next. |
 
 ## Tracks
 
@@ -64,7 +64,7 @@ Gate status:
 | `SECRET` | Secret write/resolve and SealedSecret integration. | `SECRET-1A` | `accepted` | Runtime boundaries, volume reader, deterministic SealedSecret YAML generation, public-key encryption, admin secret writes, K8s apply, secret value resolve, and audit hardening landed. |
 | `REGISTRY` | AAP Console App Registry bootstrap and webhook cache. | `REGISTRY-1A` | `accepted` | Startup bootstrap, webhook cache updates, and status observability landed. |
 | `AGENT` | Config Agent and rollout orchestration. | `AGENT-1A` | `accepted` | Agent bootstrap, leader election, read polling, rendering, ConfigMap/Secret apply, rollout patch, debounce, image target, and e2e smoke coverage landed. |
-| `EXT` | Watch, history, revert, inheritance, batch, webhook, metrics, and HTTP response extensions. | `EXT-1D` | `in_progress` | `EXT-1A` watch slices, `EXT-1B.1`~`EXT-1B.5` history/versioned-read/revert slices, `EXT-1C.1`~`EXT-1C.4` inheritance slices, and `EXT-1D.1`~`EXT-1D.2` HTTP response extensions landed. `EXT-1D.3` is ready next. |
+| `EXT` | Watch, history, revert, inheritance, batch, webhook, metrics, and HTTP response extensions. | `EXT-1D` | `in_progress` | `EXT-1A` watch slices, `EXT-1B.1`~`EXT-1B.5` history/versioned-read/revert slices, `EXT-1C.1`~`EXT-1C.4` inheritance slices, and `EXT-1D.1`~`EXT-1D.3` HTTP response/batch extensions landed. `EXT-1D.4` is ready next. |
 | `HARDEN` | Schema validation, rate limiting, integration/load tests, and deployment handoff docs. | `HARDEN-1A` | `planned` | Planned. |
 
 ## Phases / Slices
@@ -115,8 +115,8 @@ Gate status:
 | `EXT-1C.4` | `P1-M3` | `EXT` | `EXT-1C` | Preserve service-level admin write behavior while inherited reads are enabled, with docs and regression tests. | `EXT-1C.3`, `CORE-1A.5` | `AC-040` | `passing` | `landed` | `internal/store/store_test.go`, `internal/handler/handler_test.go`, `docs/current/*` |  |
 | `EXT-1D.1` | `P1-M3` | `EXT` | `EXT-1D` | Add ETag and `If-None-Match` support for non-secret config/env responses. | `CORE-1A.4`, `SECRET-1A.7` | `AC-041` | `passing` | `landed` | `internal/handler/handler.go`, `internal/handler/handler_test.go`, `docs/current/*` |  |
 | `EXT-1D.2` | `P1-M3` | `EXT` | `EXT-1D` | Add gzip response compression for eligible read APIs. | `EXT-1D.1` | `AC-041` | `passing` | `landed` | `internal/handler/handler.go`, `internal/handler/handler_test.go`, `docs/current/*` |  |
-| `EXT-1D.3` | `P1-M3` | `EXT` | `EXT-1D` | Implement batch config/env read API for multiple services. | `EXT-1C.3`, `CORE-1A.4` | `AC-041` | `defined` | `ready` | `docs/01_PRD.md`, `EXT-1D.2` landed | Start here next. |
-| `EXT-1D.4` | `P1-M3` | `EXT` | `EXT-1D` | Add Prometheus metrics for reloads, Git operations, API latency, watch waits, and degraded state. | `OPS-1A.2`, `EXT-1A.3` | `AC-041` | `defined` | `planned` | `docs/01_PRD.md` |  |
+| `EXT-1D.3` | `P1-M3` | `EXT` | `EXT-1D` | Implement batch config/env read API for multiple services. | `EXT-1C.3`, `CORE-1A.4` | `AC-041` | `passing` | `landed` | `internal/handler/handler.go`, `internal/handler/handler_test.go`, `README.md`, `docs/current/*` |  |
+| `EXT-1D.4` | `P1-M3` | `EXT` | `EXT-1D` | Add Prometheus metrics for reloads, Git operations, API latency, watch waits, and degraded state. | `OPS-1A.2`, `EXT-1A.3` | `AC-041` | `defined` | `ready` | `docs/01_PRD.md`, `EXT-1D.3` landed | Start here next. |
 | `EXT-1D.5` | `P1-M3` | `EXT` | `EXT-1D` | Add authenticated Git webhook trigger for immediate refresh after config repo changes. | `OPS-1A.1`, `OPS-1A.2` | `AC-041` | `defined` | `planned` | `docs/01_PRD.md` |  |
 | `HARDEN-1A.1` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add explicit schema validation layer for config, env vars, defaults, and secret metadata files. | `EXT-1C.1`, `SECRET-1A.6` | `AC-042` | `defined` | `planned` | `docs/01_PRD.md` |  |
 | `HARDEN-1A.2` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add configurable rate limiting for admin, secret resolve, watch, and batch endpoints. | `OPS-1A.1`, `EXT-1D.3` | `AC-042` | `defined` | `planned` | `docs/01_PRD.md` |  |

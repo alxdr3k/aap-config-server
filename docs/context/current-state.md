@@ -16,7 +16,7 @@ from an atomically swapped in-memory snapshot.
 - current milestone: `P1-M3` extension APIs next
 - active tracks: `EXT`
 - active phase: `EXT-1D`
-- active slice: `EXT-1D.3`
+- active slice: `EXT-1D.4`
 - last accepted gate: `AC-030`
 - next gate: `P1-M3` / `AC-041`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -71,6 +71,10 @@ from an atomically swapped in-memory snapshot.
   `Accept-Encoding` allows gzip. Cacheable responses include
   `Vary: Accept-Encoding`; resolved secret env var responses are not
   compressed.
+- Batch config/env read API at `POST /api/v1/configs/batch`, returning current
+  non-secret config and unresolved env vars for multiple services in request
+  order. The endpoint supports request-level `inherit`, cache validators,
+  gzip, and partial per-item errors.
 - Auth-gated admin write/delete/reload endpoints.
 - Auth-gated secret metadata read, admin secret writes, and
   `resolve_secrets=true` env var reads.
@@ -122,8 +126,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Planned
 
-- batch reads, metrics, schema validation, rate limiting, Git webhook refresh,
-  and integration/load validation.
+- metrics, schema validation, rate limiting, Git webhook refresh, and
+  integration/load validation.
 
 ## Explicit non-goals
 
@@ -133,7 +137,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `EXT-1D.3`: implement batch config/env read API for multiple services.
+1. Start `EXT-1D.4`: add Prometheus metrics for reloads, Git operations, API
+   latency, watch waits, and degraded state.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -194,6 +199,9 @@ from an atomically swapped in-memory snapshot.
 - `EXT-1D.2` has handler coverage for gzip compression when accepted,
   `Vary: Accept-Encoding`, content-encoding-specific ETags, gzip `304`
   behavior, q=0 opt-out, and resolved secret env var no-gzip behavior.
+- `EXT-1D.3` has handler coverage for batch config/env reads, request order,
+  partial per-item not-found errors, request validation, gzip, ETag/412
+  conditional POST behavior, and `inherit=false` raw view behavior.
 - Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`,
   `make test-race`, `make lint`, and `make build` pass in this workspace.
