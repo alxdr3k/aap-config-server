@@ -34,11 +34,34 @@ type ServiceData struct {
 	Secrets   *parser.SecretsConfig
 	UpdatedAt time.Time
 
+	InheritedSources []DefaultsSource
+
 	ConfigResourceVersion  string
 	EnvVarsResourceVersion string
 
 	configDigest  string
 	envVarsDigest string
+}
+
+// DefaultsScope identifies where a _defaults/common.yaml file was found.
+type DefaultsScope string
+
+const (
+	DefaultsScopeGlobal  DefaultsScope = "global"
+	DefaultsScopeOrg     DefaultsScope = "org"
+	DefaultsScopeProject DefaultsScope = "project"
+)
+
+// DefaultsSource is service-visible metadata for defaults that can contribute
+// to inherited reads. EXT-1C.1 records source metadata only; merge semantics
+// are implemented by later slices.
+type DefaultsSource struct {
+	Scope      DefaultsScope
+	Org        string
+	Project    string
+	Path       string
+	HasConfig  bool
+	HasEnvVars bool
 }
 
 // ChangeRequest carries the payload for POST /api/v1/admin/changes.

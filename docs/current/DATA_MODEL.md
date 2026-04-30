@@ -21,9 +21,11 @@ Recognized files:
 - `config.yaml`
 - `env_vars.yaml`
 - `secrets.yaml`
+- `_defaults/common.yaml` at global, org, and project levels
 
-`sealed-secrets/` and `_defaults` are not loaded into the current serving
-snapshot.
+`sealed-secrets/` is not loaded into the current serving snapshot. `_defaults`
+files are parsed into defaults source metadata, but their values are not yet
+merged into read responses.
 
 ## Current entities
 
@@ -34,6 +36,8 @@ snapshot.
 | `ServiceConfig` | Parsed `config.yaml` with metadata and arbitrary config map. | `internal/parser/types.go` |
 | `EnvVarsConfig` | Parsed `env_vars.yaml` with plain env vars and secret refs. | `internal/parser/types.go` |
 | `SecretsConfig` | Parsed `secrets.yaml` metadata; no secret plaintext. | `internal/parser/types.go` |
+| `DefaultsConfig` | Parsed `_defaults/common.yaml` config/env defaults. | `internal/parser/types.go` |
+| `DefaultsSource` | Store metadata describing inherited defaults sources available to a service. | `internal/store/types.go` |
 | `secret.RuntimeConfig` | Runtime knobs for secret mount, SealedSecret, K8s apply, and audit adapters. | `internal/secret/types.go` |
 | `secret.Reference` / `secret.Value` | Boundary types for plaintext secret reads/writes; values are copied and can be best-effort zeroed. | `internal/secret/types.go` |
 | `secret.FileVolumeReader` | Mounted K8s Secret file reader/cache with fsnotify refresh events. | `internal/secret/volume.go` |

@@ -16,7 +16,7 @@ from an atomically swapped in-memory snapshot.
 - current milestone: `P1-M3` extension APIs next
 - active tracks: `EXT`
 - active phase: `EXT-1C`
-- active slice: `EXT-1C.1`
+- active slice: `EXT-1C.2`
 - last accepted gate: `AC-030`
 - next gate: `P1-M3` / `AC-040`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -49,6 +49,9 @@ from an atomically swapped in-memory snapshot.
   recognized service files as a new forward-only Git commit, applies restored
   SealedSecret manifests, reloads the in-memory snapshot, and reports no-op or
   post-commit apply/reload failures explicitly.
+- Global/org/project `_defaults/common.yaml` parsing in the store snapshot,
+  with per-service inherited source metadata exposed for tests. Merge semantics
+  and public `inherit` query behavior remain planned.
 - Auth-gated admin write/delete/reload endpoints.
 - Auth-gated secret metadata read, admin secret writes, and
   `resolve_secrets=true` env var reads.
@@ -100,8 +103,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Planned
 
-- Config inheritance, response optimizations, metrics, schema validation, rate
-  limiting, and integration/load validation.
+- Config inheritance merge/query behavior, response optimizations, metrics,
+  schema validation, rate limiting, and integration/load validation.
 
 ## Explicit non-goals
 
@@ -111,8 +114,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `EXT-1C.1`: parse global/org/project `_defaults/common.yaml` files
-   and expose inherited source metadata for tests.
+1. Start `EXT-1C.2`: implement deep merge with scalar override, recursive map
+   merge, array replacement, and null deletion.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -154,6 +157,9 @@ from an atomically swapped in-memory snapshot.
 - `EXT-1B.5` has local gitops/store/handler coverage for forward-only revert
   commits, deleted file calculation, restored SealedSecret apply, reload/no-op
   behavior, public response status mapping, and unknown-field rejection.
+- `EXT-1C.1` has local store coverage for global/org/project defaults source
+  parsing, source ordering/metadata flags, no merge behavior, and invalid
+  defaults reload failure.
 - Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`,
   `make test-race`, `make lint`, and `make build` pass in this workspace.
