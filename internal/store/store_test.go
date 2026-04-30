@@ -16,6 +16,7 @@ import (
 
 	"github.com/aap/config-server/internal/apperror"
 	"github.com/aap/config-server/internal/gitops"
+	"github.com/aap/config-server/internal/parser"
 	"github.com/aap/config-server/internal/secret"
 	"github.com/aap/config-server/internal/store"
 )
@@ -1514,6 +1515,111 @@ func TestStore_ApplyChanges(t *testing.T) {
 	}
 	if d.Config == nil {
 		t.Error("expected Config after apply")
+	}
+}
+
+func TestStore_ApplyChanges_PreservesServiceLevelWritesWithInheritedDefaults(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "svc")
+	defaultsPath := "configs/_defaults/common.yaml"
+	repo.files[defaultsPath] = []byte(`config:
+  global_only: true
+env_vars:
+  plain:
+    GLOBAL_ENV: "1"
+  secret_refs:
+    GLOBAL_SECRET: global-secret
+`)
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+	beforeDefaults, err := repo.ReadFile(defaultsPath)
+	if err != nil {
+		t.Fatalf("read defaults before apply: %v", err)
+	}
+
+	result, err := s.ApplyChanges(ctx, &store.ChangeRequest{
+		Org:     "myorg",
+		Project: "proj",
+		Service: "svc",
+		Config: map[string]any{
+			"service_only": "updated",
+		},
+		EnvVars: &parser.EnvVars{
+			Plain:      map[string]string{"SERVICE_ENV": "updated"},
+			SecretRefs: map[string]string{"SERVICE_SECRET": "service-secret"},
+		},
+		Message: "service-only update",
+	})
+	if err != nil {
+		t.Fatalf("ApplyChanges: %v", err)
+	}
+	for _, file := range result.Files {
+		if strings.Contains(file, "_defaults") {
+			t.Fatalf("admin write should not report defaults writes, got %v", result.Files)
+		}
+	}
+	afterDefaults, err := repo.ReadFile(defaultsPath)
+	if err != nil {
+		t.Fatalf("read defaults after apply: %v", err)
+	}
+	if !bytes.Equal(beforeDefaults, afterDefaults) {
+		t.Fatal("admin write should not mutate _defaults/common.yaml")
+	}
+
+	base := store.ServicePath("myorg", "proj", "svc")
+	rawConfig, err := repo.ReadFile(base + "/config.yaml")
+	if err != nil {
+		t.Fatalf("read service config: %v", err)
+	}
+	parsedConfig, err := parser.ParseConfig(rawConfig)
+	if err != nil {
+		t.Fatalf("parse service config: %v", err)
+	}
+	if _, ok := parsedConfig.Config["global_only"]; ok {
+		t.Fatalf("service config.yaml should not persist inherited defaults: %#v", parsedConfig.Config)
+	}
+	if parsedConfig.Config["service_only"] != "updated" {
+		t.Fatalf("service config.yaml should persist request config only, got %#v", parsedConfig.Config)
+	}
+
+	rawEnv, err := repo.ReadFile(base + "/env_vars.yaml")
+	if err != nil {
+		t.Fatalf("read service env_vars: %v", err)
+	}
+	parsedEnv, err := parser.ParseEnvVars(rawEnv)
+	if err != nil {
+		t.Fatalf("parse service env_vars: %v", err)
+	}
+	if _, ok := parsedEnv.EnvVars.Plain["GLOBAL_ENV"]; ok {
+		t.Fatalf("service env_vars.yaml should not persist inherited plain env: %#v", parsedEnv.EnvVars.Plain)
+	}
+	if _, ok := parsedEnv.EnvVars.SecretRefs["GLOBAL_SECRET"]; ok {
+		t.Fatalf("service env_vars.yaml should not persist inherited secret_refs: %#v", parsedEnv.EnvVars.SecretRefs)
+	}
+	if parsedEnv.EnvVars.Plain["SERVICE_ENV"] != "updated" {
+		t.Fatalf("service env_vars.yaml should persist request env only, got %#v", parsedEnv.EnvVars.Plain)
+	}
+
+	d, err := s.GetConfig(ctx, "myorg", "proj", "svc")
+	if err != nil {
+		t.Fatalf("GetConfig after ApplyChanges: %v", err)
+	}
+	if _, ok := d.Config.Config["global_only"]; ok {
+		t.Fatalf("raw service config should remain service-level only: %#v", d.Config.Config)
+	}
+	if d.InheritedConfig.Config["global_only"] != true || d.InheritedConfig.Config["service_only"] != "updated" {
+		t.Fatalf("inherited config should combine defaults and service config, got %#v", d.InheritedConfig.Config)
+	}
+	if _, ok := d.EnvVars.EnvVars.Plain["GLOBAL_ENV"]; ok {
+		t.Fatalf("raw service env should remain service-level only: %#v", d.EnvVars.EnvVars.Plain)
+	}
+	if d.InheritedEnvVars.EnvVars.Plain["GLOBAL_ENV"] != "1" ||
+		d.InheritedEnvVars.EnvVars.Plain["SERVICE_ENV"] != "updated" {
+		t.Fatalf("inherited env should combine defaults and service env, got %#v", d.InheritedEnvVars.EnvVars.Plain)
 	}
 }
 
