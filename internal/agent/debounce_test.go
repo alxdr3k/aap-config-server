@@ -139,6 +139,21 @@ func TestDebouncerRecordChangeHandlesOverduePendingChange(t *testing.T) {
 	}
 }
 
+func TestDebouncerRecordChangeAtDueBoundaryCoalescesPendingBatch(t *testing.T) {
+	debouncer := newTestDebouncer(t)
+	start := debounceStartTime()
+	debouncer.RecordChange(start)
+	debouncer.RecordChange(start.Add(5 * time.Second))
+
+	decision := debouncer.RecordChange(start.Add(15 * time.Second))
+	if !decision.ApplyNow || !decision.NextAt.IsZero() || decision.Reason != DebounceReasonQuiet {
+		t.Fatalf("boundary change decision: %+v", decision)
+	}
+	if debouncer.Pending() {
+		t.Fatal("boundary change should apply with pending batch")
+	}
+}
+
 func TestDebouncerValidation(t *testing.T) {
 	tests := []DebounceConfig{
 		{QuietPeriod: time.Second, MaxWait: time.Second},

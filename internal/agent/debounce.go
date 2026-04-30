@@ -76,7 +76,11 @@ func (d *Debouncer) RecordChange(at time.Time) DebounceDecision {
 		return DebounceDecision{Reason: DebounceReasonIdle}
 	}
 	if d.pending {
+		next := d.nextDueAt()
 		if due := d.Due(at); due.ApplyNow {
+			if at.Equal(next) {
+				return due
+			}
 			d.pending = true
 			d.debounceStart = at
 			d.lastChange = at
