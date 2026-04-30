@@ -406,6 +406,83 @@ func TestStore_GetConfig_Found(t *testing.T) {
 	}
 }
 
+func TestStore_LoadFromRepo_ParsesDefaultsSources(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	repo.files["configs/_defaults/common.yaml"] = []byte(`config:
+  global_only: true
+env_vars:
+  plain:
+    GLOBAL_ENV: "1"
+`)
+	repo.files["configs/orgs/myorg/_defaults/common.yaml"] = []byte(`env_vars:
+  secret_refs:
+    ORG_SECRET: org-secret
+`)
+	repo.files["configs/orgs/myorg/projects/proj/_defaults/common.yaml"] = []byte(`config:
+  project_only: true
+`)
+	repo.files["configs/orgs/other/_defaults/common.yaml"] = []byte(`config:
+  other_org: true
+`)
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	d, err := s.GetConfig(ctx, "myorg", "proj", "litellm")
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if len(d.InheritedSources) != 3 {
+		t.Fatalf("InheritedSources: got %+v", d.InheritedSources)
+	}
+	want := []struct {
+		scope      store.DefaultsScope
+		org        string
+		project    string
+		path       string
+		hasConfig  bool
+		hasEnvVars bool
+	}{
+		{store.DefaultsScopeGlobal, "", "", "configs/_defaults/common.yaml", true, true},
+		{store.DefaultsScopeOrg, "myorg", "", "configs/orgs/myorg/_defaults/common.yaml", false, true},
+		{store.DefaultsScopeProject, "myorg", "proj", "configs/orgs/myorg/projects/proj/_defaults/common.yaml", true, false},
+	}
+	for i, w := range want {
+		got := d.InheritedSources[i]
+		if got.Scope != w.scope ||
+			got.Org != w.org ||
+			got.Project != w.project ||
+			got.Path != w.path ||
+			got.HasConfig != w.hasConfig ||
+			got.HasEnvVars != w.hasEnvVars {
+			t.Fatalf("source %d: got %+v, want %+v", i, got, w)
+		}
+	}
+	if _, ok := d.Config.Config["global_only"]; ok {
+		t.Fatal("EXT-1C.1 should expose defaults metadata without merging config values")
+	}
+}
+
+func TestStore_LoadFromRepo_InvalidDefaultsFailsReload(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	repo.files["configs/_defaults/common.yaml"] = []byte("config: [")
+
+	s := store.New(repo)
+	err := s.LoadFromRepo(ctx)
+	if err == nil {
+		t.Fatal("expected invalid defaults to fail reload")
+	}
+	if !strings.Contains(err.Error(), "configs/_defaults/common.yaml") {
+		t.Fatalf("error should include defaults path, got %v", err)
+	}
+}
+
 func TestStore_GetConfigAtVersion(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeRepo()

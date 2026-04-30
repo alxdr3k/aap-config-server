@@ -13,6 +13,8 @@ Status: active.
 4. `gitops.Repo` opens or clones the configured Git repo/branch.
 5. `store.LoadFromRepo` performs one startup pull, then snapshots `configs/`.
 6. The store parses `config.yaml`, `env_vars.yaml`, and `secrets.yaml` files under `configs/orgs/{org}/projects/{project}/services/{service}/`.
+   It also parses global/org/project `_defaults/common.yaml` files into
+   snapshot metadata for future inheritance merge work.
 7. If all parsed files are valid, the store atomically swaps the serving snapshot.
 8. HTTP handlers serve reads from memory and admin writes through the store.
 9. A background poll loop calls `RefreshFromRepo` at `GIT_POLL_INTERVAL`.
@@ -36,6 +38,15 @@ remains active.
 Admin writes, deletes, background refreshes, and Git worktree mutations are
 serialized globally in Phase-1. `ADR-005` records this as the accepted current
 implementation; `ADR-003` remains the future service-level mutex target design.
+
+During reload, `_defaults/common.yaml` files are recognized at
+`configs/_defaults/common.yaml`,
+`configs/orgs/{org}/_defaults/common.yaml`, and
+`configs/orgs/{org}/projects/{project}/_defaults/common.yaml`. The store
+parses them and records per-service inherited source metadata in global →
+org → project order. Current read APIs still return service-level config/env
+without merging defaults; deep merge and public `inherit` query behavior are
+next slices.
 
 `gitops.Repo` exposes `IterateServiceHistory(ctx, org, project, service, fn)`
 for history/revert work. It walks Git commits newest-first, emits only

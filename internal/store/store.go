@@ -107,6 +107,23 @@ func newSnapshot(data map[string]*ServiceData, version string) *snapshot {
 	return &snapshot{data: data, version: version}
 }
 
+type defaultsEntry struct {
+	source DefaultsSource
+}
+
+type defaultsIndex struct {
+	global  *defaultsEntry
+	org     map[string]*defaultsEntry
+	project map[string]*defaultsEntry // key: "org/project"
+}
+
+func newDefaultsIndex() defaultsIndex {
+	return defaultsIndex{
+		org:     map[string]*defaultsEntry{},
+		project: map[string]*defaultsEntry{},
+	}
+}
+
 // New creates a Store backed by the given GitRepo.
 func New(repo gitops.GitRepo, opts ...Option) *Store {
 	s := &Store{repo: repo, versionChanged: make(chan struct{})}
@@ -1318,9 +1335,16 @@ func (s *Store) reload(ctx context.Context) error {
 // NOT swapped and the previous last-known-good view keeps serving.
 func (s *Store) reloadUnlocked(_ context.Context) error {
 	data := make(map[string]*ServiceData)
+	defaults := newDefaultsIndex()
 	var parseErrors []string
 
 	hash, err := s.repo.Snapshot(func(path string, raw []byte) error {
+		if handled, perr := parseAndStoreDefaults(path, raw, &defaults); handled {
+			if perr != nil {
+				parseErrors = append(parseErrors, fmt.Sprintf("%s: %v", path, perr))
+			}
+			return nil
+		}
 		if perr := parseAndStore(path, raw, data); perr != nil {
 			parseErrors = append(parseErrors, fmt.Sprintf("%s: %v", path, perr))
 		}
@@ -1346,6 +1370,7 @@ func (s *Store) reloadUnlocked(_ context.Context) error {
 			sd.UpdatedAt = now
 		}
 	}
+	applyDefaultsSources(data, defaults)
 	s.applyResourceVersions(data, hash)
 
 	prevVersion := s.HeadVersion()
@@ -1487,6 +1512,54 @@ func parseAndStore(path string, raw []byte, data map[string]*ServiceData) error 
 	return nil
 }
 
+func parseAndStoreDefaults(path string, raw []byte, defaults *defaultsIndex) (bool, error) {
+	source, ok := classifyDefaultsPath(path)
+	if !ok {
+		return false, nil
+	}
+	cfg, err := parser.ParseDefaults(raw)
+	if err != nil {
+		return true, err
+	}
+	source.HasConfig = len(cfg.Config) > 0
+	source.HasEnvVars = hasEnvVars(cfg.EnvVars)
+	entry := &defaultsEntry{source: source}
+	switch source.Scope {
+	case DefaultsScopeGlobal:
+		defaults.global = entry
+	case DefaultsScopeOrg:
+		defaults.org[source.Org] = entry
+	case DefaultsScopeProject:
+		defaults.project[source.Org+"/"+source.Project] = entry
+	}
+	return true, nil
+}
+
+func applyDefaultsSources(data map[string]*ServiceData, defaults defaultsIndex) {
+	for key, sd := range data {
+		parts := strings.Split(key, "/")
+		if len(parts) != 3 {
+			continue
+		}
+		org, project := parts[0], parts[1]
+		sources := make([]DefaultsSource, 0, 3)
+		if defaults.global != nil {
+			sources = append(sources, defaults.global.source)
+		}
+		if entry := defaults.org[org]; entry != nil {
+			sources = append(sources, entry.source)
+		}
+		if entry := defaults.project[org+"/"+project]; entry != nil {
+			sources = append(sources, entry.source)
+		}
+		sd.InheritedSources = sources
+	}
+}
+
+func hasEnvVars(env parser.EnvVars) bool {
+	return len(env.Plain) > 0 || len(env.SecretRefs) > 0
+}
+
 func digestBytes(raw []byte) string {
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
@@ -1545,6 +1618,45 @@ func classifyPath(path string) (key string, fileType string, ok bool) {
 	}
 
 	return ServiceKey{Org: org, Project: proj, Service: svc}.String(), fileType, true
+}
+
+func classifyDefaultsPath(path string) (DefaultsSource, bool) {
+	path = filepath.ToSlash(path)
+	parts := strings.Split(path, "/")
+	if len(parts) == 3 && parts[0] == configsPrefix && parts[1] == "_defaults" && parts[2] == "common.yaml" {
+		return DefaultsSource{
+			Scope: DefaultsScopeGlobal,
+			Path:  path,
+		}, true
+	}
+	if len(parts) == 5 &&
+		parts[0] == configsPrefix &&
+		parts[1] == "orgs" &&
+		parts[3] == "_defaults" &&
+		parts[4] == "common.yaml" &&
+		parts[2] != "" {
+		return DefaultsSource{
+			Scope: DefaultsScopeOrg,
+			Org:   parts[2],
+			Path:  path,
+		}, true
+	}
+	if len(parts) == 7 &&
+		parts[0] == configsPrefix &&
+		parts[1] == "orgs" &&
+		parts[3] == "projects" &&
+		parts[5] == "_defaults" &&
+		parts[6] == "common.yaml" &&
+		parts[2] != "" &&
+		parts[4] != "" {
+		return DefaultsSource{
+			Scope:   DefaultsScopeProject,
+			Org:     parts[2],
+			Project: parts[4],
+			Path:    path,
+		}, true
+	}
+	return DefaultsSource{}, false
 }
 
 func keys(m map[string]struct{}) []string {
