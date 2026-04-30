@@ -49,6 +49,15 @@ commits. Historical env var reads return `plain` and `secret_refs`; mounted
 secret value resolution remains current-only and cannot be combined with
 `version`.
 
+`store.PrepareRevert` validates a target commit for a service and builds a
+non-mutating restore plan from that commit's recognized service files. The
+target commit must appear in that service's own history, not merely be an
+unrelated repository snapshot where the service files happen to exist. The plan
+captures files to restore, files to delete because they are absent at the
+target commit, and no-op status when the target already matches current HEAD.
+The public revert endpoint and commit/push/reload flow remain target design
+until the next slice.
+
 ## Config Agent bootstrap flow
 
 `cmd/config-agent` currently supports local dry-run mode only:
@@ -220,8 +229,8 @@ only; live deployment wiring remains an external deployment-system concern per
   unavailable. If startup bootstrap is not configured, webhook updates can
   change `apps_loaded` and `last_updated_at`, but the status remains
   `not_configured` to show that no full Console snapshot was loaded.
-- Config Agent Kubernetes apply/rollout behavior, revert endpoint, and
-  inheritance are target design only.
+- Config Agent Kubernetes apply/rollout behavior, public revert endpoint,
+  revert commit/apply flow, and inheritance are target design only.
 
 ## Failure modes
 

@@ -25,7 +25,7 @@ Status: active.
 
 | Path | Purpose |
 |---|---|
-| `internal/store/` | In-memory service snapshot, Git-backed reload, resource-scoped version tokens, historical config/env file reads, config/env/secret apply operations, delete operations, history filtering, degraded status. |
+| `internal/store/` | In-memory service snapshot, Git-backed reload, resource-scoped version tokens, historical config/env file reads, revert restore planning, config/env/secret apply operations, delete operations, history filtering, degraded status. |
 | `internal/parser/` | YAML structs/parsers/validation for config, env vars, secrets, and defaults. |
 | `internal/secret/` | Secret runtime boundary types, mounted K8s Secret file reader/watch support, deterministic SealedSecret YAML generation, controller public-key encryption, K8s SealedSecret apply adapter, and slog-backed non-sensitive audit logging. |
 | `internal/registry/` | AAP Console App Registry HTTP client, in-memory cache, startup bootstrap retry/backoff logic, cache update semantics, and status state. |
@@ -34,7 +34,7 @@ Status: active.
 
 | Path | Purpose |
 |---|---|
-| `internal/gitops/` | `go-git` wrapper for clone/open, pull, commit/push, delete/push, snapshot walking, service-scoped history iteration, and file-change classification. |
+| `internal/gitops/` | `go-git` wrapper for clone/open, pull, commit/push, delete/push, snapshot walking, service-scoped historical file reads, history iteration, and file-change classification. |
 | Config repo `configs/orgs/{org}/projects/{project}/services/{service}/` | External Git-backed data tree read and written by the server. |
 
 ## Tests
@@ -46,7 +46,7 @@ Status: active.
 | `internal/parser/*_test.go` | YAML parser happy-path and validation failures. |
 | `internal/secret/*_test.go` | Secret boundary value/default behavior, mounted secret reader/watch behavior, deterministic SealedSecret YAML generation, public-key encryption wiring, and K8s apply adapter behavior. |
 | `internal/registry/*_test.go` | Console App Registry client decoding, cache replacement/update semantics, and startup bootstrap retry behavior. |
-| `internal/store/*_test.go` | Snapshot reload, resource-scoped versions, version-change waiting, historical config/env reads, history filtering, config/env/secret apply, secret audit logging, delete, degraded behavior, concurrency. |
+| `internal/store/*_test.go` | Snapshot reload, resource-scoped versions, version-change waiting, historical config/env reads, revert restore planning, history filtering, config/env/secret apply, secret audit logging, delete, degraded behavior, concurrency. |
 | `internal/gitops/*_test.go` | Local Git clone/pull/commit/delete/snapshot behavior plus service history/file-change primitives. |
 | `internal/handler/*_test.go` | HTTP routes, config/env watch behavior, versioned read behavior, history API behavior, auth, admin write response shape, App Registry webhook auth/cache updates, App Registry status reporting, secret write input cleanup, resolved env var secret reads, secret audit logging, reload/degraded status. |
 | `internal/agent/*_test.go` | Config Agent config loading/validation, Config Server API client behavior, bounded responses, dry-run counts, K8s Lease leader election takeover behavior, fetch loop retry/version tracking, renderer validation, ConfigMap/Secret apply behavior, rollout patch behavior, debounce timing behavior, and e2e smoke coverage under the `e2e` build tag. |
