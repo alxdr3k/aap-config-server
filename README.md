@@ -37,6 +37,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Store version-wait primitive for watch endpoints | Implemented as internal module |
 | Config watch endpoint (`GET .../config/watch`)  | Implemented with resource-scoped version query and max 30s long-poll timeout |
 | Env vars watch endpoint (`GET .../env_vars/watch`) | Implemented with resource-scoped version query and max 30s long-poll timeout |
+| Git history iterator / service file classifier   | Implemented as internal module |
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |

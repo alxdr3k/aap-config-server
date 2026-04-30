@@ -47,6 +47,7 @@ snapshot.
 | `ChangeRequest` | Internal representation of admin write input. | `internal/store/types.go` |
 | `DeleteRequest` | Internal representation of admin delete input. | `internal/store/types.go` |
 | `StoreStatus` | Runtime status exposed through `/api/v1/status`. | `internal/store/types.go` |
+| `gitops.ServiceHistoryEntry` / `gitops.ServiceFileChange` | Git commit history records and service-scoped changed-file classifications for history/revert features. | `internal/gitops/repo.go` |
 | Store version wait primitive | In-memory notification channel used by config/env watch endpoints to wait until the loaded Git version changes. | `internal/store/store.go` |
 | Resource-scoped version tokens | Per-service config/env version tokens retained across reloads until each resource payload changes. | `internal/store/types.go`, `internal/store/store.go` |
 
