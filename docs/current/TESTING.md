@@ -2,6 +2,17 @@
 
 Status: active.
 
+## Testing policy
+
+- Behavior changes need verification evidence.
+- Prefer test-first for bug fixes and clear behavior changes when a concise
+  failing test can express the target behavior.
+- Otherwise add or update tests in the same slice as the implementation.
+- Bug fixes should leave regression coverage unless impractical.
+- If automated coverage is not practical, record the manual check, eval, or
+  reason.
+
+
 ## Install
 
 Prerequisites:
