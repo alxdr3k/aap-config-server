@@ -29,6 +29,7 @@ Equivalent:
 
 ```bash
 go build -o bin/config-server ./cmd/config-server
+go build -o bin/config-agent ./cmd/config-agent
 ```
 
 ## Typecheck

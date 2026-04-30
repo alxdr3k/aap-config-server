@@ -106,4 +106,5 @@ snapshot.
 ## Needs audit
 
 - No generated reference docs currently exist under `docs/generated/`.
-- Planned Config Agent data models are target design only.
+- Config Agent K8s apply/rollout data models are target design only; bootstrap
+  Config Server response DTOs live under `internal/agent`.

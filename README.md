@@ -6,9 +6,9 @@ every `config.yaml` / `env_vars.yaml` / `secrets.yaml` into an in-memory
 snapshot, and swaps the snapshot atomically when the repo changes.
 
 > **Status:** Phase-1 MVP. The [PRD](docs/01_PRD.md) and [HLD](docs/02_HLD.md) describe a
-> larger target architecture (Config Agent, history/revert, watch, inheritance,
-> and related production extensions). Those are **not** implemented yet — see the
-> feature matrix below.
+> larger target architecture (Config Agent rollout, history/revert, watch,
+> inheritance, and related production extensions). Some of that target is still
+> planned — see the feature matrix below.
 
 ## Feature matrix
 
@@ -34,9 +34,10 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | App Registry startup bootstrap                     | Implemented when `CONSOLE_API_URL` is set |
 | App Registry webhook                               | Implemented (auth-gated cache upsert/delete) |
 | App Registry state in `/api/v1/status`             | Implemented |
+| Config Agent binary/API client/local dry-run       | Implemented |
+| Config Agent K8s apply, leader election, rollout   | Not implemented |
 | Watch / stream endpoint                            | Not implemented |
 | History / revert endpoints                         | Not implemented |
-| Config Agent                                      | Not implemented |
 
 If a feature is listed as "Not implemented", treat descriptions in the PRD/HLD
 as planned design — the server will refuse requests that depend on them.
@@ -96,6 +97,26 @@ curl http://localhost:8080/api/v1/orgs
 | `CONSOLE_REGISTRY_BOOTSTRAP_ATTEMPTS` | no            | `5`                   | Maximum startup App Registry load attempts.            |
 | `CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF` | no     | `1s`                  | Initial startup App Registry retry backoff.            |
 | `CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF` | no         | `30s`                 | Maximum startup App Registry retry backoff.            |
+
+## Config Agent dry-run
+
+`config-agent` currently implements the bootstrap slice: runtime config loading,
+Config Server API reads, and local dry-run summary output. Kubernetes leader
+election, ConfigMap/Secret apply, and rollout patches are planned follow-up
+work.
+
+```bash
+make build-agent
+
+CONFIG_SERVER_URL=http://localhost:8080 \
+CONFIG_AGENT_ORG=myorg \
+CONFIG_AGENT_PROJECT=ai \
+CONFIG_AGENT_SERVICE=litellm \
+./bin/config-agent --dry-run
+```
+
+Use `--resolve-secrets` only when the agent has `CONFIG_AGENT_API_KEY` or
+`API_KEY`; the dry-run output reports counts and does not print secret values.
 
 ### Auth: fail-closed by default
 
@@ -339,7 +360,9 @@ For the repo-local Go toolchain and caches:
 ```
 
 ```bash
-make build          # compile the binary
+make build          # compile config-server and config-agent
+make build-server   # compile only config-server
+make build-agent    # compile only config-agent
 make test           # go test ./...
 make test-race      # go test -race ./...
 make lint           # golangci-lint (if installed)
@@ -356,6 +379,8 @@ The CI pipeline (`.github/workflows/ci.yml`) runs `go vet`, race tests, and
 
 ```
 cmd/config-server/     # main()
+cmd/config-agent/      # Config Agent dry-run entrypoint
+internal/agent/        # Config Agent runtime config + Config Server client
 internal/config/       # env/flag parsing + Validate()
 internal/gitops/       # go-git wrapper (clone, pull, commit, push, snapshot)
 internal/store/        # atomic snapshot, parse + aggregate

@@ -1,12 +1,15 @@
-.PHONY: build test test-race test-integration test-e2e lint coverage docker-build clean
+.PHONY: build build-server build-agent test test-race test-integration test-e2e lint coverage docker-build clean
 
-BINARY        := config-server
-CMD_DIR       := ./cmd/config-server
 DOCKER_IMAGE  := aap/config-server
 DOCKER_TAG    := latest
 
-build:
-	go build -o bin/$(BINARY) $(CMD_DIR)
+build: build-server build-agent
+
+build-server:
+	go build -o bin/config-server ./cmd/config-server
+
+build-agent:
+	go build -o bin/config-agent ./cmd/config-agent
 
 test:
 	go test ./... -timeout 60s
