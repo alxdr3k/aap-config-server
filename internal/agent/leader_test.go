@@ -26,6 +26,14 @@ func TestLeaderConfigValidate(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "greater than renew deadline") {
 		t.Fatalf("expected duration validation error, got %v", err)
 	}
+
+	cfg = DefaultLeaderConfig("default", "config-agent-litellm", "pod-a")
+	cfg.RenewDeadline = 3 * time.Second
+	cfg.RetryPeriod = 2600 * time.Millisecond
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "retry period * 1.2") {
+		t.Fatalf("expected jitter validation error, got %v", err)
+	}
 }
 
 func TestLeaderElectionAcquiresLeaseAndStops(t *testing.T) {

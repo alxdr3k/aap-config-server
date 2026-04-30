@@ -18,6 +18,7 @@ const (
 	defaultLeaderLeaseDuration = 15 * time.Second
 	defaultLeaderRenewDeadline = 10 * time.Second
 	defaultLeaderRetryPeriod   = 2 * time.Second
+	leaderElectionJitterFactor = 1.2
 )
 
 // LeaderConfig describes the Kubernetes Lease used to elect one active Config
@@ -133,6 +134,10 @@ func (c LeaderConfig) Validate() error {
 	}
 	if c.RenewDeadline <= c.RetryPeriod {
 		return errors.New("leader election renew deadline must be greater than retry period")
+	}
+	minRenewDeadline := time.Duration(float64(c.RetryPeriod) * leaderElectionJitterFactor)
+	if c.RenewDeadline <= minRenewDeadline {
+		return fmt.Errorf("leader election renew deadline must be greater than retry period * %.1f", leaderElectionJitterFactor)
 	}
 	return nil
 }
