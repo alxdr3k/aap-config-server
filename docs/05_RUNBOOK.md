@@ -42,7 +42,13 @@ export ALLOW_UNAUTHENTICATED_DEV=true
 - Readiness: `GET /readyz`
 - Operational status: `GET /api/v1/status`, including `app_registry` cache/load state.
 - Logs: JSON `slog` output on stdout.
-- Metrics: no Prometheus endpoint currently implemented.
+- Metrics: `GET /metrics` in Prometheus text format. Key families include
+  `aap_config_server_http_requests_total`,
+  `aap_config_server_http_request_duration_seconds`,
+  `aap_config_server_reload_attempts_total`,
+  `aap_config_server_git_operations_total`,
+  `aap_config_server_watch_waits_total`, and
+  `aap_config_server_degraded_state`.
 
 ## Common Incidents
 

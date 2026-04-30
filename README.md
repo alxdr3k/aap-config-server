@@ -46,6 +46,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | ETag / `If-None-Match` for config/env reads | Implemented for non-secret current and versioned config/env responses; resolved secret responses remain no-store/no ETag |
 | gzip compression for config/env reads | Implemented for non-secret config/env JSON responses when `Accept-Encoding` allows gzip; resolved secret responses are not compressed |
 | Batch config/env reads (`POST /api/v1/configs/batch`) | Implemented for current non-secret config/env reads with partial per-item errors |
+| Prometheus metrics (`GET /metrics`) | Implemented for HTTP latency/counts, reloads, Git operations, watch waits, and degraded state |
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |

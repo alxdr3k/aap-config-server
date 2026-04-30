@@ -21,6 +21,7 @@ import (
 
 	"github.com/aap/config-server/internal/apperror"
 	"github.com/aap/config-server/internal/gitops"
+	"github.com/aap/config-server/internal/metrics"
 	"github.com/aap/config-server/internal/parser"
 	"github.com/aap/config-server/internal/secret"
 )
@@ -150,7 +151,16 @@ func (s *Store) current() *snapshot {
 // background polls catch up when the remote becomes reachable.
 // Context cancellation/deadline errors are propagated so callers can
 // actually abort startup when they ask to.
-func (s *Store) LoadFromRepo(ctx context.Context) error {
+func (s *Store) LoadFromRepo(ctx context.Context) (err error) {
+	start := time.Now()
+	outcome := "loaded"
+	defer func() {
+		if err != nil {
+			outcome = "error"
+		}
+		metrics.RecordReload("initial", outcome, time.Since(start))
+	}()
+
 	if err := s.repo.CloneOrOpen(ctx); err != nil {
 		return fmt.Errorf("clone/open repo: %w", err)
 	}
@@ -174,7 +184,12 @@ func (s *Store) LoadFromRepo(ctx context.Context) error {
 // use ReloadFromRepo instead: a degraded store whose HEAD has not moved needs
 // to re-parse the current checkout to recover, which RefreshFromRepo would
 // silently skip.
-func (s *Store) RefreshFromRepo(ctx context.Context) (bool, error) {
+func (s *Store) RefreshFromRepo(ctx context.Context) (updated bool, err error) {
+	start := time.Now()
+	defer func() {
+		metrics.RecordReload("background", reloadOutcome(updated, err), time.Since(start))
+	}()
+
 	hash, updated, err := s.repo.Pull(ctx)
 	if err != nil {
 		return false, err
@@ -199,7 +214,12 @@ func (s *Store) RefreshFromRepo(ctx context.Context) (bool, error) {
 //
 // Returns updated=true when the serving snapshot was swapped (i.e. the reload
 // produced a new HEAD or the last reload had failed and now succeeds).
-func (s *Store) ReloadFromRepo(ctx context.Context) (bool, error) {
+func (s *Store) ReloadFromRepo(ctx context.Context) (updated bool, err error) {
+	start := time.Now()
+	defer func() {
+		metrics.RecordReload("force", reloadOutcome(updated, err), time.Since(start))
+	}()
+
 	hash, pullUpdated, err := s.repo.Pull(ctx)
 	if err != nil {
 		return false, err
@@ -221,6 +241,16 @@ func (s *Store) ReloadFromRepo(ctx context.Context) (bool, error) {
 	// either HEAD moved, or we just recovered from a degraded state.
 	swapped := pullUpdated || s.HeadVersion() != prevVersion || wasDegraded
 	return swapped, nil
+}
+
+func reloadOutcome(updated bool, err error) string {
+	if err != nil {
+		return "error"
+	}
+	if updated {
+		return "updated"
+	}
+	return "unchanged"
 }
 
 // HeadVersion returns the git commit hash of the currently loaded snapshot.

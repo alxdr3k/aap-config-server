@@ -77,7 +77,10 @@ snapshot for serving reads.
 - `/api/v1/status` reports App Registry cache/load state under
   `app_registry`; registry-only degradation appears in `degraded_components`
   but does not make `/readyz` fail.
-- No Prometheus metrics endpoint is currently implemented.
+- `/metrics` exposes Prometheus text metrics for HTTP request counts/latency,
+  reload attempts/durations, Git operations, watch waits, and degraded state.
+  Labels use route templates, operation/resource names, outcomes, and status
+  codes; they do not include service identities or secret data.
 - Operational state is exposed through `/readyz` and `/api/v1/status`.
 
 ## Background jobs

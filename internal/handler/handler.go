@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aap/config-server/internal/apperror"
+	"github.com/aap/config-server/internal/metrics"
 	"github.com/aap/config-server/internal/parser"
 	"github.com/aap/config-server/internal/registry"
 	"github.com/aap/config-server/internal/secret"
@@ -104,39 +105,92 @@ func New(st ConfigStore, ready Readiness, apiKey string, opts ...Option) *Handle
 // Routes registers all routes on the given mux.
 func (h *Handler) Routes(mux *http.ServeMux) {
 	// Health & ops
-	mux.HandleFunc("GET /healthz", h.healthz)
-	mux.HandleFunc("GET /readyz", h.readyz)
-	mux.HandleFunc("GET /api/v1/status", h.status)
+	h.handle(mux, "GET /healthz", h.healthz)
+	h.handle(mux, "GET /readyz", h.readyz)
+	h.handle(mux, "GET /api/v1/status", h.status)
+	mux.HandleFunc("GET /metrics", h.prometheusMetrics)
 
 	// Service discovery
-	mux.HandleFunc("GET /api/v1/orgs", h.listOrgs)
-	mux.HandleFunc("GET /api/v1/orgs/{org}/projects", h.listProjects)
-	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services", h.listServices)
+	h.handle(mux, "GET /api/v1/orgs", h.listOrgs)
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects", h.listProjects)
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services", h.listServices)
 
 	// Config read
-	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config",
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config",
 		h.getConfig)
-	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch",
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch",
 		h.watchConfig)
-	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars",
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars",
 		h.getEnvVars)
-	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch",
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch",
 		h.watchEnvVars)
-	mux.HandleFunc("POST /api/v1/configs/batch", h.postConfigsBatch)
-	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/history",
+	h.handle(mux, "POST /api/v1/configs/batch", h.postConfigsBatch)
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/history",
 		h.getHistory)
 	// Secret metadata is privileged even though values are never returned; auth
 	// is required so unauthenticated callers cannot enumerate which K8s secret
 	// objects back a service.
-	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/secrets",
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/secrets",
 		h.requireKey(h.getSecrets))
 
 	// Admin write — protected by API key
-	mux.HandleFunc("POST /api/v1/admin/changes", h.requireKey(h.postChanges))
-	mux.HandleFunc("POST /api/v1/admin/changes/revert", h.requireKey(h.postRevert))
-	mux.HandleFunc("DELETE /api/v1/admin/changes", h.requireKey(h.deleteChanges))
-	mux.HandleFunc("POST /api/v1/admin/reload", h.requireKey(h.adminReload))
-	mux.HandleFunc("POST /api/v1/admin/app-registry/webhook", h.requireKey(h.appRegistryWebhook))
+	h.handle(mux, "POST /api/v1/admin/changes", h.requireKey(h.postChanges))
+	h.handle(mux, "POST /api/v1/admin/changes/revert", h.requireKey(h.postRevert))
+	h.handle(mux, "DELETE /api/v1/admin/changes", h.requireKey(h.deleteChanges))
+	h.handle(mux, "POST /api/v1/admin/reload", h.requireKey(h.adminReload))
+	h.handle(mux, "POST /api/v1/admin/app-registry/webhook", h.requireKey(h.appRegistryWebhook))
+}
+
+func (h *Handler) handle(mux *http.ServeMux, pattern string, next http.HandlerFunc) {
+	mux.HandleFunc(pattern, instrumentHTTP(pattern, next))
+}
+
+func instrumentHTTP(pattern string, next http.HandlerFunc) http.HandlerFunc {
+	route := routeLabel(pattern)
+	return func(w http.ResponseWriter, r *http.Request) {
+		recorder := &statusRecorder{ResponseWriter: w}
+		start := time.Now()
+		next(recorder, r)
+		metrics.RecordHTTPRequest(r.Method, route, recorder.statusCode(), time.Since(start))
+	}
+}
+
+func routeLabel(pattern string) string {
+	if _, path, ok := strings.Cut(pattern, " "); ok {
+		return path
+	}
+	return pattern
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.status != 0 {
+		return
+	}
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(data []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(data)
+}
+
+func (r *statusRecorder) statusCode() int {
+	if r.status == 0 {
+		return http.StatusOK
+	}
+	return r.status
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 // ---- health ----
@@ -185,6 +239,34 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 		resp["degraded_components"] = degradedComponents
 	}
 	respondJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) prometheusMetrics(w http.ResponseWriter, _ *http.Request) {
+	storeStatus := h.store.StatusInfo()
+	registryStatus := h.appRegistry.Status()
+	metrics.WritePrometheus(w, []metrics.GaugeSample{
+		{
+			Name: metrics.DegradedStateMetric,
+			Labels: []metrics.Label{
+				{Name: "component", Value: "store"},
+			},
+			Value: boolFloat(storeStatus.IsDegraded),
+		},
+		{
+			Name: metrics.DegradedStateMetric,
+			Labels: []metrics.Label{
+				{Name: "component", Value: "app_registry"},
+			},
+			Value: boolFloat(registryStatus.IsDegraded),
+		},
+	})
+}
+
+func boolFloat(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func registryStatusBody(status registry.Status) map[string]any {
@@ -419,10 +501,17 @@ func (h *Handler) waitForWatchChange(
 		return false
 	}
 
+	start := time.Now()
+	outcome := "error"
+	defer func() {
+		metrics.RecordWatchWait(resource, outcome, time.Since(start))
+	}()
+
 	waitCtx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 	for {
 		if waitCtx.Err() != nil {
+			outcome = "timeout"
 			w.WriteHeader(http.StatusNotModified)
 			return false
 		}
@@ -432,12 +521,14 @@ func (h *Handler) waitForWatchChange(
 			return false
 		}
 		if resourceVersion != version {
+			outcome = "changed"
 			return true
 		}
 
 		_, changed, err := h.store.WaitForVersionChange(waitCtx, headVersion)
 		if err != nil {
 			if !changed && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
+				outcome = "timeout"
 				w.WriteHeader(http.StatusNotModified)
 				return false
 			}
@@ -446,6 +537,7 @@ func (h *Handler) waitForWatchChange(
 			return false
 		}
 		if !changed {
+			outcome = "timeout"
 			w.WriteHeader(http.StatusNotModified)
 			return false
 		}

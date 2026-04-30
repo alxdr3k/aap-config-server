@@ -22,6 +22,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/aap/config-server/internal/apperror"
+	"github.com/aap/config-server/internal/metrics"
 )
 
 // isNonFastForwardPush reports whether a go-git push error signals the remote
@@ -37,6 +38,16 @@ func isNonFastForwardPush(err error) bool {
 		return true
 	}
 	return strings.Contains(err.Error(), "non-fast-forward update")
+}
+
+func gitOutcome(updated bool, err error) string {
+	if err != nil {
+		return "error"
+	}
+	if updated {
+		return "updated"
+	}
+	return "success"
 }
 
 const (
@@ -227,7 +238,12 @@ func buildAuth(opts Options) (transport.AuthMethod, error) {
 }
 
 // CloneOrOpen clones the repository if the local path is empty, or opens it.
-func (r *Repo) CloneOrOpen(ctx context.Context) error {
+func (r *Repo) CloneOrOpen(ctx context.Context) (err error) {
+	start := time.Now()
+	defer func() {
+		metrics.RecordGitOperation("clone_or_open", gitOutcome(false, err), time.Since(start))
+	}()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -260,7 +276,12 @@ func (r *Repo) CloneOrOpen(ctx context.Context) error {
 }
 
 // Pull fetches and merges remote changes.
-func (r *Repo) Pull(ctx context.Context) (string, bool, error) {
+func (r *Repo) Pull(ctx context.Context) (hash string, updated bool, err error) {
+	start := time.Now()
+	defer func() {
+		metrics.RecordGitOperation("pull", gitOutcome(updated, err), time.Since(start))
+	}()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -301,7 +322,16 @@ func (r *Repo) CommitAndPush(ctx context.Context, msg string, files map[string][
 
 // CommitAndPushFunc writes files built from the post-pull working tree,
 // commits, and pushes with retry on rejection.
-func (r *Repo) CommitAndPushFunc(ctx context.Context, msg string, build CommitFileBuilder) (string, error) {
+func (r *Repo) CommitAndPushFunc(ctx context.Context, msg string, build CommitFileBuilder) (hash string, err error) {
+	start := time.Now()
+	outcome := "success"
+	defer func() {
+		if err != nil {
+			outcome = "error"
+		}
+		metrics.RecordGitOperation("commit_and_push", outcome, time.Since(start))
+	}()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -343,6 +373,7 @@ func (r *Repo) CommitAndPushFunc(ctx context.Context, msg string, build CommitFi
 		})
 		if err != nil {
 			if errors.Is(err, gogit.ErrEmptyCommit) {
+				outcome = "noop"
 				h, _ := r.headHash()
 				return h, nil
 			}
@@ -380,7 +411,16 @@ func (r localFileReader) ReadFile(path string) ([]byte, error) {
 }
 
 // DeleteAndPush removes the listed paths, commits, and pushes.
-func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (string, error) {
+func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (hash string, err error) {
+	start := time.Now()
+	outcome := "success"
+	defer func() {
+		if err != nil {
+			outcome = "error"
+		}
+		metrics.RecordGitOperation("delete_and_push", outcome, time.Since(start))
+	}()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -425,6 +465,7 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (s
 		if err != nil {
 			if errors.Is(err, gogit.ErrEmptyCommit) {
 				// Nothing was actually deleted — treat as no-op success.
+				outcome = "noop"
 				h, _ := r.headHash()
 				return h, nil
 			}
@@ -458,7 +499,16 @@ func (r *Repo) RestoreServiceFilesAndPush(
 	ctx context.Context,
 	msg, org, project, service string,
 	files map[string][]byte,
-) (string, []string, error) {
+) (hash string, deletedFiles []string, err error) {
+	start := time.Now()
+	outcome := "success"
+	defer func() {
+		if err != nil {
+			outcome = "error"
+		}
+		metrics.RecordGitOperation("restore_and_push", outcome, time.Since(start))
+	}()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -480,13 +530,13 @@ func (r *Repo) RestoreServiceFilesAndPush(
 		if err != nil {
 			return "", nil, err
 		}
-		var deletedFiles []string
+		var deleted []string
 		for _, path := range currentFiles {
 			if _, ok := targetFiles[path]; ok {
 				continue
 			}
 			rel, _ := serviceRelativeRepoPath(path, org, project, service)
-			deletedFiles = append(deletedFiles, rel)
+			deleted = append(deleted, rel)
 			fullPath := filepath.Join(r.localPath, filepath.FromSlash(path))
 			if err := os.RemoveAll(fullPath); err != nil && !os.IsNotExist(err) {
 				return "", nil, fmt.Errorf("remove %s: %w", path, err)
@@ -495,7 +545,7 @@ func (r *Repo) RestoreServiceFilesAndPush(
 				slog.Debug("git remove warning (non-fatal)", "path", path, "err", err)
 			}
 		}
-		sort.Strings(deletedFiles)
+		sort.Strings(deleted)
 
 		for path, data := range targetFiles {
 			fullPath := filepath.Join(r.localPath, filepath.FromSlash(path))
@@ -516,8 +566,9 @@ func (r *Repo) RestoreServiceFilesAndPush(
 		})
 		if err != nil {
 			if errors.Is(err, gogit.ErrEmptyCommit) {
+				outcome = "noop"
 				h, _ := r.headHash()
-				return h, deletedFiles, nil
+				return h, deleted, nil
 			}
 			return "", nil, fmt.Errorf("git commit restore: %w", err)
 		}
@@ -527,7 +578,7 @@ func (r *Repo) RestoreServiceFilesAndPush(
 			Auth:       r.auth,
 		})
 		if pushErr == nil {
-			return hash.String(), deletedFiles, nil
+			return hash.String(), deleted, nil
 		}
 		if !isNonFastForwardPush(pushErr) {
 			return "", nil, apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)

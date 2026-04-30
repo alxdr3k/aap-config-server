@@ -15,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/aap/config-server/internal/gitops"
+	"github.com/aap/config-server/internal/metrics"
 )
 
 // newLocalRepo creates a bare "remote" repo seeded with one commit,
@@ -108,6 +109,34 @@ func TestCloneOrOpen_Open(t *testing.T) {
 	h2, _ := repo.HeadHash()
 	if h1 != h2 {
 		t.Errorf("HEAD changed after re-open: %s → %s", h1, h2)
+	}
+}
+
+func TestRepo_RecordsGitOperationMetrics(t *testing.T) {
+	metrics.ResetForTest()
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	if _, _, err := repo.Pull(ctx); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if _, err := repo.CommitAndPush(ctx, "noop", nil); err != nil {
+		t.Fatalf("CommitAndPush noop: %v", err)
+	}
+
+	body := string(metrics.RenderPrometheus(nil))
+	checks := []string{
+		`aap_config_server_git_operations_total{operation="clone_or_open",outcome="success"} 1`,
+		`aap_config_server_git_operations_total{operation="pull",outcome="success"} 1`,
+		`aap_config_server_git_operations_total{operation="commit_and_push",outcome="noop"} 1`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Fatalf("metrics body missing %q:\n%s", check, body)
+		}
 	}
 }
 
