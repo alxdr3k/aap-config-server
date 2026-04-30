@@ -31,6 +31,7 @@ type ConfigStore interface {
 	ListProjects(org string) []string
 	ListServices(org, project string) []store.ServiceInfo
 	ApplyChanges(ctx context.Context, req *store.ChangeRequest) (*store.ChangeResult, error)
+	ApplyRevert(ctx context.Context, req *store.RevertRequest) (*store.RevertResult, error)
 	DeleteChanges(ctx context.Context, req *store.DeleteRequest) (*store.DeleteResult, error)
 	HeadVersion() string
 	RefreshFromRepo(ctx context.Context) (bool, error)
@@ -125,6 +126,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 
 	// Admin write — protected by API key
 	mux.HandleFunc("POST /api/v1/admin/changes", h.requireKey(h.postChanges))
+	mux.HandleFunc("POST /api/v1/admin/changes/revert", h.requireKey(h.postRevert))
 	mux.HandleFunc("DELETE /api/v1/admin/changes", h.requireKey(h.deleteChanges))
 	mux.HandleFunc("POST /api/v1/admin/reload", h.requireKey(h.adminReload))
 	mux.HandleFunc("POST /api/v1/admin/app-registry/webhook", h.requireKey(h.appRegistryWebhook))
@@ -821,6 +823,69 @@ func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
 		"version":    result.Version,
 		"updated_at": result.UpdatedAt,
 		"files":      result.Files,
+	}
+	if result.ReloadFailed && result.ReloadError != "" {
+		resp["reload_error"] = result.ReloadError
+	}
+	if result.ApplyFailed && result.ApplyError != "" {
+		resp["apply_error"] = result.ApplyError
+	}
+	respondJSON(w, code, resp)
+}
+
+type postRevertRequest struct {
+	Org           string `json:"org"`
+	Project       string `json:"project"`
+	Service       string `json:"service"`
+	TargetVersion string `json:"target_version"`
+	Message       string `json:"message"`
+}
+
+func (h *Handler) postRevert(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body postRevertRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_body", h.explainDecodeError(err))
+		return
+	}
+
+	result, err := h.store.ApplyRevert(r.Context(), &store.RevertRequest{
+		Org:           body.Org,
+		Project:       body.Project,
+		Service:       body.Service,
+		TargetVersion: body.TargetVersion,
+		Message:       body.Message,
+	})
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+
+	status := "rolled_back"
+	code := http.StatusOK
+	switch {
+	case result.Noop:
+		status = "noop"
+	case result.ApplyFailed && result.ReloadFailed:
+		status = "rolled_back_but_apply_and_reload_failed"
+		code = http.StatusServiceUnavailable
+	case result.ApplyFailed:
+		status = "rolled_back_but_apply_failed"
+		code = http.StatusServiceUnavailable
+	case result.ReloadFailed:
+		status = "rolled_back_but_reload_failed"
+		code = http.StatusServiceUnavailable
+	}
+
+	resp := map[string]any{
+		"status":         status,
+		"version":        result.Version,
+		"target_version": result.TargetVersion,
+		"restored_files": result.RestoredFiles,
+		"deleted_files":  result.DeletedFiles,
+		"updated_at":     result.UpdatedAt,
 	}
 	if result.ReloadFailed && result.ReloadError != "" {
 		resp["reload_error"] = result.ReloadError

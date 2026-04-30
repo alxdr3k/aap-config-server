@@ -3,7 +3,7 @@
 > **버전**: 2.1
 > **작성일**: 2026-03-12
 > **최종 수정일**: 2026-04-30
-> **상태**: **Approved design — Phase-1 implementation in progress.** 문서가 설명하는 전체 v2.1 계약 중 Config Agent는 binary/API client/local dry-run bootstrap, K8s Lease leader election module, read polling/version tracking module, native config/env.sh rendering module, ConfigMap/Secret apply module, Deployment rollout patch module, leading-edge debounce module, image build target, RBAC/deployment handoff examples, fake-client e2e smoke coverage까지 구현되어 있고, store version-wait primitive, `config/watch`/`env_vars/watch` endpoints, Git history iterator/service file classifier, public history API, versioned config/env reads, revert target validation/restore plan도 구현되어 있다. live non-dry-run entrypoint와 public revert endpoint/commit flow, inheritance 등은 아직 구현되지 않았다. SealedSecret write/resolve path와 App Registry bootstrap/webhook/status cache path는 구현되어 있으며, 실제로 현재 제공되는 범위는 [README.md](../README.md#feature-matrix) 의 Feature Matrix를 기준으로 한다. 본 문서의 API/저장소/아키텍처 기술은 **목표 계약**이며, 구현되지 않은 엔드포인트·필드는 Phase-1에서 명시적으로 거부된다.
+> **상태**: **Approved design — Phase-1 implementation in progress.** 문서가 설명하는 전체 v2.1 계약 중 Config Agent는 binary/API client/local dry-run bootstrap, K8s Lease leader election module, read polling/version tracking module, native config/env.sh rendering module, ConfigMap/Secret apply module, Deployment rollout patch module, leading-edge debounce module, image build target, RBAC/deployment handoff examples, fake-client e2e smoke coverage까지 구현되어 있고, store version-wait primitive, `config/watch`/`env_vars/watch` endpoints, Git history iterator/service file classifier, public history API, versioned config/env reads, revert target validation/restore plan, public revert endpoint/commit flow도 구현되어 있다. live non-dry-run entrypoint와 inheritance 등은 아직 구현되지 않았다. SealedSecret write/resolve path와 App Registry bootstrap/webhook/status cache path는 구현되어 있으며, 실제로 현재 제공되는 범위는 [README.md](../README.md#feature-matrix) 의 Feature Matrix를 기준으로 한다. 본 문서의 API/저장소/아키텍처 기술은 **목표 계약**이며, 구현되지 않은 엔드포인트·필드는 Phase-1에서 명시적으로 거부된다.
 > **참조**: [HLD](./02_HLD.md) · [development-process.md](./development-process.md) · [README.md Feature Matrix](../README.md#feature-matrix)
 
 ---
@@ -1148,20 +1148,23 @@ POST /api/v1/admin/changes/revert
   "status": "rolled_back",
   "version": "d7e8f9a",
   "target_version": "a3f2b1c",
-  "restored_files": ["config.yaml", "env_vars.yaml", "sealed-secrets/litellm-secrets.yaml"],
+  "restored_files": ["config.yaml", "env_vars.yaml", "sealed-secrets/ai-platform/litellm-secrets.yaml"],
+  "deleted_files": [],
   "updated_at": "2026-03-10T12:00:00Z"
 }
 ```
 
 - `version`: 롤백으로 생성된 **새로운** Git commit hash (롤백도 새 커밋이다)
-- `restored_files`: 복원된 파일 목록
+- `restored_files`: 대상 commit에서 복원한 recognized service file 목록
+- `deleted_files`: 현재 HEAD에는 있지만 대상 commit에는 없어 삭제한 recognized service file 목록
+- 현재 HEAD와 대상 commit의 recognized service file set/content가 같으면 `status`는 `noop`이고 새 commit을 만들지 않는다.
 
 **처리 흐름**:
 1. `target_version` commit이 해당 서비스 경로의 변경을 포함하는지 검증
-2. `git show {target_version}:orgs/.../config.yaml` 등으로 해당 시점의 파일 내용 추출
-3. config.yaml, env_vars.yaml 파일을 해당 시점 내용으로 덮어쓰기
-4. SealedSecret 파일도 해당 시점 내용으로 복원 → K8s API apply
-5. 모든 변경을 **단일 Git commit** & push
+2. 해당 commit의 recognized service file(`config.yaml`, `env_vars.yaml`, `secrets.yaml`, `sealed-secrets/**`) 내용을 추출
+3. 현재 recognized service file을 대상 commit의 파일 set과 content로 맞춤
+4. 모든 변경을 **단일 Git commit** & push
+5. 복원된 SealedSecret 파일을 K8s API apply
 6. In-memory config store 갱신
 7. 다음 Config Agent polling 시 변경 감지 → ConfigMap/Secret 업데이트 → rolling restart
 
@@ -1176,6 +1179,8 @@ POST /api/v1/admin/changes/revert
 | `target_version`이 존재하지 않음 | `404` | 유효하지 않은 commit hash |
 | `target_version`에 해당 서비스 파일 없음 | `404` | 해당 시점에 서비스가 존재하지 않았음 |
 | 현재 설정과 동일 | `200` (no-op) | 변경 없음, 새 commit 생성하지 않음 |
+| Git commit 후 SealedSecret apply 실패 | `503` | `rolled_back_but_apply_failed`, commit은 유지됨 |
+| Git commit 후 reload 실패 | `503` | `rolled_back_but_reload_failed`, last-known-good snapshot 유지 |
 
 ### 4.15 FR-15: 헬스체크 / 운영 API `[FR-15]`
 

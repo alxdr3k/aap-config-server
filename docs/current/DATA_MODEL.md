@@ -46,7 +46,7 @@ snapshot.
 | `store.SecretWrite` | Admin write boundary for plaintext secret values grouped by K8s Secret name before sealing. | `internal/store/types.go` |
 | `ChangeRequest` | Internal representation of admin write input. | `internal/store/types.go` |
 | `DeleteRequest` | Internal representation of admin delete input. | `internal/store/types.go` |
-| `RevertRequest` / `RevertPlan` | Store-level revert target validation input and non-mutating service-file restore plan. | `internal/store/types.go` |
+| `RevertRequest` / `RevertPlan` / `RevertResult` | Store-level revert target validation input, non-mutating service-file restore plan, and forward-only revert application result. | `internal/store/types.go` |
 | `HistoryOptions` / `HistoryEntry` | Store-level service history query options and response records for the public history API. | `internal/store/types.go` |
 | `StoreStatus` | Runtime status exposed through `/api/v1/status`. | `internal/store/types.go` |
 | `gitops.ServiceHistoryEntry` / `gitops.ServiceFileChange` / `gitops.ServiceFileContent` | Git commit history records, service-scoped changed-file classifications, and historical file snapshots for history/revert features. | `internal/gitops/repo.go` |

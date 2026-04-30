@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ type fakeRepo struct {
 	commitHash      string
 	nextPullUpdated bool
 	pullCalls       int
+	afterPull       func(*fakeRepo)
 	afterCommit     func()
 	history         []gitops.ServiceHistoryEntry
 }
@@ -71,6 +73,14 @@ func newFakeRepo() *fakeRepo {
 	}
 }
 
+func cloneFakeFiles(files map[string][]byte) map[string][]byte {
+	out := make(map[string][]byte, len(files))
+	for path, data := range files {
+		out[path] = append([]byte(nil), data...)
+	}
+	return out
+}
+
 func (f *fakeRepo) CloneOrOpen(_ context.Context) error { return nil }
 
 func (f *fakeRepo) Pull(_ context.Context) (string, bool, error) {
@@ -79,6 +89,9 @@ func (f *fakeRepo) Pull(_ context.Context) (string, bool, error) {
 	f.pullCalls++
 	updated := f.nextPullUpdated
 	f.nextPullUpdated = false
+	if updated && f.afterPull != nil {
+		f.afterPull(f)
+	}
 	return f.commitHash, updated, nil
 }
 
@@ -125,6 +138,38 @@ func (f *fakeRepo) DeleteAndPush(_ context.Context, _ string, paths []string) (s
 	}
 	f.commitHash = "delcommit"
 	return f.commitHash, nil
+}
+
+func (f *fakeRepo) RestoreServiceFilesAndPush(
+	_ context.Context,
+	_ string,
+	org, project, service string,
+	files map[string][]byte,
+) (string, []string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	target := make(map[string][]byte, len(files))
+	for path, data := range files {
+		target[filepath.ToSlash(path)] = append([]byte(nil), data...)
+	}
+	var deleted []string
+	for path := range f.files {
+		change, ok := gitops.ClassifyServiceFileChange(path, org, project, service)
+		if !ok {
+			continue
+		}
+		if _, keep := target[path]; keep {
+			continue
+		}
+		deleted = append(deleted, change.Path)
+		delete(f.files, path)
+	}
+	sort.Strings(deleted)
+	for path, data := range target {
+		f.files[path] = append([]byte(nil), data...)
+	}
+	f.commitHash = "revertcommit"
+	return f.commitHash, deleted, nil
 }
 
 func (f *fakeRepo) ReadFile(path string) ([]byte, error) {
@@ -625,6 +670,396 @@ config: {}
 				t.Fatalf("expected CodeNotFound, got %T %v", err, err)
 			}
 		})
+	}
+}
+
+func TestStore_ApplyRevert_CommitsReloadsAndAppliesSealedSecrets(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	seedSecretFiles(repo, "myorg", "proj", "litellm")
+	base := store.ServicePath("myorg", "proj", "litellm")
+	repo.filesAtCommit["target"] = map[string][]byte{
+		base + "/config.yaml": []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+config:
+  router_settings:
+    num_retries: 1
+`),
+		base + "/sealed-secrets/ai-platform/remote-secrets.yaml": []byte("old-sealed"),
+	}
+	repo.history = []gitops.ServiceHistoryEntry{{Version: "target"}}
+	applier := &fakeApplier{}
+
+	s := store.New(repo, store.WithSecretDependencies(secret.Dependencies{Applier: applier}))
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	result, err := s.ApplyRevert(ctx, &store.RevertRequest{
+		Org:           "myorg",
+		Project:       "proj",
+		Service:       "litellm",
+		TargetVersion: "target",
+	})
+	if err != nil {
+		t.Fatalf("ApplyRevert: %v", err)
+	}
+	if result.Version != "revertcommit" || result.TargetVersion != "target" {
+		t.Fatalf("result versions: %+v", result)
+	}
+	if result.ApplyFailed || result.ReloadFailed || result.Noop {
+		t.Fatalf("unexpected result flags: %+v", result)
+	}
+	if got := strings.Join(result.DeletedFiles, ","); got != "env_vars.yaml,secrets.yaml" {
+		t.Fatalf("deleted files: got %q", got)
+	}
+	if len(applier.manifests) != 1 {
+		t.Fatalf("applied manifests: got %d", len(applier.manifests))
+	}
+	if applier.manifests[0].Namespace != "ai-platform" || applier.manifests[0].Name != "remote-secrets" {
+		t.Fatalf("manifest identity: %+v", applier.manifests[0])
+	}
+	if string(applier.manifests[0].YAML) != "old-sealed" {
+		t.Fatalf("manifest YAML: got %q", applier.manifests[0].YAML)
+	}
+	if _, err := repo.ReadFile(base + "/env_vars.yaml"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("env_vars.yaml should be deleted, got %v", err)
+	}
+	d, err := s.GetConfig(ctx, "myorg", "proj", "litellm")
+	if err != nil {
+		t.Fatalf("GetConfig after revert: %v", err)
+	}
+	settings := d.Config.Config["router_settings"].(map[string]any)
+	if settings["num_retries"] != 1 {
+		t.Fatalf("reverted config num_retries: got %#v", settings["num_retries"])
+	}
+	if d.EnvVars != nil || d.Secrets != nil {
+		t.Fatalf("env/secrets should be absent after revert: env=%v secrets=%v", d.EnvVars, d.Secrets)
+	}
+}
+
+func TestStore_ApplyRevert_NoopDoesNotCommit(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	repo.history = []gitops.ServiceHistoryEntry{{Version: repo.commitHash}}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	result, err := s.ApplyRevert(ctx, &store.RevertRequest{
+		Org:           "myorg",
+		Project:       "proj",
+		Service:       "litellm",
+		TargetVersion: repo.commitHash,
+	})
+	if err != nil {
+		t.Fatalf("ApplyRevert: %v", err)
+	}
+	if !result.Noop || result.Version != "abc123" {
+		t.Fatalf("noop result: %+v", result)
+	}
+	if repo.commitHash != "abc123" {
+		t.Fatalf("noop should not commit, head=%q", repo.commitHash)
+	}
+}
+
+func TestStore_ApplyRevert_NoopPullsBeforeReturning(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	base := store.ServicePath("myorg", "proj", "litellm")
+	repo.filesAtCommit["target"] = cloneFakeFiles(repo.files)
+	repo.history = []gitops.ServiceHistoryEntry{{Version: "target"}}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	repo.nextPullUpdated = true
+	repo.afterPull = func(r *fakeRepo) {
+		r.commitHash = "remote456"
+		r.files[base+"/config.yaml"] = []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+config:
+  router_settings:
+    num_retries: 9
+`)
+	}
+
+	result, err := s.ApplyRevert(ctx, &store.RevertRequest{
+		Org:           "myorg",
+		Project:       "proj",
+		Service:       "litellm",
+		TargetVersion: "target",
+	})
+	if err != nil {
+		t.Fatalf("ApplyRevert: %v", err)
+	}
+	if result.Noop {
+		t.Fatalf("stale no-op should have been re-evaluated after pull: %+v", result)
+	}
+	if result.Version != "revertcommit" {
+		t.Fatalf("expected revert commit after remote changed, got %+v", result)
+	}
+	if repo.pullCalls < 2 {
+		t.Fatalf("expected ApplyRevert to pull before no-op return, pullCalls=%d", repo.pullCalls)
+	}
+	d, err := s.GetConfig(ctx, "myorg", "proj", "litellm")
+	if err != nil {
+		t.Fatalf("GetConfig after revert: %v", err)
+	}
+	settings := d.Config.Config["router_settings"].(map[string]any)
+	if settings["num_retries"] != 3 {
+		t.Fatalf("revert should restore target after stale no-op pull, got %#v", settings["num_retries"])
+	}
+}
+
+func TestStore_ApplyRevert_NoopReloadsWhenPullAlreadyUpToDate(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	base := store.ServicePath("myorg", "proj", "litellm")
+	original := cloneFakeFiles(repo.files)
+	repo.filesAtCommit["abc123"] = original
+	repo.filesAtCommit["target"] = original
+	repo.history = []gitops.ServiceHistoryEntry{{Version: "target"}}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	repo.commitHash = "remote456"
+	repo.files[base+"/config.yaml"] = []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+config:
+  router_settings:
+    num_retries: 11
+`)
+
+	result, err := s.ApplyRevert(ctx, &store.RevertRequest{
+		Org:           "myorg",
+		Project:       "proj",
+		Service:       "litellm",
+		TargetVersion: "target",
+	})
+	if err != nil {
+		t.Fatalf("ApplyRevert: %v", err)
+	}
+	if result.Noop {
+		t.Fatalf("stale snapshot should be reloaded before no-op return: %+v", result)
+	}
+	if result.Version != "revertcommit" {
+		t.Fatalf("expected revert commit after stale snapshot reload, got %+v", result)
+	}
+	d, err := s.GetConfig(ctx, "myorg", "proj", "litellm")
+	if err != nil {
+		t.Fatalf("GetConfig after revert: %v", err)
+	}
+	settings := d.Config.Config["router_settings"].(map[string]any)
+	if settings["num_retries"] != 3 {
+		t.Fatalf("revert should restore target after force reload, got %#v", settings["num_retries"])
+	}
+}
+
+func TestStore_ApplyRevert_NoopReloadFailureStillRevertsChangedHead(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	base := store.ServicePath("myorg", "proj", "litellm")
+	original := cloneFakeFiles(repo.files)
+	repo.filesAtCommit["abc123"] = original
+	repo.filesAtCommit["target"] = original
+	repo.history = []gitops.ServiceHistoryEntry{{Version: "target"}}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	repo.commitHash = "bad456"
+	repo.files[base+"/config.yaml"] = []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+config: [
+`)
+
+	result, err := s.ApplyRevert(ctx, &store.RevertRequest{
+		Org:           "myorg",
+		Project:       "proj",
+		Service:       "litellm",
+		TargetVersion: "target",
+	})
+	if err != nil {
+		t.Fatalf("ApplyRevert: %v", err)
+	}
+	if result.Noop || result.ReloadFailed {
+		t.Fatalf("expected rollback to repair bad head, got %+v", result)
+	}
+	if result.Version != "revertcommit" {
+		t.Fatalf("expected revert commit after failed no-op reload, got %+v", result)
+	}
+	d, err := s.GetConfig(ctx, "myorg", "proj", "litellm")
+	if err != nil {
+		t.Fatalf("GetConfig after revert: %v", err)
+	}
+	settings := d.Config.Config["router_settings"].(map[string]any)
+	if settings["num_retries"] != 3 {
+		t.Fatalf("revert should restore target after failed no-op reload, got %#v", settings["num_retries"])
+	}
+}
+
+func TestStore_ApplyRevert_RequiresApplierForSealedSecrets(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	base := store.ServicePath("myorg", "proj", "litellm")
+	repo.filesAtCommit["target"] = map[string][]byte{
+		base + "/config.yaml": []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+config: {}
+`),
+		base + "/sealed-secrets/ai-platform/remote-secrets.yaml": []byte("old-sealed"),
+	}
+	repo.history = []gitops.ServiceHistoryEntry{{Version: "target"}}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	_, err := s.ApplyRevert(ctx, &store.RevertRequest{
+		Org:           "myorg",
+		Project:       "proj",
+		Service:       "litellm",
+		TargetVersion: "target",
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	var appErr *apperror.Error
+	if !errors.As(err, &appErr) || appErr.Code != apperror.CodeValidation {
+		t.Fatalf("expected validation error, got %T %v", err, err)
+	}
+	if repo.commitHash != "abc123" {
+		t.Fatalf("validation failure should not commit, head=%q", repo.commitHash)
+	}
+}
+
+func TestStore_ApplyRevert_AppliesNestedSealedSecretPath(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	base := store.ServicePath("myorg", "proj", "litellm")
+	nestedPath := base + "/sealed-secrets/archive/ai-platform/remote-secrets.yaml"
+	repo.filesAtCommit["target"] = map[string][]byte{
+		base + "/config.yaml": []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+config: {}
+`),
+		nestedPath: []byte(`apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: remote-secrets
+  namespace: ai-platform
+spec: {}
+`),
+	}
+	repo.history = []gitops.ServiceHistoryEntry{{Version: "target"}}
+	applier := &fakeApplier{}
+
+	s := store.New(repo, store.WithSecretDependencies(secret.Dependencies{Applier: applier}))
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	result, err := s.ApplyRevert(ctx, &store.RevertRequest{
+		Org:           "myorg",
+		Project:       "proj",
+		Service:       "litellm",
+		TargetVersion: "target",
+	})
+	if err != nil {
+		t.Fatalf("ApplyRevert: %v", err)
+	}
+	if result.ApplyFailed {
+		t.Fatalf("nested sealed secret should be applied: %+v", result)
+	}
+	if len(applier.manifests) != 1 {
+		t.Fatalf("applied manifests: got %d", len(applier.manifests))
+	}
+	got := applier.manifests[0]
+	if got.Namespace != "ai-platform" || got.Name != "remote-secrets" || got.Path != nestedPath {
+		t.Fatalf("manifest identity/path: %+v", got)
+	}
+}
+
+func TestStore_ApplyRevert_FillsPartialSealedSecretMetadataFromPath(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	base := store.ServicePath("myorg", "proj", "litellm")
+	sealedPath := base + "/sealed-secrets/ai-platform/remote-secrets.yaml"
+	repo.filesAtCommit["target"] = map[string][]byte{
+		base + "/config.yaml": []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+config: {}
+`),
+		sealedPath: []byte(`apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: remote-secrets
+spec: {}
+`),
+	}
+	repo.history = []gitops.ServiceHistoryEntry{{Version: "target"}}
+	applier := &fakeApplier{}
+
+	s := store.New(repo, store.WithSecretDependencies(secret.Dependencies{Applier: applier}))
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	_, err := s.ApplyRevert(ctx, &store.RevertRequest{
+		Org:           "myorg",
+		Project:       "proj",
+		Service:       "litellm",
+		TargetVersion: "target",
+	})
+	if err != nil {
+		t.Fatalf("ApplyRevert: %v", err)
+	}
+	if len(applier.manifests) != 1 {
+		t.Fatalf("applied manifests: got %d", len(applier.manifests))
+	}
+	got := applier.manifests[0]
+	if got.Namespace != "ai-platform" || got.Name != "remote-secrets" {
+		t.Fatalf("manifest identity: %+v", got)
 	}
 }
 

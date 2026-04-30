@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -124,6 +125,10 @@ type GitRepo interface {
 	// DeleteAndPush removes the listed paths, commits, and pushes.
 	// Returns the new HEAD commit hash.
 	DeleteAndPush(ctx context.Context, msg string, paths []string) (string, error)
+
+	// RestoreServiceFilesAndPush replaces recognized files under one service
+	// path with files, commits, and pushes.
+	RestoreServiceFilesAndPush(ctx context.Context, msg, org, project, service string, files map[string][]byte) (hash string, deletedFiles []string, err error)
 
 	// ReadFile reads a file from the current working tree.
 	ReadFile(path string) ([]byte, error)
@@ -444,6 +449,144 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (s
 	}
 
 	return "", apperror.New(apperror.CodeGitPush, fmt.Sprintf("push (delete) failed after %d retries", maxPushRetries))
+}
+
+// RestoreServiceFilesAndPush replaces recognized files under one service path,
+// commits, and pushes. It recalculates current files after every pull retry so
+// the resulting tree matches the target file set even if the remote moved.
+func (r *Repo) RestoreServiceFilesAndPush(
+	ctx context.Context,
+	msg, org, project, service string,
+	files map[string][]byte,
+) (string, []string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	targetFiles := normalizeRepoFiles(files)
+	for attempt := 0; attempt < maxPushRetries; attempt++ {
+		if err := r.pull(ctx); err != nil && !errors.Is(err, gogit.NoErrAlreadyUpToDate) {
+			return "", nil, fmt.Errorf("pre-restore pull: %w", err)
+		}
+		if afterPullHook != nil {
+			afterPullHook(attempt)
+		}
+
+		w, err := r.repo.Worktree()
+		if err != nil {
+			return "", nil, err
+		}
+
+		currentFiles, err := serviceFilesInWorktree(r.localPath, org, project, service)
+		if err != nil {
+			return "", nil, err
+		}
+		var deletedFiles []string
+		for _, path := range currentFiles {
+			if _, ok := targetFiles[path]; ok {
+				continue
+			}
+			rel, _ := serviceRelativeRepoPath(path, org, project, service)
+			deletedFiles = append(deletedFiles, rel)
+			fullPath := filepath.Join(r.localPath, filepath.FromSlash(path))
+			if err := os.RemoveAll(fullPath); err != nil && !os.IsNotExist(err) {
+				return "", nil, fmt.Errorf("remove %s: %w", path, err)
+			}
+			if _, err := w.Remove(path); err != nil && !errors.Is(err, object.ErrEntryNotFound) {
+				slog.Debug("git remove warning (non-fatal)", "path", path, "err", err)
+			}
+		}
+		sort.Strings(deletedFiles)
+
+		for path, data := range targetFiles {
+			fullPath := filepath.Join(r.localPath, filepath.FromSlash(path))
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+				return "", nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(fullPath), err)
+			}
+			if err := os.WriteFile(fullPath, data, 0o644); err != nil {
+				return "", nil, fmt.Errorf("write %s: %w", path, err)
+			}
+			if _, err := w.Add(path); err != nil {
+				return "", nil, fmt.Errorf("git add %s: %w", path, err)
+			}
+		}
+
+		hash, err := w.Commit(msg, &gogit.CommitOptions{
+			Author:            signature(),
+			AllowEmptyCommits: false,
+		})
+		if err != nil {
+			if errors.Is(err, gogit.ErrEmptyCommit) {
+				h, _ := r.headHash()
+				return h, deletedFiles, nil
+			}
+			return "", nil, fmt.Errorf("git commit restore: %w", err)
+		}
+
+		pushErr := r.repo.PushContext(ctx, &gogit.PushOptions{
+			RemoteName: "origin",
+			Auth:       r.auth,
+		})
+		if pushErr == nil {
+			return hash.String(), deletedFiles, nil
+		}
+		if !isNonFastForwardPush(pushErr) {
+			return "", nil, apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
+		}
+
+		slog.Warn("git push (restore) rejected, will retry", "attempt", attempt+1)
+		if err := resetToParent(r.repo, w); err != nil {
+			return "", nil, fmt.Errorf("reset after push rejection: %w", err)
+		}
+	}
+
+	return "", nil, apperror.New(apperror.CodeGitPush, fmt.Sprintf("push (restore) failed after %d retries", maxPushRetries))
+}
+
+func normalizeRepoFiles(files map[string][]byte) map[string][]byte {
+	out := make(map[string][]byte, len(files))
+	for path, data := range files {
+		clean := strings.Trim(filepath.ToSlash(filepath.Clean(path)), "/")
+		out[clean] = append([]byte(nil), data...)
+	}
+	return out
+}
+
+func serviceFilesInWorktree(root, org, project, service string) ([]string, error) {
+	serviceRoot := serviceConfigRoot(org, project, service)
+	fullRoot := filepath.Join(root, filepath.FromSlash(serviceRoot))
+	var files []string
+	err := filepath.WalkDir(fullRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		repoPath := filepath.ToSlash(rel)
+		if _, ok := ClassifyServiceFileChange(repoPath, org, project, service); ok {
+			files = append(files, repoPath)
+		}
+		return nil
+	})
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func serviceRelativeRepoPath(repoPath, org, project, service string) (string, bool) {
+	repoPath = strings.Trim(filepath.ToSlash(filepath.Clean(repoPath)), "/")
+	root := serviceConfigRoot(org, project, service)
+	rel, ok := strings.CutPrefix(repoPath, root+"/")
+	return rel, ok && rel != ""
 }
 
 func removalTargets(root, path string) ([]string, error) {
