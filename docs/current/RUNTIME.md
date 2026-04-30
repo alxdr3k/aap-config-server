@@ -68,8 +68,8 @@ Kubernetes apply code will write:
   remaining `secret_refs`, rejects duplicate plain/secret keys, and validates
   shell-compatible env var names.
 
-ConfigMap/Secret apply and Deployment patching are implemented separately
-below; debounce behavior remains a planned Agent slice.
+ConfigMap/Secret apply, Deployment patching, and debounce are implemented
+separately below.
 
 ## Config Agent ConfigMap/Secret apply
 
@@ -94,7 +94,18 @@ target Deployment pod-template annotations:
 - The patch targets one configured Deployment name and preserves unrelated
   existing pod-template annotations.
 
-Debounce behavior remains a planned Agent slice.
+## Config Agent debounce
+
+`internal/agent` implements the leading-edge debounce state machine from
+ADR-001:
+
+- the first change outside cooldown applies immediately;
+- changes during cooldown or an active debounce window become pending;
+- pending changes apply after the quiet period or at max-wait, whichever comes
+  first;
+- each apply starts a new cooldown window.
+
+Image/RBAC examples and e2e orchestration remain planned Agent slices.
 
 ## Implemented API surface
 
