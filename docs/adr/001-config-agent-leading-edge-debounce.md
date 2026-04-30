@@ -65,7 +65,7 @@ K8s Deployment controller는 overlapping rollout을 네이티브로 처리하지
 |----------|--------|------|
 | `--debounce-cooldown` | `10s` | 적용 직후 재적용 방지 기간 |
 | `--debounce-quiet-period` | `10s` | 마지막 변경 후 이 시간 동안 추가 변경 없으면 적용 |
-| `--debounce-max-wait` | `2m` | debounce 시작 후 최대 대기. 초과 시 강제 적용 |
+| `--debounce-max-wait` | `2m` | debounce 시작 후 최대 대기. `cooldown`과 `quiet-period` 이상이어야 하며 초과 시 강제 적용 |
 
 ## 영향
 

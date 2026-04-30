@@ -95,6 +95,24 @@ func TestLoadConfigRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsDebounceMaxWaitShorterThanCooldown(t *testing.T) {
+	env := map[string]string{
+		"CONFIG_SERVER_URL":                  "http://config-server:8080",
+		"CONFIG_AGENT_ORG":                   "org",
+		"CONFIG_AGENT_PROJECT":               "project",
+		"CONFIG_AGENT_SERVICE":               "service",
+		"CONFIG_AGENT_DRY_RUN":               "true",
+		"CONFIG_AGENT_DEBOUNCE_COOLDOWN":     "10s",
+		"CONFIG_AGENT_DEBOUNCE_QUIET_PERIOD": "2s",
+		"CONFIG_AGENT_DEBOUNCE_MAX_WAIT":     "3s",
+	}
+
+	_, err := LoadConfig(nil, mapGetenv(env))
+	if err == nil || !strings.Contains(err.Error(), "CONFIG_AGENT_DEBOUNCE_COOLDOWN") {
+		t.Fatalf("expected debounce cooldown validation error, got %v", err)
+	}
+}
+
 func mapGetenv(values map[string]string) func(string) string {
 	return func(key string) string {
 		return values[key]

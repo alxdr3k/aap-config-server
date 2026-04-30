@@ -159,6 +159,9 @@ func (c *Config) Validate() error {
 	if c.DebounceMaxWait < c.DebounceQuiet {
 		return errors.New("CONFIG_AGENT_DEBOUNCE_MAX_WAIT must be >= CONFIG_AGENT_DEBOUNCE_QUIET_PERIOD")
 	}
+	if c.DebounceMaxWait < c.DebounceCooldown {
+		return errors.New("CONFIG_AGENT_DEBOUNCE_MAX_WAIT must be >= CONFIG_AGENT_DEBOUNCE_COOLDOWN")
+	}
 	if c.ResolveSecrets && c.APIKey == "" {
 		return errors.New("CONFIG_AGENT_API_KEY or API_KEY is required when --resolve-secrets is enabled")
 	}

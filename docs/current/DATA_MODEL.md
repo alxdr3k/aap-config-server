@@ -105,13 +105,14 @@ snapshot.
 | Config Agent rendered payloads | config YAML, env.sh | The renderer converts a fetched config object into deterministic native YAML while preserving `os.environ/...` strings, and converts resolved env vars into sorted shell exports for the target Secret. |
 | Config Agent apply target | namespace, ConfigMap, Secret | The apply adapter requires concrete resource names, writes `config.yaml` to the ConfigMap and `env.sh` to the Secret, and patches existing resources without replacing unrelated data keys. |
 | Config Agent rollout patch | Deployment annotation update | The rollout patcher writes a payload hash and restart timestamp to the target Deployment pod template annotations, triggering Kubernetes rolling update behavior. |
+| Config Agent debounce state | idle, cooldown, pending | The debounce state machine applies the first change immediately, batches cooldown-window changes until quiet-period or max-wait, and starts a new cooldown after each apply. |
 | Admin write | committed, committed_but_apply_failed, committed_but_reload_failed, committed_but_apply_and_reload_failed | Non-committed validation/sealing failures happen before Git writes; post-commit apply/reload failures are explicit. |
 | Admin delete | deleted, deleted_but_reload_failed | The second state means Git delete succeeded but memory reload failed. |
 
 ## Needs audit
 
 - No generated reference docs currently exist under `docs/generated/`.
-- Config Agent debounce/orchestration data models are target design only;
+- Config Agent image/RBAC/e2e orchestration data models are target design only;
   bootstrap Config Server response DTOs, leader election config, fetch loop
-  state, rendered payloads, ConfigMap/Secret apply targets, and rollout patches
-  live under `internal/agent`.
+  state, rendered payloads, ConfigMap/Secret apply targets, rollout patches,
+  and debounce state live under `internal/agent`.
