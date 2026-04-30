@@ -15,8 +15,8 @@ from an atomically swapped in-memory snapshot.
 
 - current milestone: `P1-M3` extension APIs next
 - active tracks: `EXT`
-- active phase: `none ready`
-- active slice: `none ready`
+- active phase: `EXT-1A`
+- active slice: `EXT-1A.1`
 - last accepted gate: `AC-030`
 - next gate: `P1-M3` / `AC-040`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -93,7 +93,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Review `EXT-1A.1` for readiness: add store notification and version-wait primitive for long-poll watch endpoints.
+1. Start `EXT-1A.1`: add store notification and version-wait primitive for long-poll watch endpoints.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
