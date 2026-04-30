@@ -78,6 +78,14 @@ Invalid request shape returns `400`; per-service read failures such as
 returned. The endpoint defaults to inherited reads and supports request-level
 `inherit=false`. It does not resolve secret values.
 
+`GET /metrics` returns Prometheus text exposition. Implemented metric families
+cover HTTP request counts and duration histograms by method, route template,
+and status code; reload counts and duration histograms by mode/outcome; Git
+operation counts and duration histograms by operation/outcome; watch wait
+counts and duration histograms by resource/outcome; and degraded-state gauges
+for `store` and `app_registry`. Metric labels use route templates and operation
+names only; they do not include org/project/service identities or secret data.
+
 Admin writes remain service-level. `POST /api/v1/admin/changes` writes only the
 request payload to `config.yaml` and `env_vars.yaml`; inherited defaults are not
 materialized into service files, and `_defaults/common.yaml` files are not
@@ -214,6 +222,7 @@ only; live deployment wiring remains an external deployment-system concern per
 - `GET /healthz`
 - `GET /readyz`
 - `GET /api/v1/status`
+- `GET /metrics`
 - `GET /api/v1/orgs`
 - `GET /api/v1/orgs/{org}/projects`
 - `GET /api/v1/orgs/{org}/projects/{project}/services`

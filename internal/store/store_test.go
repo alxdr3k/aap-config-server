@@ -16,6 +16,7 @@ import (
 
 	"github.com/aap/config-server/internal/apperror"
 	"github.com/aap/config-server/internal/gitops"
+	"github.com/aap/config-server/internal/metrics"
 	"github.com/aap/config-server/internal/parser"
 	"github.com/aap/config-server/internal/secret"
 	"github.com/aap/config-server/internal/store"
@@ -2415,6 +2416,41 @@ func TestStore_RefreshFromRepo_NoChange(t *testing.T) {
 	}
 	if updated {
 		t.Error("expected no update since HEAD didn't move")
+	}
+}
+
+func TestStore_RecordsReloadMetrics(t *testing.T) {
+	metrics.ResetForTest()
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	s := store.New(repo)
+
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+	if _, err := s.RefreshFromRepo(ctx); err != nil {
+		t.Fatalf("RefreshFromRepo: %v", err)
+	}
+	repo.mu.Lock()
+	repo.files["configs/orgs/myorg/projects/proj/services/litellm/config.yaml"] = []byte("::: not valid yaml :::")
+	repo.commitHash = "bad456"
+	repo.nextPullUpdated = true
+	repo.mu.Unlock()
+	if _, err := s.RefreshFromRepo(ctx); err == nil {
+		t.Fatal("expected refresh error")
+	}
+
+	body := string(metrics.RenderPrometheus(nil))
+	checks := []string{
+		`aap_config_server_reload_attempts_total{mode="initial",outcome="loaded"} 1`,
+		`aap_config_server_reload_attempts_total{mode="background",outcome="unchanged"} 1`,
+		`aap_config_server_reload_attempts_total{mode="background",outcome="error"} 1`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Fatalf("metrics body missing %q:\n%s", check, body)
+		}
 	}
 }
 

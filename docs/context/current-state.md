@@ -16,7 +16,7 @@ from an atomically swapped in-memory snapshot.
 - current milestone: `P1-M3` extension APIs next
 - active tracks: `EXT`
 - active phase: `EXT-1D`
-- active slice: `EXT-1D.4`
+- active slice: `EXT-1D.5`
 - last accepted gate: `AC-030`
 - next gate: `P1-M3` / `AC-041`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -75,6 +75,10 @@ from an atomically swapped in-memory snapshot.
   non-secret config and unresolved env vars for multiple services in request
   order. The endpoint supports request-level `inherit`, cache validators,
   gzip, and partial per-item errors.
+- Prometheus metrics endpoint at `GET /metrics`, exposing HTTP request
+  counts/latency by route template/status, reload attempts/durations, Git
+  operation counts/durations, watch wait counts/durations, and degraded-state
+  gauges for store and App Registry components.
 - Auth-gated admin write/delete/reload endpoints.
 - Auth-gated secret metadata read, admin secret writes, and
   `resolve_secrets=true` env var reads.
@@ -126,8 +130,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Planned
 
-- metrics, schema validation, rate limiting, Git webhook refresh, and
-  integration/load validation.
+- schema validation, rate limiting, Git webhook refresh, and integration/load
+  validation.
 
 ## Explicit non-goals
 
@@ -137,8 +141,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `EXT-1D.4`: add Prometheus metrics for reloads, Git operations, API
-   latency, watch waits, and degraded state.
+1. Start `EXT-1D.5`: add authenticated Git webhook trigger for immediate
+   refresh after config repo changes.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -202,6 +206,10 @@ from an atomically swapped in-memory snapshot.
 - `EXT-1D.3` has handler coverage for batch config/env reads, request order,
   partial per-item not-found errors, request validation, gzip, ETag/412
   conditional POST behavior, and `inherit=false` raw view behavior.
+- `EXT-1D.4` has metrics/handler/store/gitops coverage for Prometheus text
+  exposition, HTTP route metrics, reload outcomes, Git operation outcomes,
+  watch wait outcomes, and degraded-state gauges without service-identity
+  labels.
 - Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`,
   `make test-race`, `make lint`, and `make build` pass in this workspace.

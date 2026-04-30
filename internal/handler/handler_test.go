@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/aap/config-server/internal/apperror"
 	"github.com/aap/config-server/internal/handler"
+	"github.com/aap/config-server/internal/metrics"
 	"github.com/aap/config-server/internal/parser"
 	"github.com/aap/config-server/internal/registry"
 	"github.com/aap/config-server/internal/secret"
@@ -539,6 +541,54 @@ func TestReadyz_NotReady(t *testing.T) {
 	resp := get(t, srv, "/readyz")
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("readyz (not ready): want 503, got %d", resp.StatusCode)
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	metrics.ResetForTest()
+	st := newFakeStore()
+	st.degraded = true
+	st.services["org/proj/svc"] = &store.ServiceData{
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{"enabled": true},
+		},
+		ConfigResourceVersion: "cfg-v2",
+		UpdatedAt:             time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC),
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/healthz")
+	_ = resp.Body.Close()
+	resp = get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config/watch?version=stale")
+	_ = resp.Body.Close()
+	resp = get(t, srv, "/metrics")
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics: want 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/plain; version=0.0.4") {
+		t.Fatalf("metrics content type = %q", got)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read metrics body: %v", err)
+	}
+	body := string(bodyBytes)
+	checks := []string{
+		`aap_config_server_http_requests_total{code="200",method="GET",route="/healthz"} 1`,
+		`aap_config_server_http_requests_total{code="200",method="GET",route="/api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch"} 1`,
+		`aap_config_server_watch_waits_total{outcome="changed",resource="config"} 1`,
+		`aap_config_server_degraded_state{component="store"} 1`,
+		`aap_config_server_degraded_state{component="app_registry"} 0`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Fatalf("metrics body missing %q:\n%s", check, body)
+		}
 	}
 }
 
