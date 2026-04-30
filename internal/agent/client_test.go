@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +26,7 @@ func TestClientFetchesConfigAndEnvVars(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{
 				"metadata": {"org":"org","project":"project","service":"service","version":"abc123","updated_at":"2026-04-30T01:02:03Z"},
-				"config": {"model_list": []}
+				"config": {"model_list": [], "large_id": 9007199254740993}
 			}`))
 		case "/api/v1/orgs/org/projects/project/services/service/env_vars":
 			sawEnv = true
@@ -56,8 +57,12 @@ func TestClientFetchesConfigAndEnvVars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchConfig: %v", err)
 	}
-	if configSnapshot.Metadata.Version != "abc123" || len(configSnapshot.Config) != 1 {
+	if configSnapshot.Metadata.Version != "abc123" || len(configSnapshot.Config) != 2 {
 		t.Fatalf("config snapshot: %+v", configSnapshot)
+	}
+	largeID, ok := configSnapshot.Config["large_id"].(json.Number)
+	if !ok || largeID.String() != "9007199254740993" {
+		t.Fatalf("large JSON integer should be preserved as json.Number, got %T %v", configSnapshot.Config["large_id"], configSnapshot.Config["large_id"])
 	}
 	envSnapshot, err := client.FetchEnvVars(context.Background(), ref, true)
 	if err != nil {

@@ -212,7 +212,9 @@ func (c *Client) getJSON(ctx context.Context, endpoint *url.URL, out any) error 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return &StatusError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(body))}
 	}
-	if err := json.NewDecoder(bytes.NewReader(body)).Decode(out); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(out); err != nil {
 		return fmt.Errorf("decode config server response: %w", err)
 	}
 	return nil

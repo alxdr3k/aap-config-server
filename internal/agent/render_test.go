@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -18,8 +19,9 @@ func TestRenderConfigYAMLPreservesNativeConfigAndSecretRefs(t *testing.T) {
 				},
 			},
 			"router_settings": map[string]any{
-				"cooldown":    0.25,
-				"num_retries": float64(3),
+				"cooldown":    json.Number("0.25"),
+				"large_id":    json.Number("9007199254740993"),
+				"num_retries": json.Number("3"),
 			},
 		},
 	})
@@ -27,7 +29,7 @@ func TestRenderConfigYAMLPreservesNativeConfigAndSecretRefs(t *testing.T) {
 		t.Fatalf("RenderConfigYAML: %v", err)
 	}
 	got := string(out)
-	want := "model_list:\n  - litellm_params:\n      api_key: os.environ/AZURE_API_KEY\n      model: azure/gpt-4o\n    model_name: gpt-4o\nrouter_settings:\n  cooldown: 0.25\n  num_retries: 3\n"
+	want := "model_list:\n  - litellm_params:\n      api_key: os.environ/AZURE_API_KEY\n      model: azure/gpt-4o\n    model_name: gpt-4o\nrouter_settings:\n  cooldown: 0.25\n  large_id: 9007199254740993\n  num_retries: 3\n"
 	if got != want {
 		t.Fatalf("rendered yaml:\n%s\nwant:\n%s", got, want)
 	}
@@ -39,6 +41,15 @@ func TestRenderConfigYAMLRejectsUnsupportedValues(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported config value type") {
 		t.Fatalf("expected unsupported value error, got %v", err)
+	}
+}
+
+func TestRenderConfigYAMLRejectsInvalidJSONNumbers(t *testing.T) {
+	_, err := RenderConfigYAML(&ConfigSnapshot{
+		Config: map[string]any{"value": json.Number("not-a-number")},
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported numeric value "not-a-number"`) {
+		t.Fatalf("expected invalid number error, got %v", err)
 	}
 }
 

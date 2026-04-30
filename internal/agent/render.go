@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -12,6 +13,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+const maxExactFloatInteger = 1 << 53
 
 // RenderConfigYAML renders a Config Server config snapshot into the native
 // service config payload that the Agent will write into the target ConfigMap.
@@ -129,6 +132,9 @@ func yamlNodeValue(value reflect.Value) (*yaml.Node, error) {
 		}
 		return yamlNodeValue(value.Elem())
 	}
+	if number, ok := value.Interface().(json.Number); ok {
+		return yamlNumberNode(number)
+	}
 
 	switch value.Kind() {
 	case reflect.Map:
@@ -178,11 +184,47 @@ func yamlNodeValue(value reflect.Value) (*yaml.Node, error) {
 		if math.IsInf(f, 0) || math.IsNaN(f) {
 			return nil, fmt.Errorf("unsupported float value %v", f)
 		}
-		if math.Trunc(f) == f {
+		if math.Trunc(f) == f && math.Abs(f) <= maxExactFloatInteger {
 			return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.FormatFloat(f, 'f', 0, value.Type().Bits())}, nil
 		}
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: strconv.FormatFloat(f, 'f', -1, value.Type().Bits())}, nil
 	default:
 		return nil, fmt.Errorf("unsupported config value type %s", value.Type())
 	}
+}
+
+func yamlNumberNode(number json.Number) (*yaml.Node, error) {
+	text := number.String()
+	if !strings.ContainsAny(text, ".eE") {
+		if !isJSONIntegerLiteral(text) {
+			return nil, fmt.Errorf("unsupported numeric value %q", text)
+		}
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: text}, nil
+	}
+	f, err := strconv.ParseFloat(text, 64)
+	if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
+		return nil, fmt.Errorf("unsupported numeric value %q", text)
+	}
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: text}, nil
+}
+
+func isJSONIntegerLiteral(text string) bool {
+	if text == "" {
+		return false
+	}
+	if text[0] == '-' {
+		text = text[1:]
+		if text == "" {
+			return false
+		}
+	}
+	if len(text) > 1 && text[0] == '0' {
+		return false
+	}
+	for _, r := range text {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
