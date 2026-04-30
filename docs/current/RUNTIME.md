@@ -57,10 +57,17 @@ inherit view for version comparison and response payloads.
 Non-secret config/env read responses include an `ETag` header and honor
 `If-None-Match` by returning `304 Not Modified` without a body when the
 requested view is unchanged. The validator is derived from the response
-resource, service identity, version token, `metadata.updated_at`, and `inherit`
-view, so inherited and raw reads do not share cache validators. Current and
-versioned config reads and unresolved env var reads are cacheable this way;
-`resolve_secrets=true` env var reads remain no-store and omit `ETag`.
+resource, service identity, version token, `metadata.updated_at`, `inherit`
+view, and response content encoding, so inherited/raw and gzip/identity reads
+do not share strong cache validators. Current and versioned config reads and
+unresolved env var reads are cacheable this way; `resolve_secrets=true` env var
+reads remain no-store and omit `ETag`.
+
+The same non-secret config/env JSON responses are gzip-compressed when
+`Accept-Encoding` allows gzip. These responses include
+`Vary: Accept-Encoding`; `If-None-Match` matches return `304 Not Modified`
+without a compressed body. `resolve_secrets=true` env var reads are never
+compressed because they can contain secret plaintext.
 
 Admin writes remain service-level. `POST /api/v1/admin/changes` writes only the
 request payload to `config.yaml` and `env_vars.yaml`; inherited defaults are not
@@ -291,8 +298,9 @@ only; live deployment wiring remains an external deployment-system concern per
 | Dirty `configs/` worktree during snapshot | Reload fails closed to avoid serving data not represented by HEAD. |
 | Unknown admin JSON field | Request fails with `400 invalid_body`. |
 | Non-secret config/env read with matching `If-None-Match` | Request returns `304 Not Modified` with the current `ETag` and no body. |
+| Non-secret config/env read with `Accept-Encoding: gzip` | Request returns gzip-compressed JSON with `Content-Encoding: gzip` and `Vary: Accept-Encoding`. |
 | `resolve_secrets=true` without valid API key | Request fails with `401 unauthorized`. |
-| Resolved env var secret response | Mounted secret files are refreshed before response; response includes `Cache-Control: no-store` and omits `ETag`. |
+| Resolved env var secret response | Mounted secret files are refreshed before response; response includes `Cache-Control: no-store`, omits `ETag`, and is not gzip-compressed. |
 | Duplicate `secrets.yaml` IDs during resolve | Request fails instead of choosing an ambiguous mounted secret value. |
 | `secrets` field on admin write without configured adapters | Request fails validation before Git commit. |
 | Unsafe mounted secret reference | Volume reader rejects it before filesystem access. |

@@ -2,6 +2,7 @@ package handler_test
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -379,6 +380,25 @@ func getWithHeader(t *testing.T, srv *httptest.Server, path, name, value string)
 	return resp
 }
 
+func getRawWithHeaders(t *testing.T, srv *httptest.Server, path string, headers map[string]string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+	if err != nil {
+		t.Fatalf("new GET %s: %v", path, err)
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableCompression = true
+	client := &http.Client{Transport: transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	return resp
+}
+
 func getWithBearer(t *testing.T, srv *httptest.Server, path, token string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
@@ -578,6 +598,81 @@ func TestGetConfig_ETagAndIfNoneMatch(t *testing.T) {
 	}
 	if got := resp.Header.Get("ETag"); got == "" || got == etag {
 		t.Fatalf("updated metadata ETag should change, got %q old %q", got, etag)
+	}
+}
+
+func TestGetConfig_GzipWhenAccepted(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "config-v1",
+		UpdatedAt:             time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC),
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{"router_settings": map[string]any{"num_retries": 3}},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+	path := "/api/v1/orgs/org/projects/proj/services/svc/config"
+
+	resp := getRawWithHeaders(t, srv, path, map[string]string{"Accept-Encoding": "gzip"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding: got %q, want gzip", got)
+	}
+	if vary := strings.ToLower(resp.Header.Get("Vary")); !strings.Contains(vary, "accept-encoding") {
+		t.Fatalf("Vary should include Accept-Encoding, got %q", resp.Header.Get("Vary"))
+	}
+	gzipETag := resp.Header.Get("ETag")
+	if gzipETag == "" {
+		t.Fatal("expected gzip ETag")
+	}
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatalf("new gzip reader: %v", err)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(gz).Decode(&body); err != nil {
+		t.Fatalf("decode gzip response: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip reader: %v", err)
+	}
+	config := body["config"].(map[string]any)
+	settings := config["router_settings"].(map[string]any)
+	if settings["num_retries"] != float64(3) {
+		t.Fatalf("num_retries: got %#v", settings["num_retries"])
+	}
+
+	conditionalResp := getRawWithHeaders(t, srv, path, map[string]string{
+		"Accept-Encoding": "gzip",
+		"If-None-Match":   gzipETag,
+	})
+	if conditionalResp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", conditionalResp.StatusCode)
+	}
+	if got := conditionalResp.Header.Get("Content-Encoding"); got != "" {
+		t.Fatalf("304 should not include Content-Encoding, got %q", got)
+	}
+
+	identityResp := getRawWithHeaders(t, srv, path, nil)
+	if identityResp.StatusCode != http.StatusOK {
+		t.Fatalf("identity: want 200, got %d", identityResp.StatusCode)
+	}
+	if got := identityResp.Header.Get("Content-Encoding"); got != "" {
+		t.Fatalf("identity Content-Encoding: got %q", got)
+	}
+	if identityETag := identityResp.Header.Get("ETag"); identityETag == "" || identityETag == gzipETag {
+		t.Fatalf("identity and gzip ETags should differ, identity=%q gzip=%q", identityETag, gzipETag)
+	}
+
+	disabledResp := getRawWithHeaders(t, srv, path, map[string]string{"Accept-Encoding": "gzip;q=0, *;q=1"})
+	if disabledResp.StatusCode != http.StatusOK {
+		t.Fatalf("gzip disabled: want 200, got %d", disabledResp.StatusCode)
+	}
+	if got := disabledResp.Header.Get("Content-Encoding"); got != "" {
+		t.Fatalf("gzip q=0 should disable compression, got %q", got)
 	}
 }
 
@@ -1408,7 +1503,10 @@ func TestGetEnvVars_ResolveSecrets(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp := getWithBearer(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true", "secret-key")
+	resp := getRawWithHeaders(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true", map[string]string{
+		"Accept-Encoding": "gzip",
+		"Authorization":   "Bearer secret-key",
+	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("want 200, got %d", resp.StatusCode)
 	}
@@ -1417,6 +1515,9 @@ func TestGetEnvVars_ResolveSecrets(t *testing.T) {
 	}
 	if got := resp.Header.Get("ETag"); got != "" {
 		t.Fatalf("ETag should be omitted for resolved secrets, got %q", got)
+	}
+	if got := resp.Header.Get("Content-Encoding"); got != "" {
+		t.Fatalf("resolved secret response should not be gzip-compressed, got %q", got)
 	}
 
 	var body map[string]any
