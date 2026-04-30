@@ -288,6 +288,82 @@ func (s *Store) GetConfig(ctx context.Context, org, project, service string) (*S
 	return d, nil
 }
 
+// GetConfigAtVersion returns config.yaml for a service as it existed at a Git
+// commit. The service must exist in the current snapshot so path parameters
+// cannot be used to read arbitrary repository files.
+func (s *Store) GetConfigAtVersion(ctx context.Context, org, project, service, version string) (*ServiceData, error) {
+	if version == "" {
+		return nil, apperror.New(apperror.CodeValidation, "version is required")
+	}
+	if _, err := s.GetConfig(ctx, org, project, service); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	path := ServicePath(org, project, service) + "/config.yaml"
+	raw, err := s.repo.ReadFileAtCommit(version, path)
+	if err != nil {
+		if errors.Is(err, gitops.ErrFileNotFoundAtCommit) {
+			return &ServiceData{ConfigResourceVersion: version}, nil
+		}
+		if errors.Is(err, gitops.ErrCommitNotFound) {
+			return nil, apperror.Wrap(apperror.CodeNotFound, "historical version not found", err)
+		}
+		return nil, apperror.Wrap(apperror.CodeInternal, "read historical config.yaml", err)
+	}
+	cfg, err := parser.ParseConfig(raw)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "parse historical config.yaml", err)
+	}
+	d := &ServiceData{
+		Config:                cfg,
+		ConfigResourceVersion: version,
+		configDigest:          digestBytes(raw),
+	}
+	applyMetadataUpdatedAt(d, cfg.Metadata.UpdatedAt)
+	return d, nil
+}
+
+// GetEnvVarsAtVersion returns env_vars.yaml for a service as it existed at a
+// Git commit. Secret value resolution is intentionally handled only for the
+// current snapshot by the HTTP layer.
+func (s *Store) GetEnvVarsAtVersion(ctx context.Context, org, project, service, version string) (*ServiceData, error) {
+	if version == "" {
+		return nil, apperror.New(apperror.CodeValidation, "version is required")
+	}
+	if _, err := s.GetConfig(ctx, org, project, service); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	path := ServicePath(org, project, service) + "/env_vars.yaml"
+	raw, err := s.repo.ReadFileAtCommit(version, path)
+	if err != nil {
+		if errors.Is(err, gitops.ErrFileNotFoundAtCommit) {
+			return &ServiceData{EnvVarsResourceVersion: version}, nil
+		}
+		if errors.Is(err, gitops.ErrCommitNotFound) {
+			return nil, apperror.Wrap(apperror.CodeNotFound, "historical version not found", err)
+		}
+		return nil, apperror.Wrap(apperror.CodeInternal, "read historical env_vars.yaml", err)
+	}
+	envVars, err := parser.ParseEnvVars(raw)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "parse historical env_vars.yaml", err)
+	}
+	d := &ServiceData{
+		EnvVars:                envVars,
+		EnvVarsResourceVersion: version,
+		envVarsDigest:          digestBytes(raw),
+	}
+	applyMetadataUpdatedAt(d, envVars.Metadata.UpdatedAt)
+	return d, nil
+}
+
 // History returns service-scoped Git history entries with optional file,
 // limit, and before-cursor filtering.
 func (s *Store) History(ctx context.Context, opts HistoryOptions) ([]HistoryEntry, error) {

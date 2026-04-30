@@ -2,6 +2,7 @@ package gitops_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -419,6 +420,28 @@ func TestReadFileAtCommit(t *testing.T) {
 	}
 	if string(got) != string(original) {
 		t.Errorf("ReadFileAtCommit: want %q, got %q", original, got)
+	}
+}
+
+func TestReadFileAtCommit_NotFoundSentinels(t *testing.T) {
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	hash, err := repo.CommitAndPush(ctx, "v1", map[string][]byte{
+		"configs/file.yaml": []byte("content"),
+	})
+	if err != nil {
+		t.Fatalf("CommitAndPush: %v", err)
+	}
+
+	if _, err := repo.ReadFileAtCommit(hash, "configs/missing.yaml"); !errors.Is(err, gitops.ErrFileNotFoundAtCommit) {
+		t.Fatalf("missing file should wrap ErrFileNotFoundAtCommit, got %v", err)
+	}
+	if _, err := repo.ReadFileAtCommit("0000000000000000000000000000000000000000", "configs/file.yaml"); !errors.Is(err, gitops.ErrCommitNotFound) {
+		t.Fatalf("missing commit should wrap ErrCommitNotFound, got %v", err)
 	}
 }
 

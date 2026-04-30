@@ -24,6 +24,7 @@ import (
 type fakeRepo struct {
 	mu              sync.Mutex
 	files           map[string][]byte
+	filesAtCommit   map[string]map[string][]byte
 	commitHash      string
 	nextPullUpdated bool
 	pullCalls       int
@@ -63,8 +64,9 @@ func (f *fakeApplier) ApplySealedSecret(ctx context.Context, manifest secret.Sea
 
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
-		files:      map[string][]byte{},
-		commitHash: "abc123",
+		files:         map[string][]byte{},
+		filesAtCommit: map[string]map[string][]byte{},
+		commitHash:    "abc123",
 	}
 }
 
@@ -214,8 +216,20 @@ func (f *fakeRepo) HeadHash() (string, error) {
 	return f.commitHash, nil
 }
 
-func (f *fakeRepo) ReadFileAtCommit(_ string, path string) ([]byte, error) {
-	return f.ReadFile(path)
+func (f *fakeRepo) ReadFileAtCommit(commit string, path string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	files := f.files
+	if snap, ok := f.filesAtCommit[commit]; ok {
+		files = snap
+	} else if commit != f.commitHash {
+		return nil, fmt.Errorf("%w: commit %s", gitops.ErrCommitNotFound, commit)
+	}
+	d, ok := files[path]
+	if !ok {
+		return nil, fmt.Errorf("%w: file %s at %s", gitops.ErrFileNotFoundAtCommit, path, commit)
+	}
+	return append([]byte(nil), d...), nil
 }
 
 func (f *fakeRepo) IterateServiceHistory(_ context.Context, _, _, _ string, fn func(gitops.ServiceHistoryEntry) error) error {
@@ -315,6 +329,133 @@ func TestStore_GetConfig_Found(t *testing.T) {
 	}
 	if d.EnvVars.EnvVars.Plain["LOG_LEVEL"] != "INFO" {
 		t.Errorf("LOG_LEVEL: want INFO, got %q", d.EnvVars.EnvVars.Plain["LOG_LEVEL"])
+	}
+}
+
+func TestStore_GetConfigAtVersion(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	base := store.ServicePath("myorg", "proj", "litellm")
+	repo.filesAtCommit["old-config"] = map[string][]byte{
+		base + "/config.yaml": []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+  updated_at: "2026-03-01T10:00:00Z"
+config:
+  router_settings:
+    num_retries: 1
+`),
+	}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	d, err := s.GetConfigAtVersion(ctx, "myorg", "proj", "litellm", "old-config")
+	if err != nil {
+		t.Fatalf("GetConfigAtVersion: %v", err)
+	}
+	if d.ConfigResourceVersion != "old-config" {
+		t.Fatalf("ConfigResourceVersion: got %q", d.ConfigResourceVersion)
+	}
+	settings := d.Config.Config["router_settings"].(map[string]any)
+	if settings["num_retries"] != 1 {
+		t.Fatalf("historical config num_retries: got %#v", settings["num_retries"])
+	}
+	if got := d.UpdatedAt.Format(time.RFC3339); got != "2026-03-01T10:00:00Z" {
+		t.Fatalf("UpdatedAt: got %q", got)
+	}
+}
+
+func TestStore_GetEnvVarsAtVersion(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	base := store.ServicePath("myorg", "proj", "litellm")
+	repo.filesAtCommit["old-env"] = map[string][]byte{
+		base + "/env_vars.yaml": []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+  updated_at: "2026-03-02T10:00:00Z"
+env_vars:
+  plain:
+    LOG_LEVEL: "DEBUG"
+  secret_refs:
+    API_KEY: "old-api-key"
+`),
+	}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	d, err := s.GetEnvVarsAtVersion(ctx, "myorg", "proj", "litellm", "old-env")
+	if err != nil {
+		t.Fatalf("GetEnvVarsAtVersion: %v", err)
+	}
+	if d.EnvVarsResourceVersion != "old-env" {
+		t.Fatalf("EnvVarsResourceVersion: got %q", d.EnvVarsResourceVersion)
+	}
+	if d.EnvVars.EnvVars.Plain["LOG_LEVEL"] != "DEBUG" {
+		t.Fatalf("historical LOG_LEVEL: got %q", d.EnvVars.EnvVars.Plain["LOG_LEVEL"])
+	}
+	if d.EnvVars.EnvVars.SecretRefs["API_KEY"] != "old-api-key" {
+		t.Fatalf("historical API_KEY ref: got %q", d.EnvVars.EnvVars.SecretRefs["API_KEY"])
+	}
+}
+
+func TestStore_GetConfigAtVersion_NotFound(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	_, err := s.GetConfigAtVersion(ctx, "myorg", "proj", "litellm", "missing-version")
+	if err == nil {
+		t.Fatal("expected not-found error")
+	}
+	var appErr *apperror.Error
+	if !errors.As(err, &appErr) || appErr.Code != apperror.CodeNotFound {
+		t.Fatalf("expected CodeNotFound, got %T %v", err, err)
+	}
+}
+
+func TestStore_GetVersionedResources_EmptyWhenFileMissingAtCommit(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	repo.filesAtCommit["without-files"] = map[string][]byte{}
+
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	config, err := s.GetConfigAtVersion(ctx, "myorg", "proj", "litellm", "without-files")
+	if err != nil {
+		t.Fatalf("GetConfigAtVersion missing file: %v", err)
+	}
+	if config.Config != nil || config.ConfigResourceVersion != "without-files" {
+		t.Fatalf("missing config file should return empty config data, got %#v", config)
+	}
+
+	envVars, err := s.GetEnvVarsAtVersion(ctx, "myorg", "proj", "litellm", "without-files")
+	if err != nil {
+		t.Fatalf("GetEnvVarsAtVersion missing file: %v", err)
+	}
+	if envVars.EnvVars != nil || envVars.EnvVarsResourceVersion != "without-files" {
+		t.Fatalf("missing env_vars file should return empty env data, got %#v", envVars)
 	}
 }
 

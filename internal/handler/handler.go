@@ -22,6 +22,8 @@ import (
 // ConfigStore is the interface the handlers need from the store.
 type ConfigStore interface {
 	GetConfig(ctx context.Context, org, project, service string) (*store.ServiceData, error)
+	GetConfigAtVersion(ctx context.Context, org, project, service, version string) (*store.ServiceData, error)
+	GetEnvVarsAtVersion(ctx context.Context, org, project, service, version string) (*store.ServiceData, error)
 	History(ctx context.Context, opts store.HistoryOptions) ([]store.HistoryEntry, error)
 	ResourceVersion(ctx context.Context, org, project, service, resource string) (string, string, error)
 	WaitForVersionChange(ctx context.Context, version string) (string, bool, error)
@@ -343,6 +345,11 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
 	project := r.PathValue("project")
 	service := r.PathValue("service")
+	version := strings.TrimSpace(r.URL.Query().Get("version"))
+	if version != "" {
+		h.writeConfigAtVersionResponse(w, r.Context(), org, project, service, version)
+		return
+	}
 
 	h.writeConfigResponse(w, r.Context(), org, project, service)
 }
@@ -447,13 +454,39 @@ func (h *Handler) writeConfigResponse(w http.ResponseWriter, ctx context.Context
 	})
 }
 
+func (h *Handler) writeConfigAtVersionResponse(
+	w http.ResponseWriter,
+	ctx context.Context,
+	org, project, service, version string,
+) {
+	d, err := h.store.GetConfigAtVersion(ctx, org, project, service, version)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	meta := configMeta(org, project, service, version, d.UpdatedAt)
+	config := map[string]any{}
+	if d.Config != nil && d.Config.Config != nil {
+		config = d.Config.Config
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
+		"metadata": meta,
+		"config":   config,
+	})
+}
+
 func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
 	project := r.PathValue("project")
 	service := r.PathValue("service")
+	version := strings.TrimSpace(r.URL.Query().Get("version"))
 	resolveSecrets, err := parseBoolQuery(r, "resolve_secrets")
 	if err != nil {
 		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	if version != "" && resolveSecrets {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", "version cannot be combined with resolve_secrets")
 		return
 	}
 	if resolveSecrets {
@@ -462,6 +495,10 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Del("ETag")
+	}
+	if version != "" {
+		h.writeEnvVarsAtVersionResponse(w, r.Context(), org, project, service, version)
+		return
 	}
 
 	h.writeEnvVarsResponse(w, r.Context(), org, project, service, resolveSecrets)
@@ -531,6 +568,31 @@ func (h *Handler) writeEnvVarsResponse(
 			"plain":       nullToEmpty(d.EnvVars.EnvVars.Plain),
 			"secret_refs": nullToEmpty(d.EnvVars.EnvVars.SecretRefs),
 		},
+	})
+}
+
+func (h *Handler) writeEnvVarsAtVersionResponse(
+	w http.ResponseWriter,
+	ctx context.Context,
+	org, project, service, version string,
+) {
+	d, err := h.store.GetEnvVarsAtVersion(ctx, org, project, service, version)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	meta := configMeta(org, project, service, version, d.UpdatedAt)
+	envVars := map[string]any{
+		"plain":       map[string]string{},
+		"secret_refs": map[string]string{},
+	}
+	if d.EnvVars != nil {
+		envVars["plain"] = nullToEmpty(d.EnvVars.EnvVars.Plain)
+		envVars["secret_refs"] = nullToEmpty(d.EnvVars.EnvVars.SecretRefs)
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
+		"metadata": meta,
+		"env_vars": envVars,
 	})
 }
 
