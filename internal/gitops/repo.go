@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,32 @@ type FileReader interface {
 // latest remote state. It is retried after non-fast-forward push rejections.
 type CommitFileBuilder func(reader FileReader) (map[string][]byte, error)
 
+// ServiceFileKind is the logical type of a config-repo file under a service.
+type ServiceFileKind string
+
+const (
+	ServiceFileConfig       ServiceFileKind = "config"
+	ServiceFileEnvVars      ServiceFileKind = "env_vars"
+	ServiceFileSecrets      ServiceFileKind = "secrets"
+	ServiceFileSealedSecret ServiceFileKind = "sealed_secret"
+)
+
+// ServiceFileChange is a classified file touched by a commit under a service.
+type ServiceFileChange struct {
+	// Path is relative to configs/orgs/{org}/projects/{project}/services/{service}.
+	Path string
+	Kind ServiceFileKind
+}
+
+// ServiceHistoryEntry is one git commit that changed files for a service.
+type ServiceHistoryEntry struct {
+	Version      string
+	Message      string
+	Author       string
+	Timestamp    time.Time
+	FilesChanged []ServiceFileChange
+}
+
 // GitRepo is the interface the store uses to interact with the git repository.
 // All path arguments are relative to the repository root.
 type GitRepo interface {
@@ -100,6 +127,10 @@ type GitRepo interface {
 
 	// ReadFileAtCommit reads a file as it existed at commitHash.
 	ReadFileAtCommit(commitHash, path string) ([]byte, error)
+
+	// IterateServiceHistory walks commits from HEAD newest-first and calls fn
+	// for commits that changed files under the service's config repo path.
+	IterateServiceHistory(ctx context.Context, org, project, service string, fn func(ServiceHistoryEntry) error) error
 
 	// LocalPath returns the absolute path of the local clone.
 	LocalPath() string
@@ -564,6 +595,132 @@ func (r *Repo) ReadFileAtCommit(commitHash, path string) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(content), nil
+}
+
+// IterateServiceHistory walks commits from HEAD newest-first and emits only
+// commits that changed recognized files under the requested service path.
+func (r *Repo) IterateServiceHistory(ctx context.Context, org, project, service string, fn func(ServiceHistoryEntry) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	entries, err := r.serviceHistoryEntries(ctx, org, project, service)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Repo) serviceHistoryEntries(ctx context.Context, org, project, service string) ([]ServiceHistoryEntry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	head, err := r.repo.Head()
+	if err != nil {
+		return nil, fmt.Errorf("git head: %w", err)
+	}
+	iter, err := r.repo.Log(&gogit.LogOptions{
+		From:  head.Hash(),
+		Order: gogit.LogOrderCommitterTime,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("git log: %w", err)
+	}
+	defer iter.Close()
+
+	var entries []ServiceHistoryEntry
+	if err := iter.ForEach(func(commit *object.Commit) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		files, err := serviceFilesChangedInCommit(commit, org, project, service)
+		if err != nil {
+			return err
+		}
+		if len(files) == 0 {
+			return nil
+		}
+		author := commit.Author.Email
+		if author == "" {
+			author = commit.Author.Name
+		}
+		entries = append(entries, ServiceHistoryEntry{
+			Version:      commit.Hash.String(),
+			Message:      strings.TrimSpace(commit.Message),
+			Author:       author,
+			Timestamp:    commit.Author.When.UTC(),
+			FilesChanged: files,
+		})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func serviceFilesChangedInCommit(commit *object.Commit, org, project, service string) ([]ServiceFileChange, error) {
+	stats, err := commit.Stats()
+	if err != nil {
+		return nil, fmt.Errorf("commit stats %s: %w", commit.Hash.String(), err)
+	}
+
+	seen := make(map[string]ServiceFileChange)
+	for _, stat := range stats {
+		change, ok := ClassifyServiceFileChange(stat.Name, org, project, service)
+		if !ok {
+			continue
+		}
+		seen[change.Path] = change
+	}
+
+	changes := make([]ServiceFileChange, 0, len(seen))
+	for _, change := range seen {
+		changes = append(changes, change)
+	}
+	sort.Slice(changes, func(i, j int) bool {
+		return changes[i].Path < changes[j].Path
+	})
+	return changes, nil
+}
+
+// ClassifyServiceFileChange maps a repository path to the logical service
+// file kind it changes. Paths outside the service root, including sibling
+// services with a shared prefix, return ok=false.
+func ClassifyServiceFileChange(repoPath, org, project, service string) (change ServiceFileChange, ok bool) {
+	repoPath = strings.Trim(filepath.ToSlash(filepath.Clean(repoPath)), "/")
+	root := serviceConfigRoot(org, project, service)
+	rel, ok := strings.CutPrefix(repoPath, root+"/")
+	if !ok || rel == "" {
+		return ServiceFileChange{}, false
+	}
+
+	switch rel {
+	case "config.yaml":
+		return ServiceFileChange{Path: rel, Kind: ServiceFileConfig}, true
+	case "env_vars.yaml":
+		return ServiceFileChange{Path: rel, Kind: ServiceFileEnvVars}, true
+	case "secrets.yaml":
+		return ServiceFileChange{Path: rel, Kind: ServiceFileSecrets}, true
+	default:
+		if strings.HasPrefix(rel, "sealed-secrets/") {
+			return ServiceFileChange{Path: rel, Kind: ServiceFileSealedSecret}, true
+		}
+		return ServiceFileChange{}, false
+	}
+}
+
+func serviceConfigRoot(org, project, service string) string {
+	return strings.Join([]string{
+		"configs", "orgs", org, "projects", project, "services", service,
+	}, "/")
 }
 
 // LocalPath returns the absolute filesystem path of the local clone.

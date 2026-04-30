@@ -217,6 +217,10 @@ func (f *fakeRepo) ReadFileAtCommit(_ string, path string) ([]byte, error) {
 	return f.ReadFile(path)
 }
 
+func (f *fakeRepo) IterateServiceHistory(_ context.Context, _, _, _ string, _ func(gitops.ServiceHistoryEntry) error) error {
+	return nil
+}
+
 func (f *fakeRepo) LocalPath() string { return "/fake" }
 
 // seedFakeRepo adds a service's config + env_vars files to the fake repo.

@@ -37,6 +37,13 @@ Admin writes, deletes, background refreshes, and Git worktree mutations are
 serialized globally in Phase-1. `ADR-005` records this as the accepted current
 implementation; `ADR-003` remains the future service-level mutex target design.
 
+`gitops.Repo` exposes `IterateServiceHistory(ctx, org, project, service, fn)`
+for internal history/revert work. It walks Git commits newest-first, emits only
+commits that changed recognized files under
+`configs/orgs/{org}/projects/{project}/services/{service}/`, and classifies
+changes as config, env vars, secrets metadata, or SealedSecret manifests.
+Public history/revert HTTP endpoints are still target design only.
+
 ## Config Agent bootstrap flow
 
 `cmd/config-agent` currently supports local dry-run mode only:
@@ -202,8 +209,8 @@ only; live deployment wiring remains an external deployment-system concern per
   unavailable. If startup bootstrap is not configured, webhook updates can
   change `apps_loaded` and `last_updated_at`, but the status remains
   `not_configured` to show that no full Console snapshot was loaded.
-- Config Agent Kubernetes apply/rollout behavior, watch/history/revert, and
-  inheritance are target design only.
+- Config Agent Kubernetes apply/rollout behavior, public history/revert
+  endpoints, and inheritance are target design only.
 
 ## Failure modes
 

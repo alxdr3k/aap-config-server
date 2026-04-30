@@ -34,7 +34,7 @@ Status: active.
 
 | Path | Purpose |
 |---|---|
-| `internal/gitops/` | `go-git` wrapper for clone/open, pull, commit/push, delete/push, snapshot walking. |
+| `internal/gitops/` | `go-git` wrapper for clone/open, pull, commit/push, delete/push, snapshot walking, service-scoped history iteration, and file-change classification. |
 | Config repo `configs/orgs/{org}/projects/{project}/services/{service}/` | External Git-backed data tree read and written by the server. |
 
 ## Tests
@@ -47,7 +47,7 @@ Status: active.
 | `internal/secret/*_test.go` | Secret boundary value/default behavior, mounted secret reader/watch behavior, deterministic SealedSecret YAML generation, public-key encryption wiring, and K8s apply adapter behavior. |
 | `internal/registry/*_test.go` | Console App Registry client decoding, cache replacement/update semantics, and startup bootstrap retry behavior. |
 | `internal/store/*_test.go` | Snapshot reload, resource-scoped versions, version-change waiting, config/env/secret apply, secret audit logging, delete, degraded behavior, concurrency. |
-| `internal/gitops/*_test.go` | Local Git clone/pull/commit/delete/snapshot behavior. |
+| `internal/gitops/*_test.go` | Local Git clone/pull/commit/delete/snapshot behavior plus service history/file-change primitives. |
 | `internal/handler/*_test.go` | HTTP routes, config/env watch behavior, auth, admin write response shape, App Registry webhook auth/cache updates, App Registry status reporting, secret write input cleanup, resolved env var secret reads, secret audit logging, reload/degraded status. |
 | `internal/agent/*_test.go` | Config Agent config loading/validation, Config Server API client behavior, bounded responses, dry-run counts, K8s Lease leader election takeover behavior, fetch loop retry/version tracking, renderer validation, ConfigMap/Secret apply behavior, rollout patch behavior, debounce timing behavior, and e2e smoke coverage under the `e2e` build tag. |
 
