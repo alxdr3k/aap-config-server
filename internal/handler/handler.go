@@ -2,7 +2,9 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -356,11 +358,11 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if version != "" {
-		h.writeConfigAtVersionResponse(w, r.Context(), org, project, service, version, inherit)
+		h.writeConfigAtVersionResponse(w, r, org, project, service, version, inherit)
 		return
 	}
 
-	h.writeConfigResponse(w, r.Context(), org, project, service, inherit)
+	h.writeConfigResponse(w, r, org, project, service, inherit)
 }
 
 func (h *Handler) watchConfig(w http.ResponseWriter, r *http.Request) {
@@ -377,7 +379,7 @@ func (h *Handler) watchConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeConfigResponse(w, r.Context(), org, project, service, inherit)
+	h.writeConfigResponse(w, r, org, project, service, inherit)
 }
 
 func (h *Handler) watchEnvVars(w http.ResponseWriter, r *http.Request) {
@@ -394,7 +396,7 @@ func (h *Handler) watchEnvVars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeEnvVarsResponse(w, r.Context(), org, project, service, false, inherit)
+	h.writeEnvVarsResponse(w, r, org, project, service, false, inherit)
 }
 
 func (h *Handler) waitForWatchChange(
@@ -475,10 +477,11 @@ func (h *Handler) resourceVersion(
 
 func (h *Handler) writeConfigResponse(
 	w http.ResponseWriter,
-	ctx context.Context,
+	r *http.Request,
 	org, project, service string,
 	inherit bool,
 ) {
+	ctx := r.Context()
 	d, err := h.store.GetConfig(ctx, org, project, service)
 	if err != nil {
 		respondError(w, err)
@@ -499,14 +502,14 @@ func (h *Handler) writeConfigResponse(
 	}
 
 	if cfg == nil {
-		respondJSON(w, http.StatusOK, map[string]any{
+		respondCacheableJSON(w, r, responseETag("config", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
 			"metadata": meta,
 			"config":   map[string]any{},
 		})
 		return
 	}
 
-	respondJSON(w, http.StatusOK, map[string]any{
+	respondCacheableJSON(w, r, responseETag("config", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
 		"metadata": meta,
 		"config":   cfg.Config,
 	})
@@ -514,10 +517,11 @@ func (h *Handler) writeConfigResponse(
 
 func (h *Handler) writeConfigAtVersionResponse(
 	w http.ResponseWriter,
-	ctx context.Context,
+	r *http.Request,
 	org, project, service, version string,
 	inherit bool,
 ) {
+	ctx := r.Context()
 	var (
 		d   *store.ServiceData
 		err error
@@ -540,7 +544,7 @@ func (h *Handler) writeConfigAtVersionResponse(
 	if cfg != nil && cfg.Config != nil {
 		config = cfg.Config
 	}
-	respondJSON(w, http.StatusOK, map[string]any{
+	respondCacheableJSON(w, r, responseETag("config", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
 		"metadata": meta,
 		"config":   config,
 	})
@@ -573,20 +577,21 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 		w.Header().Del("ETag")
 	}
 	if version != "" {
-		h.writeEnvVarsAtVersionResponse(w, r.Context(), org, project, service, version, inherit)
+		h.writeEnvVarsAtVersionResponse(w, r, org, project, service, version, inherit)
 		return
 	}
 
-	h.writeEnvVarsResponse(w, r.Context(), org, project, service, resolveSecrets, inherit)
+	h.writeEnvVarsResponse(w, r, org, project, service, resolveSecrets, inherit)
 }
 
 func (h *Handler) writeEnvVarsResponse(
 	w http.ResponseWriter,
-	ctx context.Context,
+	r *http.Request,
 	org, project, service string,
 	resolveSecrets bool,
 	inherit bool,
 ) {
+	ctx := r.Context()
 	d, err := h.store.GetConfig(ctx, org, project, service)
 	if err != nil {
 		respondError(w, err)
@@ -617,7 +622,7 @@ func (h *Handler) writeEnvVarsResponse(
 			})
 			return
 		}
-		respondJSON(w, http.StatusOK, map[string]any{
+		respondCacheableJSON(w, r, responseETag("env_vars", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
 			"metadata": meta,
 			"env_vars": map[string]any{
 				"plain":       map[string]string{},
@@ -645,7 +650,7 @@ func (h *Handler) writeEnvVarsResponse(
 		return
 	}
 
-	respondJSON(w, http.StatusOK, map[string]any{
+	respondCacheableJSON(w, r, responseETag("env_vars", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
 		"metadata": meta,
 		"env_vars": map[string]any{
 			"plain":       nullToEmpty(envConfig.EnvVars.Plain),
@@ -656,10 +661,11 @@ func (h *Handler) writeEnvVarsResponse(
 
 func (h *Handler) writeEnvVarsAtVersionResponse(
 	w http.ResponseWriter,
-	ctx context.Context,
+	r *http.Request,
 	org, project, service, version string,
 	inherit bool,
 ) {
+	ctx := r.Context()
 	var (
 		d   *store.ServiceData
 		err error
@@ -686,7 +692,7 @@ func (h *Handler) writeEnvVarsAtVersionResponse(
 		envVars["plain"] = nullToEmpty(envConfig.EnvVars.Plain)
 		envVars["secret_refs"] = nullToEmpty(envConfig.EnvVars.SecretRefs)
 	}
-	respondJSON(w, http.StatusOK, map[string]any{
+	respondCacheableJSON(w, r, responseETag("env_vars", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
 		"metadata": meta,
 		"env_vars": envVars,
 	})
@@ -1107,6 +1113,46 @@ func configMeta(org, project, service, version string, updatedAt time.Time) map[
 		"version":    version,
 		"updated_at": updatedAt.Format(time.RFC3339),
 	}
+}
+
+func respondCacheableJSON(w http.ResponseWriter, r *http.Request, etag string, v any) {
+	w.Header().Set("ETag", etag)
+	if ifNoneMatch(r, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	respondJSON(w, http.StatusOK, v)
+}
+
+func responseETag(resource, org, project, service, version string, updatedAt time.Time, inherit bool) string {
+	raw := strings.Join([]string{
+		resource,
+		org,
+		project,
+		service,
+		version,
+		updatedAt.UTC().Format(time.RFC3339Nano),
+		strconv.FormatBool(inherit),
+	}, "\x00")
+	sum := sha256.Sum256([]byte(raw))
+	return `"` + hex.EncodeToString(sum[:]) + `"`
+}
+
+func ifNoneMatch(r *http.Request, etag string) bool {
+	raw := r.Header.Get("If-None-Match")
+	if raw == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(raw, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || candidate == etag {
+			return true
+		}
+		if strings.HasPrefix(candidate, "W/") && strings.TrimSpace(strings.TrimPrefix(candidate, "W/")) == etag {
+			return true
+		}
+	}
+	return false
 }
 
 func parseBoolQuery(r *http.Request, name string) (bool, error) {

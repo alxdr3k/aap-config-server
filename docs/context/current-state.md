@@ -16,9 +16,9 @@ from an atomically swapped in-memory snapshot.
 - current milestone: `P1-M3` extension APIs next
 - active tracks: `EXT`
 - active phase: `EXT-1D`
-- active slice: `EXT-1D.1`
+- active slice: `EXT-1D.2`
 - last accepted gate: `AC-030`
-- next gate: `P1-M3` / `AC-040`
+- next gate: `P1-M3` / `AC-041`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
 
 ## Implemented
@@ -62,6 +62,11 @@ from an atomically swapped in-memory snapshot.
 - Regression coverage that admin writes continue to pass and persist only
   service-level config/env payloads while inherited reads are enabled; defaults
   files are not mutated by `POST /api/v1/admin/changes`.
+- ETag and `If-None-Match` handling for non-secret current and versioned
+  config/env read responses. Cache validators vary by resource, service
+  identity, version token, `metadata.updated_at`, and `inherit` view.
+  Resolved secret env var responses remain `Cache-Control: no-store` and omit
+  `ETag`.
 - Auth-gated admin write/delete/reload endpoints.
 - Auth-gated secret metadata read, admin secret writes, and
   `resolve_secrets=true` env var reads.
@@ -113,8 +118,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Planned
 
-- Response optimizations, metrics, schema validation, rate limiting, and
-  integration/load validation.
+- gzip response compression, batch reads, metrics, schema validation, rate
+  limiting, Git webhook refresh, and integration/load validation.
 
 ## Explicit non-goals
 
@@ -124,8 +129,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `EXT-1D.1`: add ETag and `If-None-Match` support for non-secret
-   config/env responses.
+1. Start `EXT-1D.2`: add gzip response compression for eligible read APIs.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -180,6 +184,9 @@ from an atomically swapped in-memory snapshot.
 - `EXT-1C.4` has store and handler regression coverage proving admin writes do
   not merge inherited defaults into service-level persisted config/env payloads
   and do not mutate `_defaults/common.yaml`.
+- `EXT-1D.1` has handler coverage for ETag emission, `If-None-Match` `304`
+  responses, metadata timestamp invalidation, inherited/raw cache validator
+  separation, and resolved secret env var no-store/no-ETag behavior.
 - Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
 - Local `. scripts/dev-env.sh && make test`, `go vet ./...`,
   `make test-race`, `make lint`, and `make build` pass in this workspace.
