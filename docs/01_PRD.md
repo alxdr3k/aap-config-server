@@ -3,7 +3,7 @@
 > **버전**: 2.1
 > **작성일**: 2026-03-12
 > **최종 수정일**: 2026-04-30
-> **상태**: **Approved design — Phase-1 implementation in progress.** 문서가 설명하는 전체 v2.1 계약 중 Config Agent는 binary/API client/local dry-run bootstrap, K8s Lease leader election module, read polling/version tracking module, native config/env.sh rendering module, ConfigMap/Secret apply module, Deployment rollout patch module, leading-edge debounce module, image build target, RBAC/deployment handoff examples, fake-client e2e smoke coverage까지 구현되어 있고, store version-wait primitive와 `config/watch` endpoint도 구현되어 있다. live non-dry-run entrypoint와 `env_vars/watch`/history/revert, inheritance 등은 아직 구현되지 않았다. SealedSecret write/resolve path와 App Registry bootstrap/webhook/status cache path는 구현되어 있으며, 실제로 현재 제공되는 범위는 [README.md](../README.md#feature-matrix) 의 Feature Matrix를 기준으로 한다. 본 문서의 API/저장소/아키텍처 기술은 **목표 계약**이며, 구현되지 않은 엔드포인트·필드는 Phase-1에서 명시적으로 거부된다.
+> **상태**: **Approved design — Phase-1 implementation in progress.** 문서가 설명하는 전체 v2.1 계약 중 Config Agent는 binary/API client/local dry-run bootstrap, K8s Lease leader election module, read polling/version tracking module, native config/env.sh rendering module, ConfigMap/Secret apply module, Deployment rollout patch module, leading-edge debounce module, image build target, RBAC/deployment handoff examples, fake-client e2e smoke coverage까지 구현되어 있고, store version-wait primitive와 `config/watch`/`env_vars/watch` endpoints도 구현되어 있다. live non-dry-run entrypoint와 history/revert, inheritance 등은 아직 구현되지 않았다. SealedSecret write/resolve path와 App Registry bootstrap/webhook/status cache path는 구현되어 있으며, 실제로 현재 제공되는 범위는 [README.md](../README.md#feature-matrix) 의 Feature Matrix를 기준으로 한다. 본 문서의 API/저장소/아키텍처 기술은 **목표 계약**이며, 구현되지 않은 엔드포인트·필드는 Phase-1에서 명시적으로 거부된다.
 > **참조**: [HLD](./02_HLD.md) · [development-process.md](./development-process.md) · [README.md Feature Matrix](../README.md#feature-matrix)
 
 ---
@@ -684,7 +684,7 @@ DELETE /api/v1/admin/changes
 GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch?version={current_version}
 ```
 
-- 현재 클라이언트가 가진 `version`(git commit hash)과 서버의 최신 버전이 다르면 즉시 응답
+- 현재 클라이언트가 가진 `version`(해당 config payload가 마지막으로 변경된 git commit hash)과 서버의 최신 config resource version이 다르면 즉시 응답
 - 같으면 변경이 생길 때까지 hold (최대 30초 후 `304 Not Modified`)
 - 선택적 `timeout` query는 Go duration 형식으로 더 짧은 wait을 지정할 수 있으며 최대 30초를 초과할 수 없다
 - 클라이언트는 응답 받은 후 다시 요청 (long polling loop)
@@ -697,8 +697,9 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch?vers
 
 설정 변경 감지 API와 동일한 동작. Config Agent는 config/watch와 env_vars/watch를 **병렬로** 호출하여 각각의 변경을 독립적으로 감지한다.
 
-- `version`이 서버 최신과 다르면 즉시 응답
+- `version`이 서버의 최신 env vars resource version과 다르면 즉시 응답
 - 같으면 변경 시까지 hold (최대 30초 후 `304 Not Modified`)
+- 선택적 `timeout` query는 설정 변경 감지 API와 동일하게 최대 30초를 초과할 수 없다
 
 ### 4.7 FR-7: 시크릿 관리 `[FR-7]`
 

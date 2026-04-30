@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -204,6 +206,25 @@ func (s *Store) ReloadFromRepo(ctx context.Context) (bool, error) {
 // HeadVersion returns the git commit hash of the currently loaded snapshot.
 func (s *Store) HeadVersion() string {
 	return s.current().version
+}
+
+// ResourceVersion returns a resource-scoped version token and the loaded git
+// HEAD from the same snapshot. The resource token only changes when that
+// service resource's payload changes, which lets watch handlers avoid waking
+// config clients for env-only commits and vice versa.
+func (s *Store) ResourceVersion(ctx context.Context, org, project, service, resource string) (string, string, error) {
+	snap := s.current()
+	key := ServiceKey{Org: org, Project: project, Service: service}.String()
+	d, ok := snap.data[key]
+	if !ok {
+		return "", snap.version, apperror.New(apperror.CodeNotFound,
+			fmt.Sprintf("service not found: %s/%s/%s", org, project, service))
+	}
+	version := resourceVersion(d, resource, snap.version)
+	if version == "" {
+		version = snap.version
+	}
+	return version, snap.version, nil
 }
 
 // WaitForVersionChange blocks until the store's loaded git version differs
@@ -835,6 +856,7 @@ func (s *Store) reloadUnlocked(_ context.Context) error {
 			sd.UpdatedAt = now
 		}
 	}
+	s.applyResourceVersions(data, hash)
 
 	prevVersion := s.HeadVersion()
 	s.snapshot.Store(newSnapshot(data, hash))
@@ -863,6 +885,72 @@ func (s *Store) notifyVersionChange() {
 	s.versionChanged = make(chan struct{})
 }
 
+func (s *Store) applyResourceVersions(data map[string]*ServiceData, version string) {
+	prev := s.current()
+	for key, sd := range data {
+		var prevData *ServiceData
+		if prev != nil {
+			prevData = prev.data[key]
+		}
+		sd.ConfigResourceVersion = nextResourceVersion(
+			sd.Config != nil,
+			sd.configDigest,
+			version,
+			prevData,
+			func(d *ServiceData) bool { return d.Config != nil },
+			func(d *ServiceData) string { return d.configDigest },
+			func(d *ServiceData) string { return d.ConfigResourceVersion },
+		)
+		sd.EnvVarsResourceVersion = nextResourceVersion(
+			sd.EnvVars != nil,
+			sd.envVarsDigest,
+			version,
+			prevData,
+			func(d *ServiceData) bool { return d.EnvVars != nil },
+			func(d *ServiceData) string { return d.envVarsDigest },
+			func(d *ServiceData) string { return d.EnvVarsResourceVersion },
+		)
+	}
+}
+
+func nextResourceVersion(
+	present bool,
+	digest string,
+	version string,
+	prev *ServiceData,
+	prevPresent func(*ServiceData) bool,
+	prevDigest func(*ServiceData) string,
+	prevVersion func(*ServiceData) string,
+) string {
+	if prev == nil {
+		return version
+	}
+	if present {
+		if prevPresent(prev) && digest != "" && digest == prevDigest(prev) && prevVersion(prev) != "" {
+			return prevVersion(prev)
+		}
+		return version
+	}
+	if !prevPresent(prev) && prevVersion(prev) != "" {
+		return prevVersion(prev)
+	}
+	return version
+}
+
+func resourceVersion(d *ServiceData, resource, fallback string) string {
+	switch resource {
+	case "config":
+		if d.ConfigResourceVersion != "" {
+			return d.ConfigResourceVersion
+		}
+	case "env_vars":
+		if d.EnvVarsResourceVersion != "" {
+			return d.EnvVarsResourceVersion
+		}
+	}
+	return fallback
+}
+
 // parseAndStore determines the file type and updates the data map accordingly.
 //
 // UpdatedAt precedence: the latest parseable metadata.updated_at across the
@@ -888,6 +976,7 @@ func parseAndStore(path string, raw []byte, data map[string]*ServiceData) error 
 			return fmt.Errorf("parse config.yaml: %w", err)
 		}
 		sd.Config = cfg
+		sd.configDigest = digestBytes(raw)
 		applyMetadataUpdatedAt(sd, cfg.Metadata.UpdatedAt)
 	case "env_vars":
 		ev, err := parser.ParseEnvVars(raw)
@@ -895,6 +984,7 @@ func parseAndStore(path string, raw []byte, data map[string]*ServiceData) error 
 			return fmt.Errorf("parse env_vars.yaml: %w", err)
 		}
 		sd.EnvVars = ev
+		sd.envVarsDigest = digestBytes(raw)
 		applyMetadataUpdatedAt(sd, ev.Metadata.UpdatedAt)
 	case "secrets":
 		sec, err := parser.ParseSecrets(raw)
@@ -905,6 +995,11 @@ func parseAndStore(path string, raw []byte, data map[string]*ServiceData) error 
 	}
 
 	return nil
+}
+
+func digestBytes(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // applyMetadataUpdatedAt adopts iso as sd.UpdatedAt if it parses and is more

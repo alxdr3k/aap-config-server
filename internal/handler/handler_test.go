@@ -38,6 +38,7 @@ type fakeStore struct {
 	reloadUpdated          bool
 	reloadCalls            int
 	refreshCalls           int
+	resourceVersions       map[string]string
 	waitVersionCalls       int
 	waitVersionArg         string
 	waitForVersionChange   func(context.Context, string) (string, bool, error)
@@ -170,6 +171,29 @@ func (f *fakeStore) DeleteChanges(_ context.Context, req *store.DeleteRequest) (
 }
 
 func (f *fakeStore) HeadVersion() string { return f.version }
+
+func (f *fakeStore) ResourceVersion(ctx context.Context, org, project, service, resource string) (string, string, error) {
+	d, err := f.GetConfig(ctx, org, project, service)
+	if err != nil {
+		return "", f.version, err
+	}
+	switch resource {
+	case "config":
+		if d.ConfigResourceVersion != "" {
+			return d.ConfigResourceVersion, f.version, nil
+		}
+	case "env_vars":
+		if d.EnvVarsResourceVersion != "" {
+			return d.EnvVarsResourceVersion, f.version, nil
+		}
+	}
+	if f.resourceVersions != nil {
+		if version := f.resourceVersions[resource]; version != "" {
+			return version, f.version, nil
+		}
+	}
+	return f.version, f.version, nil
+}
 
 func (f *fakeStore) WaitForVersionChange(ctx context.Context, version string) (string, bool, error) {
 	f.waitVersionCalls++
@@ -434,8 +458,8 @@ func TestGetConfigWatch_VersionMismatchReturnsConfig(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("want 200, got %d", resp.StatusCode)
 	}
-	if st.waitVersionCalls != 1 || st.waitVersionArg != "oldcommit" {
-		t.Fatalf("WaitForVersionChange calls: count=%d arg=%q", st.waitVersionCalls, st.waitVersionArg)
+	if st.waitVersionCalls != 0 {
+		t.Fatalf("stale version should return without waiting, got %d calls", st.waitVersionCalls)
 	}
 
 	var body map[string]any
@@ -502,9 +526,146 @@ func TestGetConfigWatch_RejectsInvalidTimeout(t *testing.T) {
 	}
 }
 
+func TestGetEnvVarsWatch_VersionMismatchReturnsEnvVars(t *testing.T) {
+	st := newFakeStore()
+	st.version = "newcommit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"LOG_LEVEL": "INFO"},
+				SecretRefs: map[string]string{"API_KEY": "litellm-api-key"},
+			},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars/watch?version=oldcommit")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 0 {
+		t.Fatalf("stale version should return without waiting, got %d calls", st.waitVersionCalls)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "newcommit" {
+		t.Fatalf("metadata.version: got %v", meta["version"])
+	}
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	if plain["LOG_LEVEL"] != "INFO" {
+		t.Fatalf("LOG_LEVEL: got %v", plain["LOG_LEVEL"])
+	}
+	secretRefs := envVars["secret_refs"].(map[string]any)
+	if secretRefs["API_KEY"] != "litellm-api-key" {
+		t.Fatalf("API_KEY secret_ref: got %v", secretRefs["API_KEY"])
+	}
+	if _, ok := envVars["secrets"]; ok {
+		t.Fatal("env_vars/watch must not resolve secret values")
+	}
+}
+
+func TestGetEnvVarsWatch_TimeoutReturnsNotModified(t *testing.T) {
+	st := newFakeStore()
+	st.resourceVersions = map[string]string{"env_vars": "env-v1"}
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain: map[string]string{"LOG_LEVEL": "INFO"},
+		}},
+	}
+	st.waitForVersionChange = func(ctx context.Context, version string) (string, bool, error) {
+		<-ctx.Done()
+		return version, false, ctx.Err()
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars/watch?version=env-v1&timeout=1ms")
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 1 || st.waitVersionArg != "abc123" {
+		t.Fatalf("WaitForVersionChange calls: count=%d arg=%q", st.waitVersionCalls, st.waitVersionArg)
+	}
+}
+
+func TestGetEnvVarsWatch_IgnoresConfigOnlyVersionChange(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head1"
+	st.resourceVersions = map[string]string{"env_vars": "env-v1"}
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain: map[string]string{"LOG_LEVEL": "INFO"},
+		}},
+	}
+	st.waitForVersionChange = func(ctx context.Context, version string) (string, bool, error) {
+		if st.waitVersionCalls == 1 {
+			st.version = "head2"
+			return st.version, true, nil
+		}
+		<-ctx.Done()
+		return st.version, false, ctx.Err()
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars/watch?version=env-v1&timeout=1ms")
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304 for unchanged env_vars across config-only version bump, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 2 || st.waitVersionArg != "head2" {
+		t.Fatalf("WaitForVersionChange calls: count=%d last arg=%q", st.waitVersionCalls, st.waitVersionArg)
+	}
+}
+
+func TestGetEnvVarsWatch_TimeoutWinsOverHeadOnlyChanges(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head1"
+	st.resourceVersions = map[string]string{"env_vars": "env-v1"}
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain: map[string]string{"LOG_LEVEL": "INFO"},
+		}},
+	}
+	st.waitForVersionChange = func(ctx context.Context, _ string) (string, bool, error) {
+		<-ctx.Done()
+		st.version = "head-after-timeout"
+		return st.version, true, nil
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars/watch?version=env-v1&timeout=1ms")
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304 after timeout despite head-only change, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 1 {
+		t.Fatalf("watch should stop once timeout has expired, got %d waits", st.waitVersionCalls)
+	}
+}
+
+func TestGetEnvVarsWatch_RequiresVersion(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars/watch")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 0 {
+		t.Fatalf("missing version should not wait, got %d calls", st.waitVersionCalls)
+	}
+}
+
 func TestGetEnvVars_Found(t *testing.T) {
 	st := newFakeStore()
 	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVarsResourceVersion: "env-v1",
 		EnvVars: &parser.EnvVarsConfig{
 			EnvVars: parser.EnvVars{
 				Plain:      map[string]string{"LOG_LEVEL": "INFO"},
@@ -522,6 +683,10 @@ func TestGetEnvVars_Found(t *testing.T) {
 
 	var body map[string]any
 	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "env-v1" {
+		t.Fatalf("unresolved env vars metadata.version should use resource version, got %v", meta["version"])
+	}
 	envVars := body["env_vars"].(map[string]any)
 	plain := envVars["plain"].(map[string]any)
 	if plain["LOG_LEVEL"] != "INFO" {
@@ -531,7 +696,9 @@ func TestGetEnvVars_Found(t *testing.T) {
 
 func TestGetEnvVars_ResolveSecrets(t *testing.T) {
 	st := newFakeStore()
+	st.version = "secret-head"
 	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVarsResourceVersion: "env-v1",
 		EnvVars: &parser.EnvVarsConfig{
 			EnvVars: parser.EnvVars{
 				Plain:      map[string]string{"LOG_LEVEL": "INFO"},
@@ -579,6 +746,10 @@ func TestGetEnvVars_ResolveSecrets(t *testing.T) {
 
 	var body map[string]any
 	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "secret-head" {
+		t.Fatalf("resolved env vars metadata.version should use head version, got %v", meta["version"])
+	}
 	envVars := body["env_vars"].(map[string]any)
 	plain := envVars["plain"].(map[string]any)
 	if plain["LOG_LEVEL"] != "INFO" {

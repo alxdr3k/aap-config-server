@@ -973,6 +973,85 @@ func TestStore_HeadVersion(t *testing.T) {
 	}
 }
 
+func TestStore_ResourceVersionTracksResourceContent(t *testing.T) {
+	ctx := context.Background()
+	repo := newFakeRepo()
+	seedFakeRepo(repo, "myorg", "proj", "litellm")
+	s := store.New(repo)
+	if err := s.LoadFromRepo(ctx); err != nil {
+		t.Fatalf("LoadFromRepo: %v", err)
+	}
+
+	configVersion, headVersion, err := s.ResourceVersion(ctx, "myorg", "proj", "litellm", "config")
+	if err != nil {
+		t.Fatalf("ResourceVersion config: %v", err)
+	}
+	envVersion, _, err := s.ResourceVersion(ctx, "myorg", "proj", "litellm", "env_vars")
+	if err != nil {
+		t.Fatalf("ResourceVersion env_vars: %v", err)
+	}
+	if configVersion != "abc123" || envVersion != "abc123" || headVersion != "abc123" {
+		t.Fatalf("initial versions: config=%q env=%q head=%q", configVersion, envVersion, headVersion)
+	}
+
+	base := "configs/orgs/myorg/projects/proj/services/litellm"
+	repo.mu.Lock()
+	repo.files[base+"/config.yaml"] = []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+config:
+  router_settings:
+    num_retries: 4
+`)
+	repo.commitHash = "def456"
+	repo.nextPullUpdated = true
+	repo.mu.Unlock()
+	if _, err := s.RefreshFromRepo(ctx); err != nil {
+		t.Fatalf("RefreshFromRepo config change: %v", err)
+	}
+
+	configVersion, headVersion, err = s.ResourceVersion(ctx, "myorg", "proj", "litellm", "config")
+	if err != nil {
+		t.Fatalf("ResourceVersion config after config change: %v", err)
+	}
+	envVersion, _, err = s.ResourceVersion(ctx, "myorg", "proj", "litellm", "env_vars")
+	if err != nil {
+		t.Fatalf("ResourceVersion env_vars after config change: %v", err)
+	}
+	if configVersion != "def456" || envVersion != "abc123" || headVersion != "def456" {
+		t.Fatalf("after config-only change: config=%q env=%q head=%q", configVersion, envVersion, headVersion)
+	}
+
+	repo.mu.Lock()
+	repo.files[base+"/env_vars.yaml"] = []byte(`version: "1"
+metadata:
+  service: litellm
+  org: myorg
+  project: proj
+env_vars:
+  plain:
+    LOG_LEVEL: "DEBUG"
+  secret_refs:
+    API_KEY: "my-api-key"
+`)
+	repo.commitHash = "fed789"
+	repo.nextPullUpdated = true
+	repo.mu.Unlock()
+	if _, err := s.RefreshFromRepo(ctx); err != nil {
+		t.Fatalf("RefreshFromRepo env change: %v", err)
+	}
+
+	envVersion, headVersion, err = s.ResourceVersion(ctx, "myorg", "proj", "litellm", "env_vars")
+	if err != nil {
+		t.Fatalf("ResourceVersion env_vars after env change: %v", err)
+	}
+	if envVersion != "fed789" || headVersion != "fed789" {
+		t.Fatalf("after env change: env=%q head=%q", envVersion, headVersion)
+	}
+}
+
 func TestStore_WaitForVersionChangeReturnsImmediatelyWhenVersionDiffers(t *testing.T) {
 	ctx := context.Background()
 	s := store.New(newFakeRepo())

@@ -35,8 +35,8 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | App Registry webhook                               | Implemented (auth-gated cache upsert/delete) |
 | App Registry state in `/api/v1/status`             | Implemented |
 | Store version-wait primitive for watch endpoints | Implemented as internal module |
-| Config watch endpoint (`GET .../config/watch`)  | Implemented with version query and max 30s long-poll timeout |
-| Env vars watch endpoint (`GET .../env_vars/watch`) | Not implemented |
+| Config watch endpoint (`GET .../config/watch`)  | Implemented with resource-scoped version query and max 30s long-poll timeout |
+| Env vars watch endpoint (`GET .../env_vars/watch`) | Implemented with resource-scoped version query and max 30s long-poll timeout |
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |
@@ -192,6 +192,7 @@ GET /api/v1/orgs/{org}/projects/{project}/services
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/config
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/config/watch?version={ver}[&timeout=30s]
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars
+GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars/watch?version={ver}[&timeout=30s]
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars?resolve_secrets=true   # auth required, no-store
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/secrets   # auth required
 ```
