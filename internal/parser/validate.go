@@ -217,6 +217,9 @@ func validateStringMap(file, path string, node *yaml.Node) error {
 	if err := requireMapping(file, path, node); err != nil {
 		return err
 	}
+	if len(node.Content)%2 != 0 {
+		return fmt.Errorf("%s: %s mapping has unbalanced key/value pairs", file, path)
+	}
 	seen := map[string]struct{}{}
 	for i := 0; i < len(node.Content); i += 2 {
 		key := node.Content[i]

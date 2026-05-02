@@ -84,8 +84,13 @@ snapshot for serving reads.
   webhook deliveries safe (`updated:false`).
 - Optional token-bucket rate limits can protect admin, secret resolve, watch,
   and batch endpoint groups. Limited requests return `429 rate_limited` with
-  `Retry-After: 1`; admin tokens are consumed only after successful API-key
-  authentication.
+  a `Retry-After` header computed from the configured RPS; admin tokens are
+  consumed only after successful API-key authentication.
+  **Note:** Each limiter is a single global token bucket shared across all
+  clients — it is not per-IP. A burst of reconnects (e.g. rolling pod restart)
+  counts against the same bucket as normal traffic. Size `BURST` to absorb
+  expected reconnect storms, or implement per-IP limiting in an upstream proxy
+  when client-fairness is required.
 - `/api/v1/status` reports App Registry cache/load state under
   `app_registry`; registry-only degradation appears in `degraded_components`
   but does not make `/readyz` fail.
