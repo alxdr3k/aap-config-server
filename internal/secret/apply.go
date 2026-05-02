@@ -66,13 +66,64 @@ func (a *DynamicApplier) ApplySealedSecret(ctx context.Context, manifest SealedM
 	case err != nil:
 		return fmt.Errorf("get sealed secret %s/%s: %w", manifest.Namespace, manifest.Name, err)
 	default:
-		obj.SetResourceVersion(existing.GetResourceVersion())
+		mergeExistingMetadata(obj, existing)
 		_, err = resource.Update(applyCtx, obj, metav1.UpdateOptions{})
 	}
 	if err != nil {
 		return fmt.Errorf("apply sealed secret %s/%s: %w", manifest.Namespace, manifest.Name, err)
 	}
 	return nil
+}
+
+// mergeExistingMetadata copies metadata fields that other actors (operators,
+// controllers, deployment tools) may have attached to the live object —
+// labels, annotations, and finalizers — into the new object before issuing
+// an Update. Without this, every reapply of a generated SealedSecret would
+// clobber operator metadata even when the encrypted payload is the only
+// field we intend to update.
+//
+// Phase-1 trade-off (the alternative is server-side apply with a field
+// manager, which is the K8s-native solution but requires CRD schema support
+// that the Bitnami SealedSecret type does not reliably expose):
+//
+//   - Labels/annotations: keys we set in the generated manifest always win;
+//     operator-set keys we do not declare are preserved.
+//   - Finalizers: copied through unfiltered. This means a stale finalizer
+//     attached by a removed controller can persist and block deletion;
+//     operators clearing such finalizers manually is an accepted Phase-1
+//     procedure. The alternative — stripping finalizers on every Update —
+//     was rejected because it would actively break controller-managed
+//     deletion semantics during normal operation, a higher-frequency
+//     failure than the rare stale-finalizer case. See ADR-004.
+func mergeExistingMetadata(obj, existing *unstructured.Unstructured) {
+	obj.SetResourceVersion(existing.GetResourceVersion())
+
+	if finalizers := existing.GetFinalizers(); len(finalizers) > 0 {
+		obj.SetFinalizers(finalizers)
+	}
+
+	merged := mergeStringMaps(existing.GetLabels(), obj.GetLabels())
+	if merged != nil {
+		obj.SetLabels(merged)
+	}
+	merged = mergeStringMaps(existing.GetAnnotations(), obj.GetAnnotations())
+	if merged != nil {
+		obj.SetAnnotations(merged)
+	}
+}
+
+func mergeStringMaps(existing, ours map[string]string) map[string]string {
+	if len(existing) == 0 && len(ours) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(existing)+len(ours))
+	for k, v := range existing {
+		merged[k] = v
+	}
+	for k, v := range ours {
+		merged[k] = v
+	}
+	return merged
 }
 
 func sealedSecretObjectFromManifest(manifest SealedManifest) (*unstructured.Unstructured, error) {

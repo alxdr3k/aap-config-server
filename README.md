@@ -62,6 +62,14 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Config Agent fake-client e2e smoke coverage        | Implemented |
 | Config Agent live non-dry-run entrypoint           | Not implemented |
 
+> **Config Agent caveat:** The "Implemented as internal module" rows above
+> describe code that lives under `internal/agent/` and is exercised by unit /
+> e2e tests. The shipping `cmd/config-agent` binary today calls only
+> `agent.RunDryRun(...)` and exits — leader election, fetch loop, K8s apply,
+> rollout patch, and debounce are NOT yet wired into the live entrypoint. Do
+> not deploy the `config-agent` image as a long-running reconciler; it will
+> exit immediately after the dry-run pass.
+
 If a feature is listed as "Not implemented", treat descriptions in the PRD/HLD
 as planned design — the server will refuse requests that depend on them.
 

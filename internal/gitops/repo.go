@@ -673,8 +673,11 @@ func removalTargets(root, path string) ([]string, error) {
 	return targets, nil
 }
 
-// ReadFile reads a file from the current working tree.
+// ReadFile reads a file from the current working tree, holding the repo lock
+// so concurrent Pull / CommitAndPush cannot mutate the worktree mid-read.
 func (r *Repo) ReadFile(path string) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return os.ReadFile(filepath.Join(r.localPath, path))
 }
 

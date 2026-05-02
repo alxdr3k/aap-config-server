@@ -21,6 +21,9 @@ test-race:
 test-integration:
 	go test -tags=integration ./... -timeout 120s
 
+# test-e2e is reserved for future cluster-dependent E2E suites (build-tag gated).
+# The agent fake-client smoke (TestConfigAgentE2ESmokeFetchRenderApplyAndRollout)
+# runs unconditionally under `make test` since it is fully hermetic.
 test-e2e:
 	go test -tags=e2e ./... -timeout 300s
 

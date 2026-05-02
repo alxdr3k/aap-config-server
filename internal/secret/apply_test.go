@@ -70,6 +70,81 @@ func TestDynamicApplier_ApplyUpdatesExistingSealedSecret(t *testing.T) {
 	}
 }
 
+func TestDynamicApplier_UpdatePreservesOperatorLabelsAndAnnotations(t *testing.T) {
+	existing := sealedSecretObject("ai-platform", "litellm-secrets", "old")
+	existing.SetResourceVersion("11")
+	existing.SetLabels(map[string]string{
+		"app.kubernetes.io/instance": "kustomize-managed",
+		"managed-by":                 "config-server", // we own this key, our manifest may overwrite it
+	})
+	existing.SetAnnotations(map[string]string{
+		"sealedsecrets.bitnami.com/cluster-wide": "true",
+		"argocd.argoproj.io/sync-wave":           "5",
+	})
+
+	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), existing)
+	applier, err := secret.NewDynamicApplier(client, time.Second)
+	if err != nil {
+		t.Fatalf("NewDynamicApplier: %v", err)
+	}
+
+	if err := applier.ApplySealedSecret(context.Background(), sealedManifest("ai-platform", "litellm-secrets", "new")); err != nil {
+		t.Fatalf("ApplySealedSecret: %v", err)
+	}
+
+	got, err := client.Resource(sealedSecretGVR()).Namespace("ai-platform").
+		Get(context.Background(), "litellm-secrets", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get applied SealedSecret: %v", err)
+	}
+
+	labels := got.GetLabels()
+	if labels["app.kubernetes.io/instance"] != "kustomize-managed" {
+		t.Fatalf("operator label lost: %v", labels)
+	}
+	annotations := got.GetAnnotations()
+	if annotations["sealedsecrets.bitnami.com/cluster-wide"] != "true" {
+		t.Fatalf("controller annotation lost: %v", annotations)
+	}
+	if annotations["argocd.argoproj.io/sync-wave"] != "5" {
+		t.Fatalf("argocd annotation lost: %v", annotations)
+	}
+	encrypted, ok, err := unstructured.NestedStringMap(got.Object, "spec", "encryptedData")
+	if err != nil || !ok || encrypted["master-key"] != "new" {
+		t.Fatalf("encryptedData not updated: ok=%v err=%v map=%v", ok, err, encrypted)
+	}
+}
+
+func TestDynamicApplier_UpdatePreservesControllerFinalizers(t *testing.T) {
+	// Finalizers added by controllers (e.g. for delete gating) must not be
+	// stripped on every reapply, otherwise we actively break controller-managed
+	// deletion semantics. Phase-1 accepts the converse trade-off — stale
+	// finalizers from removed controllers persist until manually cleared. See
+	// the comment in mergeExistingMetadata for details.
+	existing := sealedSecretObject("ai-platform", "litellm-secrets", "old")
+	existing.SetResourceVersion("11")
+	existing.SetFinalizers([]string{"sealedsecrets.bitnami.com/legitimate-finalizer"})
+
+	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), existing)
+	applier, err := secret.NewDynamicApplier(client, time.Second)
+	if err != nil {
+		t.Fatalf("NewDynamicApplier: %v", err)
+	}
+
+	if err := applier.ApplySealedSecret(context.Background(), sealedManifest("ai-platform", "litellm-secrets", "new")); err != nil {
+		t.Fatalf("ApplySealedSecret: %v", err)
+	}
+
+	got, err := client.Resource(sealedSecretGVR()).Namespace("ai-platform").
+		Get(context.Background(), "litellm-secrets", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get applied SealedSecret: %v", err)
+	}
+	if len(got.GetFinalizers()) != 1 || got.GetFinalizers()[0] != "sealedsecrets.bitnami.com/legitimate-finalizer" {
+		t.Fatalf("controller-managed finalizer must not be stripped on reapply, got %v", got.GetFinalizers())
+	}
+}
+
 func TestDynamicApplier_Validation(t *testing.T) {
 	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	if _, err := secret.NewDynamicApplier(nil, time.Second); err == nil {

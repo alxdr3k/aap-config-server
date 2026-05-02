@@ -161,8 +161,16 @@ func instrumentHTTP(pattern string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		recorder := &statusRecorder{ResponseWriter: w}
 		start := time.Now()
+		defer func() {
+			if rec := recover(); rec != nil {
+				if !recorder.headerWritten {
+					recorder.WriteHeader(http.StatusInternalServerError)
+				}
+				slog.Error("panic in HTTP handler", "route", route, "method", r.Method, "panic", rec)
+			}
+			metrics.RecordHTTPRequest(r.Method, route, recorder.statusCode(), time.Since(start))
+		}()
 		next(recorder, r)
-		metrics.RecordHTTPRequest(r.Method, route, recorder.statusCode(), time.Since(start))
 	}
 }
 
@@ -175,26 +183,32 @@ func routeLabel(pattern string) string {
 
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
+	status        int
+	headerWritten bool
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
-	if r.status != 0 {
+	if r.headerWritten {
 		return
 	}
+	r.headerWritten = true
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
 }
 
 func (r *statusRecorder) Write(data []byte) (int, error) {
-	if r.status == 0 {
+	if !r.headerWritten {
+		r.headerWritten = true
 		r.status = http.StatusOK
 	}
 	return r.ResponseWriter.Write(data)
 }
 
 func (r *statusRecorder) statusCode() int {
-	if r.status == 0 {
+	if !r.headerWritten {
+		// Go's http.Server auto-emits 200 OK when the handler returns
+		// without calling WriteHeader or Write. Match that wire reality
+		// so the metric agrees with what the client actually sees.
 		return http.StatusOK
 	}
 	return r.status
@@ -1692,6 +1706,18 @@ func errorDetailFor(err error) errorDetail {
 }
 
 func respondError(w http.ResponseWriter, err error) {
+	// Context cancellations / deadline expirations may arrive raw or wrapped
+	// inside apperror.CodeInternal (e.g. from secret.VolumeReader.Refresh).
+	// Map them away from 500 before any other classification so they don't
+	// drown real server errors in noise.
+	if errors.Is(err, context.Canceled) {
+		respondErrorCode(w, 499, "client_closed_request", "client cancelled request")
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		respondErrorCode(w, http.StatusGatewayTimeout, "deadline_exceeded", "request deadline exceeded")
+		return
+	}
 	var appErr *apperror.Error
 	if errors.As(err, &appErr) {
 		switch appErr.Code {

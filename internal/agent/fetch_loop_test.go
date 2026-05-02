@@ -76,16 +76,39 @@ func TestFetchLoopIgnoresGlobalRevisionOnlyChanges(t *testing.T) {
 	}
 }
 
-func TestFetchLoopRejectsMixedRevisionSnapshots(t *testing.T) {
+func TestFetchLoopAcceptsIndependentResourceVersions(t *testing.T) {
+	// Under the resource-scoped versioning model, config and env carry
+	// independent versions: a config-only commit advances the config
+	// version while env keeps its previous version, and vice-versa.
+	// The fetch loop must treat divergent versions as the normal case,
+	// not an error.
 	client := &sequenceSnapshotClient{
-		configs: []*ConfigSnapshot{configSnapshot("repo-a", ts(1))},
-		envs:    []*EnvVarsSnapshot{envSnapshot("repo-b", ts(1))},
+		configs: []*ConfigSnapshot{
+			configSnapshot("config-rev-1", ts(1)),
+			configSnapshot("config-rev-2", ts(2)),
+		},
+		envs: []*EnvVarsSnapshot{
+			envSnapshot("env-rev-1", ts(1)),
+			envSnapshot("env-rev-1", ts(1)),
+		},
 	}
 	loop := newTestFetchLoop(t, client)
 
-	_, err := loop.FetchOnce(context.Background())
-	if err == nil || err.Error() != `config/env revision mismatch: config="repo-a" env="repo-b"` {
-		t.Fatalf("expected revision mismatch error, got %v", err)
+	first, err := loop.FetchOnce(context.Background())
+	if err != nil {
+		t.Fatalf("FetchOnce first: %v", err)
+	}
+	if first.State.ConfigVersion != "config-rev-1" || first.State.EnvVersion != "env-rev-1" {
+		t.Fatalf("first state: want config=config-rev-1 env=env-rev-1, got %+v", first.State)
+	}
+	loop.MarkHandled(first)
+
+	second, err := loop.FetchOnce(context.Background())
+	if err != nil {
+		t.Fatalf("FetchOnce second: %v", err)
+	}
+	if second.State.ConfigVersion != "config-rev-2" || second.State.EnvVersion != "env-rev-1" {
+		t.Fatalf("second state: want config=config-rev-2 env=env-rev-1, got %+v", second.State)
 	}
 }
 

@@ -461,15 +461,20 @@ spec:
 Config Server에 필요한 최소 권한:
 - `sealedsecrets` (bitnami.com): get, list, create, update, patch
 - `secrets`: get (Volume Mount 구성용)
-- `services/proxy` (sealed-secrets-controller): get (kubeseal 공개키 조회)
+- `services/proxy` (sealed-secrets-controller): get (SealedSecret 컨트롤러의 공개 인증서 `/v1/cert.pem` in-process 조회용. `kubeseal` CLI binary는 호출하지 않는다 — 자세한 사항은 `docs/current/DATA_MODEL.md` 시크릿 처리 절을 참조.)
 
 ### 3.5 Config Agent RBAC `[FR-9]`
 
 Config Agent에 필요한 최소 권한 (대상 리소스에만 `resourceNames`로 제한):
-- `leases` (coordination.k8s.io): get, create, update (leader election용)
-- `configmaps`: get, create, update, patch (대상 ConfigMap만)
-- `secrets`: get, create, update, patch (환경변수 Secret만)
-- `deployments`: get, patch (대상 Deployment만, annotation 패치용)
+
+| 리소스 | 사전 생성된 대상이 있는 경우 (권장) | Agent가 누락 리소스를 생성해야 하는 경우 |
+|---|---|---|
+| `leases` (coordination.k8s.io) | get, patch, update | get, patch, update + namespace-scoped `create` |
+| `configmaps` | get, patch, update | get, patch, update + namespace-scoped `create` |
+| `secrets` | get, patch, update | get, patch, update + namespace-scoped `create` |
+| `deployments` (apps) | get, patch | get, patch |
+
+> **Note**: Kubernetes RBAC은 `create` 동사를 `resourceNames`로 제한하지 못한다. 따라서 Agent가 missing 대상 리소스를 직접 생성해야 한다면 namespace-scoped `create`를 명시적으로 부여해야 한다 (`docs/current/OPERATIONS.md` 참조).
 
 ---
 
@@ -684,24 +689,37 @@ API 요청 시 (inherit=true):
 
 ### 6.3 메모리 구조 `[FR-1]`
 
+읽기 경로는 어떤 lock도 잡지 않고 lock-free `atomic.Pointer[snapshot]`을 swap-in 하는 COW 방식으로 운영한다.
+쓰기는 단일 `sync.Mutex`로 직렬화된다(ADR-005). 아래 발췌는 schema-level sketch이며 정확한 필드/타입은 `internal/store/store.go`와 `internal/store/types.go`를 따른다.
+
 ```go
 type Store struct {
-    mu       sync.RWMutex
+    snapshot   atomic.Pointer[snapshot]    // 읽기 경로: lock-free
+    lastReload atomic.Pointer[reloadState] // /readyz · /api/v1/status
 
-    // 서비스별 원본 설정 (상속 미적용)
-    configs  map[string]*ServiceConfig   // key: "org/project/service"
+    mu         sync.Mutex                  // 쓰기 경로 직렬화 (Phase-1 global)
+    repo       gitops.GitRepo
+    secretDeps secret.Dependencies
 
-    // 계층별 defaults
-    globalDefaults   *DefaultsConfig              // _defaults/common.yaml
-    orgDefaults      map[string]*DefaultsConfig   // key: "org"
-    projectDefaults  map[string]*DefaultsConfig   // key: "org/project"
-
-    // 서비스별 merged 설정 캐시 (상속 적용 완료)
-    mergedCache map[string]*ResolvedConfig  // key: "org/project/service"
-
-    version  string
-    repo     GitRepo                      // interface 주입 (DI)
+    // 변경 알림 (WaitForVersionChange / 롱폴 watch)
+    versionWatchMu sync.Mutex             // close-and-replace 가드
+    versionChanged chan struct{}          // 매 reload 시 close 후 새 채널 할당
+    // HEAD 버전은 snapshot.Load()에서 직접 읽는다 (별도 캐시 필드 없음)
 }
+
+// snapshot 은 한 번 생성되면 immutable, 새 reload 시 통째로 swap.
+// 상속(merge)은 snapshot 빌드 시 pre-compute 되어 ServiceData 안에 흡수된다.
+type snapshot struct {
+    version string
+    data    map[string]*ServiceData       // key: "org/project/service"
+    // 상속 lookup 용 인덱스
+    globalDefaults   *parser.DefaultsConfig
+    orgDefaults      map[string]*parser.DefaultsConfig
+    projectDefaults  map[string]*parser.DefaultsConfig
+}
+
+// ServiceData 는 원본 config/env_vars/secrets와 inherit=true 결과(InheritedConfig/InheritedEnvVars)를
+// 함께 보관한다. 별도 ResolvedConfig 타입은 사용하지 않는다.
 ```
 
 ### 6.4 Merge 전략 `[FR-1]`
@@ -839,20 +857,20 @@ env_vars:
 | **FR-1** | In-memory Config Store | `store`, `parser`, `gitops` | — | Git (`go-git`) | — |
 | **FR-2** | 설정 조회 API | `store`, `handler` | `GET .../config` | — | — |
 | **FR-3** | 환경변수 조회 API | `store`, `handler` | `GET .../env_vars` | — | — |
-| **FR-4** | 설정/시크릿 일괄 변경 | `store`, `gitops`, `seal`, `handler` | `POST /api/v1/admin/changes` | Git, kubeseal, K8s API | — |
+| **FR-4** | 설정/시크릿 일괄 변경 | `store`, `gitops`, `secret`, `handler` | `POST /api/v1/admin/changes` | Git, SealedSecret encrypt, K8s API | — |
 | **FR-5** | 설정/시크릿 일괄 삭제 | `store`, `gitops`, `handler` | `DELETE /api/v1/admin/changes` | Git | — |
 | **FR-6** | 변경 감지 API (watch) | `store`, `handler` | `GET .../config/watch`, `GET .../env_vars/watch` | — | watch client |
-| **FR-7** | 시크릿 관리 | `seal`, `secret` | — | kubeseal, K8s API, Volume Mount | — |
+| **FR-7** | 시크릿 관리 | `secret` | — | SealedSecret encrypt, K8s API, Volume Mount | — |
 | **FR-8** | App Registry 연동 | `registry`, `handler` | `POST /api/v1/admin/app-registry/webhook` | AAP Console API | — |
 | **FR-9** | Config Agent | — | — | Config Server API, K8s API, Lease (leader election) | `agent` 전체 |
-| **FR-10** | 설정 상속 | `store`, `merge` | — | — | — |
+| **FR-10** | 설정 상속 | `store` (deep merge) | — | — | — |
 | **FR-11** | 서비스 탐색 API | `store`, `handler` | `GET /api/v1/orgs`, `.../projects`, `.../services` | — | — |
 | **FR-12** | 시크릿 메타데이터 API | `store`, `handler` | `GET .../secrets` | — | — |
 | **FR-13** | 변경 이력 API | `gitops`, `handler` | `GET .../history` | Git | — |
-| **FR-14** | 설정 롤백 API | `store`, `gitops`, `seal`, `handler` | `POST /api/v1/admin/changes/revert` | Git, kubeseal, K8s API | — |
+| **FR-14** | 설정 롤백 API | `store`, `gitops`, `secret`, `handler` | `POST /api/v1/admin/changes/revert` | Git, SealedSecret encrypt, K8s API | — |
 | **FR-15** | 헬스체크 / 운영 API | `server`, `handler`, `metrics` | `/healthz`, `/readyz`, `/api/v1/status`, `/metrics`, `POST /api/v1/admin/reload`, `POST /api/v1/admin/git/webhook` | Git | — |
-| **FR-16** | 인증/인가 | `auth` | 미들웨어 (`Authorization: Bearer`) | 환경변수 `API_KEY` | — |
-| **FR-17** | 시크릿 보안 | `secret`, `auth` | 미들웨어 | K8s Network Policy | — |
+| **FR-16** | 인증/인가 | `handler` (API Key Bearer 미들웨어) | 미들웨어 (`Authorization: Bearer`, `X-API-Key` legacy alias) | 환경변수 `API_KEY` | — |
+| **FR-17** | 시크릿 보안 | `secret`, `handler` (auth 미들웨어) | 미들웨어 | K8s Network Policy | — |
 
 > **공통 패키지**: `config` (서버 자체 설정 로딩)와 `apperror` (커스텀 에러 타입, HTTP 상태코드 매핑)는 거의 모든 FR에서 사용되는 기반 패키지이므로 위 매트릭스에서 개별 FR에 반복 표기하지 않는다.
 
@@ -874,21 +892,16 @@ aap-config-server/
 │
 ├── internal/                 # 외부 import 불가 (캡슐화)
 │   ├── server/               # HTTP 서버 설정, 라우터, graceful shutdown
-│   ├── handler/              # HTTP 핸들러 (요청 파싱 → 서비스 호출 → 응답)
-│   ├── store/                # In-memory Config Store (COW, RWMutex)
+│   ├── handler/              # HTTP 핸들러 + API Key Bearer 인증 미들웨어
+│   ├── store/                # In-memory Config Store (atomic.Pointer[snapshot] COW) + 상속 deep merge
 │   ├── apperror/             # 커스텀 에러 타입 (Code, Error, HTTP 매핑)
-│   ├── parser/               # YAML 파서 (config.yaml, env_vars.yaml, secrets.yaml)
+│   ├── parser/               # YAML 파서 + 스키마 검증 (config.yaml, env_vars.yaml, secrets.yaml, _defaults/common.yaml)
 │   ├── gitops/               # Git clone/pull/commit/push/history (go-git 래핑)
-│   ├── seal/                 # kubeseal 암호화 (interface 추상화)
-│   ├── secret/               # Volume Mount 시크릿 로딩, resolve 로직
-│   ├── merge/                # Deep merge (설정 상속)
-│   ├── auth/                 # API Key Bearer 인증 미들웨어
+│   ├── secret/               # SealedSecret 암호화·apply·audit + Volume Mount 시크릿 로딩 / resolve
 │   ├── registry/             # App Registry 인메모리 캐시
+│   ├── metrics/              # Prometheus 노출용 메트릭 레지스트리
 │   ├── config/               # 서버 자체 설정 로딩 (환경변수/플래그)
-│   └── agent/                # Config Agent 핵심 로직
-│       ├── poller/           # Config Server polling
-│       ├── applier/          # K8s ConfigMap/Secret/Deployment 업데이트
-│       └── debounce/         # Leading-edge debounce
+│   └── agent/                # Config Agent 핵심 로직 (flat layout: leader/fetch_loop/render/apply/rollout/debounce)
 │
 ├── docs/                     # PRD, HLD, ADR 문서
 ├── go.mod
@@ -905,42 +918,46 @@ aap-config-server/
 
 ### 11.2 의존성 주입 (Dependency Injection)
 
-Go에서는 **constructor에 interface를 주입**하는 패턴을 사용한다. 프레임워크 없이 수동 DI로 구현한다.
+Go에서는 **constructor에 interface를 주입**하는 패턴을 사용한다. 프레임워크 없이 수동 DI로 구현한다. 아래 예시는 설계-수준 illustration이며 실제 구체 시그니처는 `internal/store/store.go`, `cmd/config-server/main.go`를 참조.
 
 ```go
-// internal/store/store.go — interface 정의는 사용하는 쪽에서
+// internal/gitops/repo.go — 인터페이스 정의는 사용하는 쪽(store)에서
 type GitRepo interface {
     Pull(ctx context.Context) (string, error)
-    CommitAndPush(ctx context.Context, msg string, files []string) (string, error)
+    CommitAndPushFunc(ctx context.Context, msg string, build CommitFileBuilder) (string, error)
+    Snapshot(ctx context.Context) (Snapshot, error)
+    // ... history / restore / sealed-secret 보조 메서드
 }
 
+// internal/store/store.go (실제 구조의 발췌. 자세한 사항은 §6.3 참조)
 type Store struct {
-    mu      sync.RWMutex
-    configs map[string]*ResolvedConfig
-    version string
-    repo    GitRepo   // interface로 주입
+    snapshot   atomic.Pointer[snapshot]
+    lastReload atomic.Pointer[reloadState]
+    mu         sync.Mutex          // 쓰기 직렬화 (Phase-1 global)
+    repo       gitops.GitRepo
+    secretDeps secret.Dependencies
+    versionWatchMu sync.Mutex      // versionChanged 채널 close-and-replace
+    versionChanged chan struct{}
 }
 
-func NewStore(repo GitRepo) *Store {
-    return &Store{
-        configs: make(map[string]*ResolvedConfig),
-        repo:    repo,
-    }
-}
+// 변형 옵션은 functional options 패턴
+func New(repo gitops.GitRepo, opts ...Option) *Store
 ```
 
 ```go
-// cmd/config-server/main.go — 조립 (Composition Root)
+// cmd/config-server/main.go — Composition Root (자세한 sequence는 실제 파일 참조)
 func main() {
     ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
     defer stop()
 
-    cfg := config.Load()
+    cfg := config.MustLoad()
 
-    repo := gitops.New(cfg.GitURL, cfg.GitBranch)
-    st := store.NewStore(repo)
-    h := handler.New(st)
-    srv := server.New(cfg.Addr, h.Routes())
+    repo := gitops.MustOpen(ctx, cfg.GitURL, ...)        // gitops 구체 타입 (HTTP Basic / SSH key 등)
+    secretDeps := configureSecretDependencies(cfg)        // SealedSecret encrypt/apply/audit 의존성
+    st := store.New(repo, store.WithSecretDeps(secretDeps), ...)
+    cache := registry.NewCache()
+    h := handler.New(st, probe, cfg.APIKey, handler.WithRegistry(cache, ...))
+    srv := server.New(cfg.Addr, h.Routes(), ...)
 
     if err := srv.Run(ctx); err != nil {
         slog.Error("server exited", "error", err)

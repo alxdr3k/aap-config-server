@@ -255,6 +255,9 @@ func rootMapping(file string, data []byte) (*yaml.Node, error) {
 }
 
 func validateMappingKeys(file string, node *yaml.Node, path string, allowed []string) error {
+	if len(node.Content)%2 != 0 {
+		return fmt.Errorf("%s: %s mapping has unbalanced key/value pairs", file, path)
+	}
 	allowedSet := map[string]struct{}{}
 	for _, key := range allowed {
 		allowedSet[key] = struct{}{}
@@ -293,7 +296,7 @@ func requireScalar(file, path string, node *yaml.Node) error {
 }
 
 func child(node *yaml.Node, key string) *yaml.Node {
-	for i := 0; i < len(node.Content); i += 2 {
+	for i := 0; i+1 < len(node.Content); i += 2 {
 		if node.Content[i].Value == key {
 			return node.Content[i+1]
 		}
