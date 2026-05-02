@@ -4,19 +4,24 @@
 
 ## How to Deploy
 
-This repo currently defines the binary and Docker image build, not the full
-Helm/Kubernetes deployment.
+This repo currently defines the binaries and Docker images for the Config Server
+and Config Agent. The full Helm / Kubernetes deployment lives outside this repo.
 
 ```bash
-make build
-make docker-build
+# Build both binaries (config-server, config-agent)
+make build               # → bin/config-server, bin/config-agent
+
+# Or build images
+make docker-build        # → aap/config-server image (server only)
+make docker-build-agent  # → aap/config-agent image (dry-run only today, see README caveat)
 ```
 
 - Prerequisites: Go 1.26+, access to the config Git repository, and required runtime env vars.
 - Rollback method: roll back the deployed image or Git config repo commit
   through the owning deployment system.
 - Deployment manifests: Helm/Kubernetes manifests remain outside this repo by
-  `DEC-003`.
+  `DEC-003`. Agent runtime contract (env vars, RBAC, NetworkPolicy expectations)
+  is captured in `docs/current/OPERATIONS.md`.
 
 ## How to Run Locally
 

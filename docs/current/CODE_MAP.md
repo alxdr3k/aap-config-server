@@ -51,11 +51,11 @@ Status: active.
 | `internal/gitops/*_test.go` | Local Git clone/pull/commit/delete/restore/snapshot behavior plus service history/file-change primitives. |
 | `internal/metrics/*_test.go` | Prometheus text exposition for counters, histograms, gauges, and label escaping. |
 | `internal/handler/*_test.go` | HTTP routes, endpoint-group rate limiting, Prometheus endpoint/route/watch/degraded metrics, Git webhook refresh auth/success/failure behavior, config/env ETag, `If-None-Match`, gzip, and batch read behavior, config/env watch behavior, versioned and inherited read behavior, history API behavior, revert endpoint behavior, auth, admin write response shape and service-level payload preservation, App Registry webhook auth/cache updates, App Registry status reporting, secret write input cleanup, resolved env var secret reads, secret audit logging, reload/degraded status. |
-| `internal/agent/*_test.go` | Config Agent config loading/validation, Config Server API client behavior, bounded responses, dry-run counts, K8s Lease leader election takeover behavior, fetch loop retry/version tracking, renderer validation, ConfigMap/Secret apply behavior, rollout patch behavior, debounce timing behavior, and e2e smoke coverage under the `e2e` build tag. |
+| `internal/agent/*_test.go` | Config Agent config loading/validation, Config Server API client behavior, bounded responses, dry-run counts, K8s Lease leader election takeover behavior, fetch loop retry/version tracking, renderer validation, ConfigMap/Secret apply behavior, rollout patch behavior, debounce timing behavior, and fake-client fetch/render/apply/rollout e2e smoke coverage (runs under default `go test ./...`; no build tag). |
 
 ## Needs audit
 
 | Path | Reason |
 |---|---|
-| `docs/02_HLD.md` | Includes target flows beyond the current Agent bootstrap slice; current implementation boundaries are summarized in `README.md` and `docs/current/*`. |
-| `docs/01_PRD.md` | Phase checklist predates current implementation status; use `docs/04_IMPLEMENTATION_PLAN.md` as status ledger. |
+| `docs/02_HLD.md` | §1.1 / §2 still describe target Config Agent rollout flows (live non-dry-run entrypoint, full litellm rollout). §3.4 RBAC, §3.5 RBAC, §6.3 store memory model, §10 FR matrix, and §11.1 layout were aligned with the flat package layout in the iter1 doc-consistency pass. |
+| `docs/01_PRD.md` | §1 phase checklist predates the current implementation; use `docs/04_IMPLEMENTATION_PLAN.md` as the status ledger. §4.1 Store sample, §4.4 mutex framing, §4.9 Agent fetch loop, §4.15/§5 endpoint surface, and §4.16 auth contract were aligned with code in the iter1 doc-consistency pass. |

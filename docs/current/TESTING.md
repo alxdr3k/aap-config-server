@@ -94,6 +94,14 @@ go test -tags=integration ./... -timeout 120s
 
 ## E2E tests
 
+`internal/agent/e2e_smoke_test.go` covers the Config Agent
+fetch/render/apply/rollout smoke path with fake Config Server and Kubernetes
+clients (no live cluster required). The smoke test is fully hermetic and runs
+unconditionally under `make test` / `make test-race` / `go test ./...`.
+
+The `make test-e2e` target (and the `e2e` build tag) is reserved for future
+cluster-dependent E2E suites:
+
 ```bash
 make test-e2e
 ```
@@ -103,10 +111,6 @@ Equivalent:
 ```bash
 go test -tags=e2e ./... -timeout 300s
 ```
-
-`internal/agent/e2e_smoke_test.go` runs under the `e2e` build tag with fake
-Config Server and Kubernetes clients. It covers the Config Agent
-fetch/render/apply/rollout smoke path without requiring a live cluster.
 
 ## Coverage
 

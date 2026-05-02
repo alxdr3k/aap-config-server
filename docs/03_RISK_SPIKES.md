@@ -4,7 +4,8 @@
 
 ## How to use
 
-- PRD의 ASM-### 중 결과에 큰 영향을 주는 가정 → SPIKE-###로 승격.
+- PRD / HLD / ADR / current docs 등에서 결과에 큰 영향을 주는 기술 가정 → SPIKE-###로 승격.
+  (이 프로젝트는 `DEC-002`에 따라 PRD 요구사항을 `FR-###`로만 표기하고 별도 `ASM-###`/`NFR-###` ID를 부여하지 않는다. 가정은 본문/ADR에서 직접 인용한다.)
 - Spike는 시간 박싱 (예: 1~3일). 결과는 여기에 기록.
 - 결과가 결정으로 굳어지면 `08_DECISION_REGISTER.md` 또는 ADR로 옮긴다.
 

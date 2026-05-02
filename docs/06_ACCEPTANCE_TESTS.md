@@ -27,15 +27,15 @@ Then  <기대 결과>
 | `AC-006` | `FR-16`, `FR-17` | Given protected endpoints, When credentials are missing or invalid, Then the server returns 401; valid Bearer or `X-API-Key` succeeds. | `TEST-006` | `passing` |
 | `AC-007` | `FR-1`, `FR-15` | Given a failed reload after a good snapshot, When readiness/status are queried, Then the server reports degraded while serving last-known-good data. | `TEST-007` | `passing` |
 | `AC-008` | `FR-1` | Given the local `configs/` worktree is dirty outside server writes, When snapshot reload runs, Then reload fails closed. | `TEST-008` | `passing` |
-| `AC-009` | `FR-4` | Given an admin write body includes an unknown field, When decoded, Then the request fails with 400 instead of silently dropping data. | `TEST-009` | `passing` |
+| `AC-009` | `FR-4` | Given an admin write body includes an unknown field, When decoded, Then the request fails with 400 instead of silently dropping data. The "known fields" set is the admin handler's current contract and was extended by `SECRET-1A.6` to include `secrets`. | `TEST-009` | `passing` |
 | `AC-014` | Documentation migration | Given a new session, When it follows `AGENTS.md`, Then current status, code map, testing, runtime, and roadmap are discoverable from canonical docs. | manual link check + PR #10 CI | `passing` |
 | `AC-015` | Documentation workflow | Given a PR changes Go source/runtime paths, When doc freshness runs, Then it comments with matching doc update candidates without blocking merge. | workflow YAML parse + pattern review | `passing` |
 | `AC-020` | `FR-7`, `FR-17` | Secret write/resolve handles SealedSecret generation, K8s apply, no-store response, and audit logging. | `TEST-020` | `passing` |
 | `AC-021` | `FR-8` | App Registry bootstrap and webhook cache keep service registration state available to readiness/status and recover from missed webhooks. | `TEST-021` | `passing` |
 | `AC-030` | `FR-9` | Config Agent detects config changes, updates K8s resources, and triggers controlled rollout. | `TEST-030` | `passing` |
-| `AC-040` | `FR-6`, `FR-10`, `FR-13`, `FR-14` | Watch/history/revert/inheritance features satisfy target PRD contracts. | future tests | `defined` |
+| `AC-040` | `FR-6`, `FR-10`, `FR-13`, `FR-14` | Watch/history/revert/inheritance features satisfy target PRD contracts. | `TEST-040` | `passing` |
 | `AC-041` | operational extensions | ETag, gzip, batch reads, Prometheus metrics, and Git webhook refresh satisfy target PRD contracts without exposing secret plaintext. | `TEST-041` | `passing` |
-| `AC-042` | production hardening | Schema validation, rate limiting, integration/load test harnesses, and deployment handoff docs are complete for the target architecture. | `TEST-042` partial coverage landed | `defined` |
+| `AC-042` | production hardening | Schema validation, rate limiting, integration/load test harnesses, and deployment handoff docs are complete for the target architecture. | `TEST-042` (schema validation + rate limiting partial) | `defined` (integration/load harness `HARDEN-1A.3`+ remaining) |
 
 ## Status vocabulary
 
