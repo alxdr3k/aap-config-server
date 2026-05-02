@@ -25,8 +25,19 @@ type FetchLoopConfig struct {
 }
 
 // FetchState tracks the last successfully handled Config Server versions.
+//
+// Config and env vars carry independent resource versions on the server side
+// (see internal/store applyResourceVersions): a config-only commit advances
+// `ConfigVersion` while `EnvVersion` keeps its prior value, and vice-versa.
+// The agent therefore tracks both versions separately and treats divergence
+// as the normal case, not an error.
+//
+// `Revision` is retained as a back-compat handle for tests that inspect the
+// most recently observed config version.
 type FetchState struct {
-	Revision        string
+	Revision        string // == ConfigVersion (kept for back-compat)
+	ConfigVersion   string
+	EnvVersion      string
 	ConfigHash      string
 	EnvHash         string
 	ConfigUpdatedAt time.Time
@@ -93,10 +104,25 @@ func (l *FetchLoop) FetchOnce(ctx context.Context) (FetchResult, error) {
 	if envSnapshot == nil {
 		return FetchResult{}, errors.New("env vars snapshot is nil")
 	}
-	if configSnapshot.Metadata.Version != envSnapshot.Metadata.Version {
-		return FetchResult{}, fmt.Errorf("config/env revision mismatch: config=%q env=%q",
-			configSnapshot.Metadata.Version, envSnapshot.Metadata.Version)
-	}
+	// Config and env vars carry independent resource-scoped versions; differing
+	// versions across the two resources are the normal case under the resource-
+	// scoped versioning model and must NOT be treated as a fetch error.
+	//
+	// The fetch loop polls the server with two separate HTTP reads that are not
+	// snapshot-isolated against each other: a server reload (commit C+1) between
+	// FetchConfig and FetchEnvVars can yield config from HEAD=C and env from
+	// HEAD=C+1, a "torn pair" that never coexisted in any single server snapshot.
+	// This is acceptable Phase-1 behavior because the loop converges on the next
+	// PollInterval: on the following iteration, both reads land at the latest
+	// HEAD and the renderer/applier reconciles. The transient inconsistency
+	// window is bounded by PollInterval (default 30s) plus rolling-restart time;
+	// the worst-case symptom is a short period where config(C) references env
+	// keys defined at C+1, which surfaces as a missing-env-var error in the
+	// target Pod and is corrected on the next reconcile.
+	//
+	// A stronger guarantee would require a server-side combined-snapshot
+	// endpoint or a global-revision token threaded through both responses,
+	// neither of which exists in Phase-1.
 	configHash, err := hashJSON(configSnapshot.Config)
 	if err != nil {
 		return FetchResult{}, fmt.Errorf("hash config snapshot: %w", err)
@@ -108,6 +134,8 @@ func (l *FetchLoop) FetchOnce(ctx context.Context) (FetchResult, error) {
 
 	state := FetchState{
 		Revision:        configSnapshot.Metadata.Version,
+		ConfigVersion:   configSnapshot.Metadata.Version,
+		EnvVersion:      envSnapshot.Metadata.Version,
 		ConfigHash:      configHash,
 		EnvHash:         envHash,
 		ConfigUpdatedAt: configSnapshot.Metadata.UpdatedAt,

@@ -11,6 +11,15 @@ const (
 	cacheStatusNotConfigured = "not_configured"
 	cacheStatusOK            = "ok"
 	cacheStatusDegraded      = "degraded"
+
+	// watermarkRetention bounds how long a tombstone watermark is kept for
+	// keys that have vanished from the latest bootstrap snapshot. The
+	// watermark continues to reject stale Upsert events whose `updated_at`
+	// is older than the recorded value; after this window has elapsed
+	// without any new event for the key, the tombstone is dropped to bound
+	// memory under high-churn workloads (e.g. ephemeral PR-preview apps).
+	// Console webhook delivery skew should never approach this value.
+	watermarkRetention = 24 * time.Hour
 )
 
 // Cache stores the last Console App Registry snapshot in memory.
@@ -65,9 +74,30 @@ func (c *Cache) Replace(apps []App, loadedAt time.Time) {
 	defer c.mu.Unlock()
 	c.ensureMapsLocked()
 	c.apps = normalized
-	for key, eventAt := range snapshotEventAt {
-		rememberEventTime(c.lastEventAt, key, eventAt)
+	// Re-anchor watermarks to the snapshot. Two concerns are balanced:
+	//   - For keys in the new snapshot, keep their existing watermark so any
+	//     in-flight stale Upsert is still rejected against the prior floor.
+	//   - For keys absent from the new snapshot (deleted apps), we keep a
+	//     tombstone watermark for `watermarkRetention` so a delayed late
+	//     webhook event whose `updated_at` predates the deletion is still
+	//     rejected, while old tombstones eventually GC to bound memory under
+	//     high-churn workloads (PR-preview apps that come and go).
+	cutoff := loadedAt.UTC().Add(-watermarkRetention)
+	next := make(map[Key]time.Time, len(c.lastEventAt))
+	for key, watermark := range c.lastEventAt {
+		if _, kept := normalized[key]; kept {
+			next[key] = watermark
+			continue
+		}
+		// Tombstone for vanished key: keep within retention window.
+		if watermark.UTC().After(cutoff) {
+			next[key] = watermark
+		}
 	}
+	for key, eventAt := range snapshotEventAt {
+		rememberEventTime(next, key, eventAt)
+	}
+	c.lastEventAt = next
 	c.lastLoaded = loadedAt.UTC()
 	c.lastUpdated = loadedAt.UTC()
 	c.lastLoadErr = nil
@@ -92,6 +122,7 @@ func (c *Cache) Upsert(app App, updatedAt time.Time) (App, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ensureMapsLocked()
+	c.pruneExpiredTombstonesLocked(eventAt)
 	key := keyFor(normalized)
 	if watermark, ok := c.lastEventAt[key]; ok && eventAt.Before(watermark) {
 		if current, ok := c.apps[key]; ok {
@@ -133,6 +164,7 @@ func (c *Cache) Delete(app App, updatedAt time.Time) (Key, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ensureMapsLocked()
+	c.pruneExpiredTombstonesLocked(eventAt)
 	if watermark, ok := c.lastEventAt[key]; ok && eventAt.Before(watermark) {
 		return key, false, nil
 	}
@@ -238,6 +270,27 @@ func (c *Cache) ensureMapsLocked() {
 	}
 	if c.lastEventAt == nil {
 		c.lastEventAt = map[Key]time.Time{}
+	}
+}
+
+// pruneExpiredTombstonesLocked drops watermarks for keys that are no longer
+// present in `c.apps` (tombstones) AND whose recorded event time predates
+// `now - watermarkRetention`. Called inline from Upsert/Delete so steady-state
+// webhook traffic reclaims old tombstones even when bootstrap Replace never
+// re-runs in production. Cost is O(n) over the watermark map; n is bounded by
+// the registry size in practice.
+func (c *Cache) pruneExpiredTombstonesLocked(now time.Time) {
+	if len(c.lastEventAt) == 0 {
+		return
+	}
+	cutoff := now.UTC().Add(-watermarkRetention)
+	for key, watermark := range c.lastEventAt {
+		if _, present := c.apps[key]; present {
+			continue
+		}
+		if watermark.UTC().Before(cutoff) {
+			delete(c.lastEventAt, key)
+		}
 	}
 }
 
