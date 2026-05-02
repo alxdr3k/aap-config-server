@@ -48,6 +48,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | gzip compression for config/env reads | Implemented for non-secret config/env JSON responses when `Accept-Encoding` allows gzip; resolved secret responses are not compressed |
 | Batch config/env reads (`POST /api/v1/configs/batch`) | Implemented for current non-secret config/env reads with partial per-item errors |
 | Prometheus metrics (`GET /metrics`) | Implemented for HTTP latency/counts, reloads, Git operations, watch waits, and degraded state |
+| Config repo YAML schema validation | Implemented for config, env vars, defaults, and secret metadata files |
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |
@@ -366,16 +367,17 @@ valid API key is required, and the server pulls the configured `GIT_URL` /
 ## Operational notes
 
 - **Last-known-good snapshot.** The store only swaps the serving snapshot when
-  every file parses. A malformed `config.yaml` in the repo will fail the
-  reload; reads keep returning the previous snapshot. Check logs for
-  `"refusing to swap snapshot"` errors and fix the offending file.
+  every file parses and passes schema validation. A malformed or schema-invalid
+  config repo file will fail the reload; reads keep returning the previous
+  snapshot. Check logs for `"refusing to swap snapshot"` errors and fix the
+  offending file.
 - **Degraded state.** When the last reload failed (background poll or admin
   reload), the server is in a degraded state: it serves the last-known-good
   snapshot but the snapshot may be stale. In this state:
   - `/readyz` returns `503 degraded` so Kubernetes removes the pod from load
     balancer rotation until the underlying YAML is fixed.
   - `/api/v1/status` returns `"status": "degraded"` with `is_degraded: true`
-    and `last_reload_error` describing the parse failure.
+    and `last_reload_error` describing the parse or schema failure.
 - **App Registry status.** `/api/v1/status` includes `app_registry.status`,
   `apps_loaded`, `last_loaded_at`, `last_updated_at`, and `last_load_error`
   when present. A registry-only load failure is reported in
@@ -418,12 +420,15 @@ valid API key is required, and the server pulls the configured `GIT_URL` /
   write path (modified, staged, or untracked files). Such drift would make
   `/api/v1/status.version` lie about what's being served, so the reload fails
   closed and the server enters the degraded state documented above.
-- **Schema validation.** `config.yaml` and `env_vars.yaml` require
+- **Schema validation.** Config repo YAML is validated before typed parsing.
+  `config.yaml`, `env_vars.yaml`, `_defaults/common.yaml`, and `secrets.yaml`
+  reject unknown top-level or known nested fields, duplicate keys in validated
+  blocks, and invalid node shapes. `config.yaml` and `env_vars.yaml` require
   `metadata.service` / `metadata.org` / `metadata.project`; every
   `secrets.yaml` entry requires an `id` and a complete `k8s_secret` pointer
-  (`name`, `namespace`, `key`). Files that parse as valid YAML but miss
-  these fields fail the reload instead of loading as an unreachable or
-  half-referenced entry.
+  (`name`, `namespace`, `key`). Env var keys under `plain` and `secret_refs`
+  must be shell-compatible names. Files that violate these rules fail reload
+  closed instead of loading as unreachable or half-referenced entries.
 - **Poll interval must be positive.** `GIT_POLL_INTERVAL=0s` (or negative) is
   rejected at startup rather than panicking inside `time.NewTicker`.
 
@@ -451,7 +456,7 @@ Container image build support does not include Helm/Kubernetes manifest
 ownership; see `docs/current/OPERATIONS.md`.
 
 The CI pipeline (`.github/workflows/ci.yml`) runs `go vet`, race tests, and
-`govulncheck` on every push to or pull request targeting `main`.
+`govulncheck` on pull requests and direct pushes targeting `dev` or `main`.
 
 ## Repository layout
 

@@ -34,10 +34,10 @@ default and return raw service-level files when `inherit=false`.
 |---|---|---|
 | `ServiceKey` | Unique `org/project/service` identifier. | `internal/store/types.go` |
 | `ServiceData` | In-memory aggregate for one service; also used as the typed result for historical config/env reads. | `internal/store/types.go` |
-| `ServiceConfig` | Parsed `config.yaml` with metadata and arbitrary config map. | `internal/parser/types.go` |
-| `EnvVarsConfig` | Parsed `env_vars.yaml` with plain env vars and secret refs. | `internal/parser/types.go` |
-| `SecretsConfig` | Parsed `secrets.yaml` metadata; no secret plaintext. | `internal/parser/types.go` |
-| `DefaultsConfig` | Parsed `_defaults/common.yaml` config/env defaults. | `internal/parser/types.go` |
+| `ServiceConfig` | Parsed `config.yaml` with validated envelope metadata and arbitrary config map. | `internal/parser/types.go`, `internal/parser/validate.go` |
+| `EnvVarsConfig` | Parsed `env_vars.yaml` with validated plain env vars and secret refs. | `internal/parser/types.go`, `internal/parser/validate.go` |
+| `SecretsConfig` | Parsed `secrets.yaml` metadata; no secret plaintext. | `internal/parser/types.go`, `internal/parser/validate.go` |
+| `DefaultsConfig` | Parsed `_defaults/common.yaml` config/env defaults with validated envelope shape. | `internal/parser/types.go`, `internal/parser/validate.go` |
 | `DefaultsSource` | Store metadata describing inherited defaults sources available to a service. | `internal/store/types.go` |
 | `ServiceData.InheritedConfig` / `InheritedEnvVars` | Store-precomputed inherited config/env values for default `inherit=true` reads. | `internal/store/types.go` |
 | `secret.RuntimeConfig` | Runtime knobs for secret mount, SealedSecret, K8s apply, and audit adapters. | `internal/secret/types.go` |
@@ -69,10 +69,19 @@ default and return raw service-level files when `inherit=false`.
 
 ## YAML validation
 
+- The parser validates config repo YAML envelopes before typed parsing:
+  `config.yaml` allows `version`, `metadata`, and `config`; `env_vars.yaml`
+  allows `version`, `metadata`, and `env_vars`; `_defaults/common.yaml` allows
+  `config` and `env_vars`; `secrets.yaml` allows `version` and `secrets`.
+- Known nested blocks reject unknown fields, duplicate keys, and invalid node
+  shapes. The arbitrary user payload under `config` remains free-form except
+  that the top-level `config` value must be a mapping.
 - `config.yaml` and `env_vars.yaml` require `metadata.service`, `metadata.org`, and `metadata.project`.
 - Admin write requests persist service-level `config.yaml` / `env_vars.yaml`
   payloads only. Inherited defaults remain in `_defaults/common.yaml` and are
   recomputed for reads.
+- Env var keys under `env_vars.plain` and `env_vars.secret_refs` must be
+  shell-compatible environment variable names and their values must be scalar.
 - `secrets.yaml` entries require `id` and a complete `k8s_secret` pointer: `name`, `namespace`, and `key`.
 - Mounted secret reads reject empty or path-unsafe reference segments before
   resolving `{SECRET_MOUNT_PATH}/{namespace}/{name}/{key}`.
@@ -109,7 +118,7 @@ default and return raw service-level files when `inherit=false`.
   against the same in-memory cache; Console remains the source of truth.
   Webhook events require RFC3339 `updated_at`, and stale events older than the
   current cache entry or latest delete watermark are ignored.
-- Invalid YAML or missing required fields fail reload closed.
+- Invalid YAML, schema errors, or missing required fields fail reload closed.
 
 ## Lifecycle states
 

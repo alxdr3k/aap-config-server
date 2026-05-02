@@ -12,7 +12,9 @@ Status: active.
    abort startup.
 4. `gitops.Repo` opens or clones the configured Git repo/branch.
 5. `store.LoadFromRepo` performs one startup pull, then snapshots `configs/`.
-6. The store parses `config.yaml`, `env_vars.yaml`, and `secrets.yaml` files under `configs/orgs/{org}/projects/{project}/services/{service}/`.
+6. The store validates and parses `config.yaml`, `env_vars.yaml`, and
+   `secrets.yaml` files under
+   `configs/orgs/{org}/projects/{project}/services/{service}/`.
    It also parses global/org/project `_defaults/common.yaml` files into
    snapshot metadata and precomputes inherited config/env fields for public
    `inherit` reads.
@@ -53,6 +55,12 @@ read APIs default to `inherit=true` and return inherited data; `inherit=false`
 returns the raw service-level file. Current `resolve_secrets=true` env reads
 also use inherited env var secret refs. Config/env watch endpoints use the same
 inherit view for version comparison and response payloads.
+
+Before typed parsing, the parser validates YAML schema envelopes for service
+config, env vars, defaults, and secret metadata files. It rejects unknown
+top-level or known nested fields, duplicate keys in validated blocks, invalid
+node shapes, and non-shell-compatible env var names. The `config` payload
+itself remains free-form so service-native settings can evolve independently.
 
 Non-secret config/env read responses include an `ETag` header and honor
 `If-None-Match` by returning `304 Not Modified` without a body when the
@@ -321,7 +329,7 @@ only; live deployment wiring remains an external deployment-system concern per
 | Non-positive `GIT_POLL_INTERVAL` | Startup fails validation. |
 | Invalid secret runtime setting | Startup fails during config validation. |
 | Startup pull transient failure | Warning logged; on-disk checkout is parsed. |
-| YAML parse/validation failure during reload | Snapshot is not swapped; last-known-good snapshot keeps serving. |
+| YAML parse/schema/validation failure during reload | Snapshot is not swapped; last-known-good snapshot keeps serving. |
 | Degraded store | `/readyz` returns 503 and `/api/v1/status` reports `is_degraded`. |
 | Admin write succeeds but reload fails | Response is `503 committed_but_reload_failed`; Git commit remains. |
 | Admin secret write succeeds but SealedSecret apply fails | Response is `503 committed_but_apply_failed`; encrypted Git commit remains and `apply_error` is returned. |
@@ -351,5 +359,6 @@ only; live deployment wiring remains an external deployment-system concern per
 2. Check `/readyz` for readiness/degraded state.
 3. Check `/api/v1/status` for `version`, `services_loaded`, `last_reload_at`, `last_reload_error`, and `app_registry`.
 4. Inspect logs for git pull/push/reload errors.
-5. Validate the config repo `configs/` tree against parser expectations.
+5. Validate the config repo `configs/` tree against parser schema expectations
+   for known envelopes, env var keys, and required metadata.
 6. Use `POST /api/v1/admin/reload` after fixing malformed YAML or dirty checkout drift.
