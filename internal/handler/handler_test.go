@@ -497,6 +497,25 @@ func decodeJSON(t *testing.T, resp *http.Response, v any) {
 	}
 }
 
+func assertRateLimited(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("want 429, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After: want 1, got %q", got)
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &body)
+	if body.Error.Code != "rate_limited" {
+		t.Fatalf("error code: want rate_limited, got %q", body.Error.Code)
+	}
+}
+
 func jsonArrayContains(values any, want string) bool {
 	list, ok := values.([]any)
 	if !ok {
@@ -2976,5 +2995,120 @@ func TestAPIKeyAuth_BearerCaseInsensitive(t *testing.T) {
 				t.Errorf("%s: want %d, got %d", tc.name, tc.wantCode, resp.StatusCode)
 			}
 		})
+	}
+}
+
+func TestRateLimit_AdminEndpoints(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithRateLimits(handler.RateLimitSettings{
+		Admin: handler.RateLimit{RequestsPerSecond: 1, Burst: 1},
+	}))
+	defer srv.Close()
+
+	body := map[string]any{
+		"org":     "org",
+		"project": "proj",
+		"service": "svc",
+		"config":  map[string]any{},
+	}
+	first := postJSONWithBearer(t, srv, "/api/v1/admin/changes", body, "secret-key")
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first admin request: want 200, got %d", first.StatusCode)
+	}
+	second := postJSONWithBearer(t, srv, "/api/v1/admin/changes", body, "secret-key")
+	assertRateLimited(t, second)
+}
+
+func TestRateLimit_SecretResolve(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain: map[string]string{"LOG_LEVEL": "INFO"},
+		}},
+	}
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithRateLimits(handler.RateLimitSettings{
+		SecretResolve: handler.RateLimit{RequestsPerSecond: 1, Burst: 1},
+	}))
+	defer srv.Close()
+
+	path := "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true"
+	first := getWithBearer(t, srv, path, "secret-key")
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first resolve request: want 200, got %d", first.StatusCode)
+	}
+	second := getWithBearer(t, srv, path, "secret-key")
+	assertRateLimited(t, second)
+}
+
+func TestRateLimit_WatchEndpoints(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "current-config",
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{"enabled": true},
+		},
+	}
+	srv := newServerWithAPIKey(t, st, "", handler.WithRateLimits(handler.RateLimitSettings{
+		Watch: handler.RateLimit{RequestsPerSecond: 1, Burst: 1},
+	}))
+	defer srv.Close()
+
+	path := "/api/v1/orgs/org/projects/proj/services/svc/config/watch?version=stale"
+	first := get(t, srv, path)
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first watch request: want 200, got %d", first.StatusCode)
+	}
+	second := get(t, srv, path)
+	assertRateLimited(t, second)
+}
+
+func TestRateLimit_BatchEndpoint(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{"enabled": true},
+		},
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain: map[string]string{"LOG_LEVEL": "INFO"},
+		}},
+	}
+	srv := newServerWithAPIKey(t, st, "", handler.WithRateLimits(handler.RateLimitSettings{
+		Batch: handler.RateLimit{RequestsPerSecond: 1, Burst: 1},
+	}))
+	defer srv.Close()
+
+	body := map[string]any{
+		"queries": []map[string]string{
+			{"org": "org", "project": "proj", "service": "svc"},
+		},
+	}
+	first := postJSON(t, srv, "/api/v1/configs/batch", body)
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first batch request: want 200, got %d", first.StatusCode)
+	}
+	second := postJSON(t, srv, "/api/v1/configs/batch", body)
+	assertRateLimited(t, second)
+}
+
+func TestRateLimit_UnauthenticatedAdminDoesNotConsumeToken(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithRateLimits(handler.RateLimitSettings{
+		Admin: handler.RateLimit{RequestsPerSecond: 1, Burst: 1},
+	}))
+	defer srv.Close()
+
+	body := map[string]any{
+		"org":     "org",
+		"project": "proj",
+		"service": "svc",
+		"config":  map[string]any{},
+	}
+	unauthenticated := postJSON(t, srv, "/api/v1/admin/changes", body)
+	if unauthenticated.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated admin request: want 401, got %d", unauthenticated.StatusCode)
+	}
+	authenticated := postJSONWithBearer(t, srv, "/api/v1/admin/changes", body, "secret-key")
+	if authenticated.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated admin request should still have a token, got %d", authenticated.StatusCode)
 	}
 }

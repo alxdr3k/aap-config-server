@@ -78,7 +78,13 @@ func main() {
 	probe := &server.ReadinessProbe{}
 	h := handler.New(st, probe, cfg.APIKey,
 		handler.WithSecretDependencies(secretDeps),
-		handler.WithAppRegistry(appRegistry))
+		handler.WithAppRegistry(appRegistry),
+		handler.WithRateLimits(handler.RateLimitSettings{
+			Admin:         rateLimitFromConfig(cfg.RateLimitAdmin),
+			SecretResolve: rateLimitFromConfig(cfg.RateLimitSecretResolve),
+			Watch:         rateLimitFromConfig(cfg.RateLimitWatch),
+			Batch:         rateLimitFromConfig(cfg.RateLimitBatch),
+		}))
 
 	mux := http.NewServeMux()
 	h.Routes(mux)
@@ -91,6 +97,13 @@ func main() {
 	if err := srv.Run(ctx); err != nil {
 		slog.Error("server error", "err", err)
 		os.Exit(1)
+	}
+}
+
+func rateLimitFromConfig(cfg config.RateLimitConfig) handler.RateLimit {
+	return handler.RateLimit{
+		RequestsPerSecond: cfg.RequestsPerSecond,
+		Burst:             cfg.Burst,
 	}
 }
 

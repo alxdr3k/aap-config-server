@@ -16,7 +16,7 @@ from an atomically swapped in-memory snapshot.
 - current milestone: `P1-M3` hardening in progress
 - active tracks: `HARDEN`
 - active phase: `HARDEN-1A`
-- active slice: `HARDEN-1A.2`
+- active slice: `HARDEN-1A.3`
 - last accepted gate: `AC-041`
 - next gate: `P1-M3` / `AC-042`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -87,6 +87,10 @@ from an atomically swapped in-memory snapshot.
   `POST /api/v1/admin/git/webhook`. It accepts provider payloads only as an
   authenticated trigger, discards the body after a 1 MiB cap, calls
   `RefreshFromRepo`, and returns `updated`/`version` or `refresh_failed`.
+- Configurable token-bucket rate limiting for admin endpoints,
+  `resolve_secrets=true` env var reads, config/env watch endpoints, and
+  batch config/env reads. Limits are disabled by default and return
+  `429 rate_limited` with `Retry-After: 1` when enabled and exceeded.
 - Auth-gated admin write/delete/reload endpoints.
 - Auth-gated secret metadata read, admin secret writes, and
   `resolve_secrets=true` env var reads.
@@ -138,7 +142,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Planned
 
-- rate limiting, integration/load validation, and deployment hardening.
+- integration/load validation and deployment hardening.
 
 ## Explicit non-goals
 
@@ -148,8 +152,8 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `HARDEN-1A.2`: add configurable rate limiting for admin, secret
-   resolve, watch, and batch endpoints.
+1. Start `HARDEN-1A.3`: build an integration test harness with fake Git,
+   fake K8s, and fake Console dependencies.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -173,6 +177,9 @@ from an atomically swapped in-memory snapshot.
   webhook refresh operational extensions.
 - `HARDEN-1A.1` has parser coverage for schema rejection across service config,
   env vars, defaults, and secret metadata files.
+- `HARDEN-1A.2` has config/handler coverage for disabled defaults, invalid
+  limiter knob validation, per-endpoint-group `429 rate_limited` behavior, and
+  admin authentication before token consumption.
 - `EXT-1A.1` has local store coverage for immediate stale-version return,
   successful refresh notification, failed-refresh non-notification, and context
   cancellation.

@@ -86,6 +86,13 @@ Invalid request shape returns `400`; per-service read failures such as
 returned. The endpoint defaults to inherited reads and supports request-level
 `inherit=false`. It does not resolve secret values.
 
+Runtime-configured token-bucket rate limits can be enabled independently for
+admin endpoints, `resolve_secrets=true` env var reads, config/env watch
+endpoints, and the batch read endpoint. Each group requires a positive RPS and
+burst pair; the zero default disables limiting. Limited requests return
+`429 rate_limited` with `Retry-After: 1`. Admin endpoint limiting runs after
+API-key authentication so failed auth does not consume admin tokens.
+
 `GET /metrics` returns Prometheus text exposition. Implemented metric families
 cover HTTP request counts and duration histograms by method, route template,
 and status code; reload counts and duration histograms by mode/outcome; Git
@@ -337,6 +344,7 @@ only; live deployment wiring remains an external deployment-system concern per
 | App Registry webhook without valid API key | Request fails with `401 unauthorized`; cache is unchanged. |
 | Git webhook without valid API key | Request fails with `401 unauthorized`; repo refresh is not attempted. |
 | Git webhook pull/reload failure | Response is `503 refresh_failed`; last-known-good snapshot behavior is preserved. |
+| Enabled rate limit exceeded | Request fails with `429 rate_limited` and `Retry-After: 1`; no store/Git/secret operation is started. |
 | Admin delete succeeds but reload fails | Response is `503 deleted_but_reload_failed`; Git delete remains. |
 | Dirty `configs/` worktree during snapshot | Reload fails closed to avoid serving data not represented by HEAD. |
 | Unknown admin JSON field | Request fails with `400 invalid_body`. |

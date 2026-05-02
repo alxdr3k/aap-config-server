@@ -54,11 +54,12 @@ type Readiness interface {
 
 // Handler groups all HTTP handlers together.
 type Handler struct {
-	store       ConfigStore
-	readiness   Readiness
-	apiKey      string
-	appRegistry *registry.Cache
-	secretDeps  secret.Dependencies
+	store        ConfigStore
+	readiness    Readiness
+	apiKey       string
+	appRegistry  *registry.Cache
+	secretDeps   secret.Dependencies
+	rateLimiters endpointRateLimiters
 }
 
 const (
@@ -85,6 +86,14 @@ func WithSecretDependencies(deps secret.Dependencies) Option {
 func WithAppRegistry(cache *registry.Cache) Option {
 	return func(h *Handler) {
 		h.appRegistry = cache
+	}
+}
+
+// WithRateLimits wires endpoint-group token buckets. Omitted or zero-value
+// groups are disabled.
+func WithRateLimits(settings RateLimitSettings) Option {
+	return func(h *Handler) {
+		h.rateLimiters = newEndpointRateLimiters(settings)
 	}
 }
 
@@ -120,12 +129,12 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config",
 		h.getConfig)
 	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch",
-		h.watchConfig)
+		h.limitWatch(h.watchConfig))
 	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars",
 		h.getEnvVars)
 	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch",
-		h.watchEnvVars)
-	h.handle(mux, "POST /api/v1/configs/batch", h.postConfigsBatch)
+		h.limitWatch(h.watchEnvVars))
+	h.handle(mux, "POST /api/v1/configs/batch", h.limitBatch(h.postConfigsBatch))
 	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/history",
 		h.getHistory)
 	// Secret metadata is privileged even though values are never returned; auth
@@ -135,12 +144,12 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 		h.requireKey(h.getSecrets))
 
 	// Admin write — protected by API key
-	h.handle(mux, "POST /api/v1/admin/changes", h.requireKey(h.postChanges))
-	h.handle(mux, "POST /api/v1/admin/changes/revert", h.requireKey(h.postRevert))
-	h.handle(mux, "DELETE /api/v1/admin/changes", h.requireKey(h.deleteChanges))
-	h.handle(mux, "POST /api/v1/admin/reload", h.requireKey(h.adminReload))
-	h.handle(mux, "POST /api/v1/admin/git/webhook", h.requireKey(h.gitWebhook))
-	h.handle(mux, "POST /api/v1/admin/app-registry/webhook", h.requireKey(h.appRegistryWebhook))
+	h.handle(mux, "POST /api/v1/admin/changes", h.requireKey(h.limitAdmin(h.postChanges)))
+	h.handle(mux, "POST /api/v1/admin/changes/revert", h.requireKey(h.limitAdmin(h.postRevert)))
+	h.handle(mux, "DELETE /api/v1/admin/changes", h.requireKey(h.limitAdmin(h.deleteChanges)))
+	h.handle(mux, "POST /api/v1/admin/reload", h.requireKey(h.limitAdmin(h.adminReload)))
+	h.handle(mux, "POST /api/v1/admin/git/webhook", h.requireKey(h.limitAdmin(h.gitWebhook)))
+	h.handle(mux, "POST /api/v1/admin/app-registry/webhook", h.requireKey(h.limitAdmin(h.appRegistryWebhook)))
 }
 
 func (h *Handler) handle(mux *http.ServeMux, pattern string, next http.HandlerFunc) {
@@ -868,6 +877,9 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 	}
 	if resolveSecrets {
 		if !h.authenticate(w, r) {
+			return
+		}
+		if !h.allowSecretResolve(w) {
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")

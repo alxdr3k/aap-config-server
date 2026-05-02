@@ -49,6 +49,7 @@ default and return raw service-level files when `inherit=false`.
 | `secret.AuditEvent` / `secret.SlogAuditor` | Non-sensitive audit event boundary and slog-backed implementation for secret write/resolve activity. | `internal/secret/types.go`, `internal/secret/audit.go` |
 | `registry.App` / `registry.Cache` | Console-owned app registration record and in-memory registry snapshot. | `internal/registry/types.go`, `internal/registry/cache.go` |
 | `registry.ConsoleClient` | HTTP client that loads `GET /api/v1/apps?all=true` from AAP Console. | `internal/registry/client.go` |
+| `config.RateLimitConfig` / `handler.RateLimitSettings` | Runtime token-bucket settings and handler endpoint-group limiter wiring. | `internal/config/config.go`, `internal/handler/ratelimit.go` |
 | `store.SecretWrite` | Admin write boundary for plaintext secret values grouped by K8s Secret name before sealing. | `internal/store/types.go` |
 | `ChangeRequest` | Internal representation of admin write input. | `internal/store/types.go` |
 | `DeleteRequest` | Internal representation of admin delete input. | `internal/store/types.go` |
@@ -104,6 +105,9 @@ default and return raw service-level files when `inherit=false`.
 - Resolved env var reads map `env_vars.secret_refs` IDs through `secrets.yaml`
   metadata and refresh mounted files through `secret.VolumeReader`; responses
   are no-store and omit ETag.
+- Rate limit state is process-local token-bucket memory, grouped by admin,
+  secret resolve, watch, and batch surfaces. It is not persisted in Git or the
+  store snapshot.
 - Non-secret config/env read ETags are derived from response resource,
   service identity, resource version, `metadata.updated_at`, `inherit` view,
   and response content encoding; they are not stored in Git or in the snapshot
