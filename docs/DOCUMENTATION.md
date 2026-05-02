@@ -44,6 +44,7 @@ Use this table:
 | Roadmap taxonomy or slice status changes | update `docs/04_IMPLEMENTATION_PLAN.md` |
 | Active milestone / track / phase / slice changes | update `docs/context/current-state.md` |
 | Gate definition or acceptance status changes | update `docs/06_ACCEPTANCE_TESTS.md` |
+| User feedback reveals a defect, UX regression, or acceptance failure | triage through `docs/04_IMPLEMENTATION_PLAN.md`; update `docs/06_ACCEPTANCE_TESTS.md` and `docs/current/TESTING.md` when gate or regression evidence changes |
 | Runtime behavior changes | update `docs/current/RUNTIME.md` |
 | Module/file layout changes | update `docs/current/CODE_MAP.md` |
 | Parser/store/data model changes | update `docs/current/DATA_MODEL.md` |

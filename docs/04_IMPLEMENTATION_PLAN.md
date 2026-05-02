@@ -14,9 +14,19 @@ canonical view만 유지한다. 구현 단계의 얇은 문서 레이어
 | Milestone | 제품 / 사용자 관점의 delivery gate | `P0-M1` | "사용자가 어떤 상태를 얻는가"를 기준으로 정의 |
 | Track | 기술 영역 또는 큰 구현 흐름 | `CORE` | api, data, runtime, ops 같은 영역 |
 | Phase | track 안의 구현 단계 | `CORE-1A` | 같은 track 안에서 순서가 있는 단계 |
-| Slice / Task | 커밋 가능한 구현 단위 | `CORE-1A.1` | PR / commit / issue와 연결 가능한 크기 |
+| Slice | 커밋 가능한 구현/검증 단위 | `CORE-1A.1` | PR / commit / issue와 연결 가능한 크기 |
 | Gate | 검증 / acceptance 기준 | `AC-001` / `TEST-001` | `06_ACCEPTANCE_TESTS.md` 또는 테스트 위치로 연결 |
 | Evidence | 완료를 뒷받침하는 근거 | PR, code, tests, current docs | 본문 복제 대신 링크 / ID로 남김 |
+
+## Unplanned feedback
+
+User feedback from real usage is triaged before it enters the roadmap.
+
+- Clear defects, UX regressions, or acceptance failures may become small hotfix slices.
+- Broader product or architecture changes go through Q / DEC / PRD / roadmap updates.
+- Keep detailed feedback threads in the issue tracker. Record only the actionable
+  slice, gate, evidence, and next step here.
+- Bug fixes should leave regression evidence when practical.
 
 ## Status vocabulary
 

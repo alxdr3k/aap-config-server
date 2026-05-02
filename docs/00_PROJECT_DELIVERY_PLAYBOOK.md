@@ -47,7 +47,7 @@ SPIKE-001    Risk spike
 P0-M1        Milestone
 TRK          Track code (example)
 TRK-1B       Phase inside a track
-TRK-1B.5     Commit-sized slice / task
+TRK-1B.5     Commit-sized slice
 TRACE-001    Traceability row
 ```
 
@@ -57,7 +57,7 @@ Roadmap taxonomy:
 Milestone = 제품 / 사용자 관점의 delivery gate
 Track     = 기술 영역 / 큰 흐름
 Phase     = track 안의 구현 단계
-Slice     = 커밋 가능한 구현 단위
+Slice     = 커밋 가능한 구현/검증 단위
 Gate      = 검증 / acceptance 기준
 Evidence  = code / tests / PR / docs 같은 완료 근거
 ```
