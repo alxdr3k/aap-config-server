@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"fmt"
+	"math"
 	"net/http"
 
 	"golang.org/x/time/rate"
@@ -80,7 +82,18 @@ func (h *Handler) allowRateLimited(w http.ResponseWriter, limiter *rate.Limiter)
 	if limiter == nil || limiter.Allow() {
 		return true
 	}
-	w.Header().Set("Retry-After", "1")
+	w.Header().Set("Retry-After", retryAfterSeconds(limiter))
 	respondErrorCode(w, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded")
 	return false
+}
+
+// retryAfterSeconds returns the Retry-After header value derived from the
+// limiter's token-fill rate. The minimum is "1" so low-RPS (< 1 req/s)
+// limiters still report a useful wait estimate.
+func retryAfterSeconds(l *rate.Limiter) string {
+	secs := math.Ceil(1.0 / float64(l.Limit()))
+	if secs < 1 {
+		secs = 1
+	}
+	return fmt.Sprintf("%d", int(secs))
 }

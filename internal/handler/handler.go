@@ -384,7 +384,7 @@ func (h *Handler) appRegistryWebhook(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_body", h.explainDecodeError(err))
+		h.handleDecodeError(w, err)
 		return
 	}
 
@@ -565,7 +565,7 @@ func (h *Handler) waitForWatchChange(
 	defer cancel()
 	for {
 		if waitCtx.Err() != nil {
-			outcome = "timeout"
+			outcome = watchOutcome(waitCtx, r.Context())
 			w.WriteHeader(http.StatusNotModified)
 			return false
 		}
@@ -582,7 +582,7 @@ func (h *Handler) waitForWatchChange(
 		_, changed, err := h.store.WaitForVersionChange(waitCtx, headVersion)
 		if err != nil {
 			if !changed && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
-				outcome = "timeout"
+				outcome = watchOutcome(waitCtx, r.Context())
 				w.WriteHeader(http.StatusNotModified)
 				return false
 			}
@@ -591,11 +591,22 @@ func (h *Handler) waitForWatchChange(
 			return false
 		}
 		if !changed {
-			outcome = "timeout"
+			outcome = watchOutcome(waitCtx, r.Context())
 			w.WriteHeader(http.StatusNotModified)
 			return false
 		}
 	}
+}
+
+// watchOutcome returns the metric outcome label for a non-change watch exit.
+// If the request context was canceled (client disconnect) the outcome differs
+// from a server-side deadline expiry so the two are distinguishable in metrics.
+func watchOutcome(waitCtx, reqCtx context.Context) string {
+	if errors.Is(reqCtx.Err(), context.Canceled) {
+		return "client_canceled"
+	}
+	_ = waitCtx
+	return "timeout"
 }
 
 func (h *Handler) resourceVersion(
@@ -748,7 +759,7 @@ func (h *Handler) postConfigsBatch(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_body", h.explainDecodeError(err))
+		h.handleDecodeError(w, err)
 		return
 	}
 	if len(body.Queries) == 0 {
@@ -947,6 +958,14 @@ func (h *Handler) writeEnvVarsResponse(
 	}
 
 	if envConfig == nil {
+		h.recordSecretAudit(context.WithoutCancel(ctx), secret.AuditEvent{
+			Action:    "secret_env_resolve",
+			Result:    "no_env_vars",
+			Org:       org,
+			Project:   project,
+			Service:   service,
+			SecretIDs: []string{},
+		})
 		respondJSON(w, http.StatusOK, map[string]any{
 			"metadata": meta,
 			"env_vars": map[string]any{
@@ -1177,7 +1196,7 @@ func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_body", h.explainDecodeError(err))
+		h.handleDecodeError(w, err)
 		return
 	}
 
@@ -1261,7 +1280,7 @@ func (h *Handler) postRevert(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_body", h.explainDecodeError(err))
+		h.handleDecodeError(w, err)
 		return
 	}
 
@@ -1319,6 +1338,18 @@ func (h *Handler) explainDecodeError(err error) string {
 	return "invalid JSON body: " + msg
 }
 
+// handleDecodeError responds with 413 for oversized payloads and 400 for all
+// other JSON decode errors. Call immediately after a failed dec.Decode.
+func (h *Handler) handleDecodeError(w http.ResponseWriter, err error) {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		respondErrorCode(w, http.StatusRequestEntityTooLarge, "payload_too_large",
+			"request body must be at most 1MiB")
+		return
+	}
+	respondErrorCode(w, http.StatusBadRequest, "invalid_body", h.explainDecodeError(err))
+}
+
 type deleteChangesRequest struct {
 	Org     string `json:"org"`
 	Project string `json:"project"`
@@ -1331,7 +1362,7 @@ func (h *Handler) deleteChanges(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_body", "invalid JSON body: "+err.Error())
+		h.handleDecodeError(w, err)
 		return
 	}
 

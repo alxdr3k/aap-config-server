@@ -3112,3 +3112,101 @@ func TestRateLimit_UnauthenticatedAdminDoesNotConsumeToken(t *testing.T) {
 		t.Fatalf("authenticated admin request should still have a token, got %d", authenticated.StatusCode)
 	}
 }
+
+func TestRateLimit_RetryAfterReflectsRPS(t *testing.T) {
+	st := newFakeStore()
+	// 0.5 RPS → one token every 2 s → Retry-After should be "2"
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithRateLimits(handler.RateLimitSettings{
+		Admin: handler.RateLimit{RequestsPerSecond: 0.5, Burst: 1},
+	}))
+	defer srv.Close()
+
+	body := map[string]any{"org": "org", "project": "proj", "service": "svc", "config": map[string]any{}}
+	first := postJSONWithBearer(t, srv, "/api/v1/admin/changes", body, "secret-key")
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first request: want 200, got %d", first.StatusCode)
+	}
+	second := postJSONWithBearer(t, srv, "/api/v1/admin/changes", body, "secret-key")
+	if second.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("want 429, got %d", second.StatusCode)
+	}
+	if got := second.Header.Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After: want 2, got %q", got)
+	}
+}
+
+func TestPayloadTooLarge_PostChanges(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "secret-key")
+	defer srv.Close()
+
+	bigBody := `{"org":"o","project":"p","service":"s","config":{"k":"` + strings.Repeat("x", 1<<20+1) + `"}}`
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/admin/changes", strings.NewReader(bigBody))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret-key")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Error struct{ Code string `json:"code"` } `json:"error"`
+	}
+	decodeJSON(t, resp, &body)
+	if body.Error.Code != "payload_too_large" {
+		t.Fatalf("error code: want payload_too_large, got %q", body.Error.Code)
+	}
+}
+
+func TestPayloadTooLarge_PostConfigsBatch(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "")
+	defer srv.Close()
+
+	bigBody := `{"queries":[{"org":"o","project":"p","service":"s","extra":"` + strings.Repeat("x", 1<<20+1) + `"}]}`
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/configs/batch", strings.NewReader(bigBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413, got %d", resp.StatusCode)
+	}
+}
+
+func TestSecretResolve_AuditWhenNoEnvVars(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+
+	var auditedResults []string
+	auditor := auditFuncAdapter(func(_ context.Context, event secret.AuditEvent) error {
+		if event.Action == "secret_env_resolve" {
+			auditedResults = append(auditedResults, event.Result)
+		}
+		return nil
+	})
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithSecretDependencies(secret.Dependencies{
+		Auditor: auditor,
+	}))
+	defer srv.Close()
+
+	resp := getWithBearer(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true", "secret-key")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if len(auditedResults) != 1 || auditedResults[0] != "no_env_vars" {
+		t.Fatalf("want audit result [no_env_vars], got %v", auditedResults)
+	}
+}
+
+type auditFuncAdapter func(context.Context, secret.AuditEvent) error
+
+func (f auditFuncAdapter) Record(ctx context.Context, event secret.AuditEvent) error {
+	return f(ctx, event)
+}
