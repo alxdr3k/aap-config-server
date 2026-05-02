@@ -138,11 +138,15 @@ func (a *KubernetesApplier) applyConfigMap(ctx context.Context, target ApplyTarg
 				configMapDataKey: string(configYAML),
 			},
 		}, metav1.CreateOptions{})
+		if apierrors.IsAlreadyExists(err) {
+			// Concurrent creation race: retry the patch now that the resource exists.
+			_, err = client.Patch(ctx, target.ConfigMapName, types.MergePatchType, patch, metav1.PatchOptions{})
+		}
 	case err != nil:
 		return fmt.Errorf("patch configmap %s/%s: %w", target.Namespace, target.ConfigMapName, err)
 	}
 	if err != nil {
-		return fmt.Errorf("create configmap %s/%s: %w", target.Namespace, target.ConfigMapName, err)
+		return fmt.Errorf("create/patch configmap %s/%s: %w", target.Namespace, target.ConfigMapName, err)
 	}
 	return nil
 }
@@ -171,11 +175,14 @@ func (a *KubernetesApplier) applySecret(ctx context.Context, target ApplyTarget,
 				envSHDataKey: envSH,
 			},
 		}, metav1.CreateOptions{})
+		if apierrors.IsAlreadyExists(err) {
+			_, err = client.Patch(ctx, target.SecretName, types.MergePatchType, patch, metav1.PatchOptions{})
+		}
 	case err != nil:
 		return fmt.Errorf("patch secret %s/%s: %w", target.Namespace, target.SecretName, err)
 	}
 	if err != nil {
-		return fmt.Errorf("create secret %s/%s: %w", target.Namespace, target.SecretName, err)
+		return fmt.Errorf("create/patch secret %s/%s: %w", target.Namespace, target.SecretName, err)
 	}
 	return nil
 }

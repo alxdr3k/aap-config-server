@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -62,6 +63,7 @@ func (c *Cache) Replace(apps []App, loadedAt time.Time) {
 	for _, app := range apps {
 		next, err := normalizeApp(app)
 		if err != nil {
+			slog.Warn("registry Replace: dropping malformed app entry", "err", err, "org", app.Org, "project", app.Project, "service", app.Service)
 			continue
 		}
 		key := keyFor(next)

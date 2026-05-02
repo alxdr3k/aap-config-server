@@ -14,6 +14,8 @@ type DebounceConfig struct {
 }
 
 // Debouncer tracks leading-edge debounce state for rollout triggers.
+// Not safe for concurrent use; the caller must serialize all method calls
+// (e.g., within a single event-loop goroutine).
 type Debouncer struct {
 	cfg           DebounceConfig
 	cooldownUntil time.Time

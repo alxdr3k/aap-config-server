@@ -196,13 +196,16 @@ func (r *FileVolumeReader) handleWatchEvent(
 		}
 		return
 	}
-	for _, ref := range byDir[clean] {
-		path, err := r.Path(ref)
-		if err != nil {
-			sendVolumeEvent(ctx, out, VolumeEvent{Reference: ref, Path: clean, Err: err})
-			continue
+	if refs := byDir[clean]; len(refs) > 0 {
+		for _, ref := range refs {
+			path, err := r.Path(ref)
+			if err != nil {
+				sendVolumeEvent(ctx, out, VolumeEvent{Reference: ref, Path: clean, Err: err})
+				continue
+			}
+			r.refreshFromEvent(ctx, ref, path, classifyVolumeOp(event.Op), out)
 		}
-		r.refreshFromEvent(ctx, ref, path, classifyVolumeOp(event.Op), out)
+		return
 	}
 	if refs := byDir[filepath.Dir(clean)]; len(refs) > 0 {
 		for _, ref := range refs {
