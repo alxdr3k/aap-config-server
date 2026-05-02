@@ -388,11 +388,18 @@ func (r *Repo) CommitAndPushFunc(ctx context.Context, msg string, build CommitFi
 			return hash.String(), nil
 		}
 		if !isNonFastForwardPush(pushErr) {
+			// Terminal push error (auth, transport, etc.): reset the local commit
+			// so the local clone stays in sync with the remote. Without this the
+			// local HEAD would sit ahead of origin, causing Snapshot() to serve a
+			// commit that was never accepted by the remote.
+			if rerr := resetToParent(r.repo, w); rerr != nil {
+				slog.Error("failed to reset after terminal push error", "resetErr", rerr, "pushErr", pushErr)
+			}
 			return "", apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
 		}
 
-		// Push rejected by remote: undo the local commit so the next loop
-		// iteration starts clean from a pull.
+		// Push rejected by remote (non-fast-forward): undo the local commit so
+		// the next loop iteration starts clean from a pull.
 		slog.Warn("git push rejected, will retry after pull", "attempt", attempt+1)
 		if err := resetToParent(r.repo, w); err != nil {
 			return "", fmt.Errorf("reset after push rejection: %w", err)
@@ -480,6 +487,9 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (h
 			return hash.String(), nil
 		}
 		if !isNonFastForwardPush(pushErr) {
+			if rerr := resetToParent(r.repo, w); rerr != nil {
+				slog.Error("failed to reset after terminal push (delete) error", "resetErr", rerr, "pushErr", pushErr)
+			}
 			return "", apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
 		}
 
@@ -581,6 +591,9 @@ func (r *Repo) RestoreServiceFilesAndPush(
 			return hash.String(), deleted, nil
 		}
 		if !isNonFastForwardPush(pushErr) {
+			if rerr := resetToParent(r.repo, w); rerr != nil {
+				slog.Error("failed to reset after terminal push (restore) error", "resetErr", rerr, "pushErr", pushErr)
+			}
 			return "", nil, apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
 		}
 
@@ -840,12 +853,19 @@ func (r *Repo) ReadServiceFilesAtCommit(
 		return nil, err
 	}
 
+	serviceRoot := serviceConfigRoot(org, project, service)
+	subtree, err := tree.Tree(serviceRoot)
+	if err != nil {
+		// Service did not exist at this commit.
+		return nil, nil
+	}
 	var files []ServiceFileContent
-	err = tree.Files().ForEach(func(file *object.File) error {
+	err = subtree.Files().ForEach(func(file *object.File) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		change, ok := ClassifyServiceFileChange(file.Name, org, project, service)
+		repoPath := serviceRoot + "/" + file.Name
+		change, ok := ClassifyServiceFileChange(repoPath, org, project, service)
 		if !ok {
 			return nil
 		}

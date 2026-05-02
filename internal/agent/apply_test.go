@@ -172,9 +172,9 @@ func TestKubernetesApplierErrorContext(t *testing.T) {
 		want     string
 	}{
 		{name: "patch configmap", verb: "patch", resource: "configmaps", want: "patch configmap ai-platform/litellm-config"},
-		{name: "create configmap", verb: "create", resource: "configmaps", want: "create configmap ai-platform/litellm-config"},
+		{name: "create configmap", verb: "create", resource: "configmaps", want: "create/patch configmap ai-platform/litellm-config"},
 		{name: "patch secret", verb: "patch", resource: "secrets", want: "patch secret ai-platform/litellm-env"},
-		{name: "create secret", verb: "create", resource: "secrets", want: "create secret ai-platform/litellm-env"},
+		{name: "create secret", verb: "create", resource: "secrets", want: "create/patch secret ai-platform/litellm-env"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -56,7 +56,7 @@ func Bootstrap(ctx context.Context, cache *Cache, loader Loader, opts BootstrapO
 			return BootstrapResult{
 				Loaded:     true,
 				Attempts:   attempt,
-				AppsLoaded: len(apps),
+				AppsLoaded: cache.Status().AppsLoaded,
 			}
 		}
 		lastErr = err
