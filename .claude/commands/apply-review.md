@@ -14,6 +14,17 @@ $ARGUMENTS
 
 ---
 
+## Model Routing
+
+Claude Code에서 model-routed sub-agent를 사용할 수 있으면 아래 원칙을 따른다. 사용할 수 없거나 handoff 비용이 더 크면 같은 세션에서 수행한다.
+
+- 복잡하거나 논쟁적인 review item의 타당성 판단은 Opus read-only reviewer를 우선한다.
+- 실제 코드 수정은 Sonnet/main execution을 기본으로 한다. 작은 todo마다 별도 worker를 만들지 않는다.
+- URL/PR/comment fetch, 상태 확인, 단순 정리는 script/CLI를 먼저 사용한다. LLM 요약이 필요할 때만 Haiku 또는 Explore를 쓴다.
+- `dev-cycle-helper.sh review-dossier`를 사용할 수 있으면 review item 적용 전후에 dossier를 만들어 diff size, 파일 확산, 계약/중요 경로를 먼저 확인한다. dossier의 `opus_or_high_effort` 권장 또는 item 자체의 semantic risk가 있을 때만 Opus reviewer를 강하게 우선한다.
+- Opus reviewer에게는 review 원문, 관련 diff, helper-generated review dossier 또는 수동 risk summary, 필요한 call site, 검증 출력만 전달한다. 전체 repo나 이전 transcript를 기본으로 넘기지 않는다.
+- 같은 파일군에서 3회 이상 반박/재검토가 이어질 때만 reviewer resume을 고려한다. 기본은 이전 finding 요약 + incremental diff로 새 검토를 요청한다.
+
 ## How to execute
 
 ### 1. Parse and plan (do this first, always)

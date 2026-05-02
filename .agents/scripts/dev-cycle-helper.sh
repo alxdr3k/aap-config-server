@@ -14,6 +14,7 @@ DEV_CYCLE_HELPER_SCRIPT_DIR="$(cd -P "$(dirname "$source_path")" && pwd)"
 DEV_CYCLE_HELPER_LIB_DIR="$DEV_CYCLE_HELPER_SCRIPT_DIR/dev-cycle-helper"
 
 source "$DEV_CYCLE_HELPER_LIB_DIR/core.sh"
+source "$DEV_CYCLE_HELPER_LIB_DIR/change-scope.sh"
 source "$DEV_CYCLE_HELPER_LIB_DIR/brief-state.sh"
 source "$DEV_CYCLE_HELPER_LIB_DIR/brief-render.sh"
 source "$DEV_CYCLE_HELPER_LIB_DIR/dispatch.sh"

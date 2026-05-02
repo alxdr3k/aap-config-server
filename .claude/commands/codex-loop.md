@@ -7,12 +7,22 @@ description: 현재 PR의 codex 리뷰를 기다리고 코멘트 수정 후 push
 
 사용자에게 보이는 보고, feedback 정리, 질문은 한국어로 작성한다. 코드, 명령, 파일명, 원문 인용은 원문 언어를 유지한다.
 
-## 핵심 원칙: 대기 사이클마다 foreground sync 1회
+## Model Routing
+
+Claude Code에서 model-routed sub-agent를 사용할 수 있으면 아래 원칙을 따른다. 사용할 수 없거나 handoff 비용이 더 크면 같은 세션에서 수행한다.
+
+- PR 감지, polling, pass reaction 확인, review 요청 comment 작성은 `wait-codex-review.sh`가 담당한다. 이 작업을 Haiku sub-agent로 대체하지 않는다.
+- 새 feedback의 타당성 검토가 복잡하거나 보안/아키텍처/계약 변경과 관련되면 Opus read-only reviewer를 사용한다. `dev-cycle-helper.sh review-dossier`를 사용할 수 있으면 먼저 dossier를 만들고, `opus_or_high_effort` 권장 또는 feedback 자체의 semantic risk가 있을 때만 넘긴다.
+- feedback 수정은 Sonnet/main execution을 기본으로 하고, 작은 수정에는 별도 worker를 만들지 않는다.
+- Haiku 또는 Explore는 PR metadata/comment를 짧게 요약하거나 넓은 read-only 탐색을 압축할 때만 사용한다.
+- 같은 PR에서 동일 파일군에 대해 3회 이상 review/fix가 반복될 때만 Opus reviewer resume을 고려한다. 기본은 이전 finding 요약 + incremental diff를 새로 전달한다.
+
+## 핵심 원칙: 대기 사이클마다 foreground script 1회
 
 각 대기 사이클은 `wait-codex-review.sh`를 foreground로 1회 실행해 처리한다.
-스크립트는 polling sleep 동안 idle이라 그 시간 동안 토큰을 거의 쓰지 않는다.
-GitHub app으로 즉시 확인 가능한 상태가 있어도 대기/polling은 스크립트에 맡긴다.
-feedback을 수정하고 push한 뒤에는 다음 대기 사이클로 보고 스크립트를 다시 실행한다.
+스크립트가 내부 polling을 담당하고 종료 시점에 필요한 결과만 반환한다. GitHub app으로
+즉시 확인 가능한 상태가 있어도 대기/polling은 스크립트에 맡긴다. feedback을 수정하고
+push한 뒤에는 다음 대기 사이클로 보고 스크립트를 다시 실행한다.
 
 ```bash
 CODEX_REVIEW_HELPER=".agents/scripts/wait-codex-review.sh"
@@ -21,27 +31,37 @@ CODEX_REVIEW_HELPER=".agents/scripts/wait-codex-review.sh"
 bash "$CODEX_REVIEW_HELPER"
 ```
 
-다음 패턴은 **금지** — 매 cycle마다 stdout/상태를 확인하면 토큰을 그대로 다 쓰게 되어 스크립트의 의미가 사라짐:
-- ❌ `bash ... &` (background로 띄우고 polling)
-- ❌ `run_in_background: true` 후 매 cycle output check
-- ❌ Monitor 도구로 stream watch
-- ❌ 매 sleep 사이에 상태 polling
+기본 stdout은 기존처럼 사람이 읽는 feedback 출력이다. 구조화된 관찰이 필요하면 동일한
+foreground 호출에 `--json`을 붙이거나 `CODEX_REVIEW_OUTPUT=json`을 설정한다. 이 모드는
+exit code를 바꾸지 않고 stdout에 compact `schema_version:1`,
+`kind:"codex_review_observation"` JSON 1개를 출력한다.
+
+다음 패턴은 금지한다.
+
+- `bash ... &` 로 background polling
+- background 실행 후 주기적 output 확인
+- 매 sleep 사이에 PR 상태를 다시 polling
+- 별도 monitor 도구로 stream watch
 
 ## 절차
 
-1. PR 만든 직후, 또는 push 직후, 위 명령을 **foreground로 1회** 실행한다.
-2. 종료될 때까지 기다린다 (스크립트가 알아서 polling).
-3. 종료 코드에 따라 처리:
+1. PR 만든 직후, 또는 push 직후, 스크립트를 foreground로 1회 실행한다.
+2. 종료될 때까지 기다린다. 스크립트가 PR 감지, baseline 계산, feedback/reaction
+   polling을 처리한다.
+3. 종료 코드에 따라 처리한다.
 
-   | exit | 의미 | 다음 행동 |
-   |------|------|-----------|
-   | 0 | codex가 👍 reaction 추가 — 리뷰 통과 | check 확인 후 PR merge |
-   | 1 | 새 코멘트/리뷰가 stdout에 출력됨 | 분석 → 코드 수정 → commit → push → 1번부터 재시도 |
-   | 2 | 두 번째 타임아웃 또는 review 요청 미확인 | loop 종료, 사용자에게 보고 |
-   | 3 | PR 감지 실패 | 첫 인자로 PR 번호 또는 URL 전달 |
-   | 4 | 영구 API 에러 (401/403/404) | 사용자에게 인증·권한 점검 요청 |
+| exit | 의미 | 다음 행동 |
+| ---- | ---- | --------- |
+| 0 | Codex pass reaction 감지 | checks 확인 후 PR merge |
+| 1 | 새 comment/review가 stdout에 출력됨 | 분석 -> 수정 -> commit -> push -> 스크립트 재실행 |
+| 2 | 두 번째 timeout 또는 review 요청 미확인 | loop 종료, 사용자에게 타임아웃 보고 |
+| 3 | PR 감지 실패 | PR 번호 또는 URL 요청 후 스크립트 인자로 재실행 |
+| 4 | 진행을 막는 API 오류 | 인증/권한/네트워크 문제 보고 |
 
-4. exit 1 후 push가 끝나면 다시 1번부터.
+첫 successful 조회에서 PR의 comment/review/reaction이 모두 비어 있으면 helper는 한 번만
+`CODEX_INITIAL_EMPTY_DELAY`초, 기본 300초를 쉰 뒤 기존 `CODEX_POLL_INTERVAL`로
+계속 조회한다. PR 생성 직후 Codex/GitHub 쪽 초기 처리 지연 때문에 빈 PR을 너무 촘촘하게
+polling하지 않기 위한 동작이다.
 
 각 polling iter에서 helper는 PR 본문 reaction과 인증 사용자 comment의 reaction을 확인한다.
 
@@ -51,9 +71,19 @@ bash "$CODEX_REVIEW_HELPER"
 - comment를 남긴 뒤 다음 3번의 polling iter 안에 PR 본문 또는 내 comment에 `eyes` reaction이 생기지 않으면 exit 2로 종료한다.
 - 일반 polling timeout은 한 번 더 대기하고, 두 번째 timeout에서 exit 2로 종료한다.
 
+## Feedback 처리
+
+- codex review 결과를 그대로 작업 목록으로 받아들이지 말고 적대적/비판적으로 재평가한다. 각 comment/review item마다 주장, 근거, 재현 가능성, 실제 영향, severity, 범위 적합성을 먼저 판정한다.
+- Opus reviewer를 사용할 경우 raw PR 전체를 넘기지 말고 새 feedback, 관련 diff, helper-generated review dossier 또는 수동 risk summary, 재현/검증 출력, 이전 finding 요약만 전달한다.
+- 유효한 item은 가장 합리적인 해결 방식을 선택한다: root-cause code fix, test 보강, 문서/계약 정정, 요구사항 clarification, 또는 사용자 결정 요청. 리뷰를 만족시키려고 보안/검증/계약을 약화하거나 symptom-only patch를 만들지 않는다.
+- 코멘트가 모호하거나 우선순위 판단이 필요하면 코드 수정 전 사용자에게 확인한다.
+- 이미 처리된 이슈, 재현 불가 항목, 범위 밖 요구는 근거를 남기고 제외할 수 있다.
+- 수정은 최소 diff로 하고, 관련 테스트와 repo가 정의한 검증 명령을 다시 실행한다.
+- push 후 스크립트를 다시 foreground로 실행한다.
+
 ## Merge 처리
 
-exit 0은 "Codex가 thumbs-up pass reaction을 달았다"는 뜻이다. 이 경우 사용자의 추가 확인을 기다리지 말고 PR을 merge한다. 단, merge 전 다음을 확인한다.
+exit 0은 Codex pass reaction을 감지했다는 뜻이다. 이 경우 사용자의 추가 확인을 기다리지 말고 PR을 merge한다. 단, merge 전 다음을 확인한다.
 
 1. PR이 draft가 아니어야 한다.
 2. required checks가 통과해야 한다.
@@ -89,13 +119,20 @@ branch protection, merge queue, required check pending 때문에 즉시 merge가
 | `CODEX_PASS_ACTOR` | `chatgpt-codex-connector[bot]` | 통과 reaction을 다는 봇 login |
 | `CODEX_PASS_REACTION` | `+1` | 통과를 의미하는 reaction content |
 | `CODEX_REVIEW_REQUEST_BODY` | `@codex review` | `eyes` acknowledgement가 없을 때 1회 남기는 comment |
+| `CODEX_REVIEW_OUTPUT` | `human` | `json`이면 structured observation을 stdout에 출력 |
 
 ## 인자 형식
 
 - 인자 없음: 현재 브랜치의 PR 자동 감지
 - PR 번호: `bash "$CODEX_REVIEW_HELPER" 42`
 - PR URL: `bash "$CODEX_REVIEW_HELPER" https://github.com/owner/repo/pull/42`
+- structured observation: `bash "$CODEX_REVIEW_HELPER" --json 42`
 
-## 작업 지시 시 주의
+## Structured Observation
 
-코멘트가 모호하거나 우선순위 판단이 필요하면 코드 수정 전 사용자에게 확인. 합리적이지 않은 트집(이미 처리된 이슈, 비현실적 엣지케이스)은 근거를 남기고 제외할 수 있다. thumbs-up pass reaction을 받았고 checks가 통과하면 PR은 merge까지 진행한다.
+`--json` 출력은 DevDeck 같은 projection layer가 나중에 읽을 수 있는 작은 상태 스냅샷이다.
+한 줄 compact JSON이므로 필요하면 호출자가 그대로 JSONL log에 append할 수 있다.
+필드는 versioned envelope, repo/PR/baseline, pass reaction 관찰 상태, feedback items,
+timeout 상태, review request/eyes acknowledgement 상태, API error classification,
+`next_allowed_actions`를 포함한다. 이 JSON은 machine state이고, Markdown/stdout human
+feedback을 대체하지 않는다. codex-loop 자체는 기존 exit code 기반 분기를 유지한다.

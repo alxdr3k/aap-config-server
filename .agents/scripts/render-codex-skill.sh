@@ -177,10 +177,13 @@ if [[ -f "$target" ]]; then
     fi
   elif ! cmp -s "$target" "$tmp_body"; then
     if migration_enabled; then
+      cp "$target" "${target}.bak"
       if has_nonempty_overlay; then
-        echo "Migrating legacy direct-edited skill with repo override: $target" >&2
+        echo "Migrating legacy direct-edited skill with repo override: $target (backup: ${target}.bak)" >&2
+        diff "${target}.bak" "$tmp_body" >&2 || true
       else
-        echo "Migrating legacy direct-edited skill without repo override: $target" >&2
+        echo "Migrating legacy direct-edited skill without repo override: $target (backup: ${target}.bak)" >&2
+        diff "${target}.bak" "$tmp_body" >&2 || true
       fi
     else
       echo "Legacy direct-edited skill without generated marker: $target" >&2

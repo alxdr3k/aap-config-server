@@ -3,7 +3,7 @@
 init_brief() {
   local run_id started_at start_epoch state_dir log jsonl run_json run_id_file start_epoch_file
   require_jq || return 1
-  run_id="$(date -u +%Y%m%dT%H%M%SZ)"
+  run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
   started_at="$(iso_now)"
   start_epoch="$(date -u +%s)"
   state_dir="$(ensure_state_dir)"
@@ -160,12 +160,14 @@ backfill_jsonl_from_markdown_if_needed() {
     cycle != "" && /^- Work: / { sub(/^- Work: /, ""); work = $0; next }
     cycle != "" && /^- Verification: / { sub(/^- Verification: /, ""); verification = $0; next }
     cycle != "" && /^- Review\/Ship: / { sub(/^- Review\/Ship: /, ""); review = $0; next }
+    cycle != "" && /^- Review\/Land: / { sub(/^- Review\/Land: /, ""); review = $0; next }
     cycle != "" && /^- Risk: / { sub(/^- Risk: /, ""); risk = $0; next }
     cycle != "" && /^- 결과: / { sub(/^- 결과: /, ""); result = $0; next }
     cycle != "" && /^- 이번에 한 일: / { sub(/^- 이번에 한 일: /, ""); work = $0; next }
     cycle != "" && /^- 결론: / { sub(/^- 결론: /, ""); conclusion = $0; next }
     cycle != "" && /^- 검증: / { sub(/^- 검증: /, ""); verification = $0; next }
     cycle != "" && /^- 리뷰\/배포: / { sub(/^- 리뷰\/배포: /, ""); review = $0; next }
+    cycle != "" && /^- 리뷰\/반영: / { sub(/^- 리뷰\/반영: /, ""); review = $0; next }
     cycle != "" && /^- 리스크: / { sub(/^- 리스크: /, ""); risk = $0; next }
     END { flush() }
   ' "$log" | while IFS="$(printf '\034')" read -r cycle result work conclusion verification review risk; do
@@ -196,6 +198,7 @@ backfill_jsonl_from_markdown_if_needed() {
           conclusion:{summary_ko:$conclusion},
           changes:[],
           verification:[{kind:"legacy_markdown", status:"recorded", summary_ko:$verification}],
+          review_land:{status:"recorded", summary_ko:$review},
           review_ship:{status:"recorded", summary_ko:$review},
           next_candidates:[],
           risks:[],
@@ -227,6 +230,7 @@ backfill_jsonl_from_markdown_if_needed() {
           conclusion:{summary_ko:$conclusion},
           changes:[],
           verification:[{kind:"legacy_markdown", status:"recorded", summary_ko:$verification}],
+          review_land:{status:"recorded", summary_ko:$review},
           review_ship:{status:"recorded", summary_ko:$review},
           next_candidates:[],
           risks:[{summary_ko:$risk}],

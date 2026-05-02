@@ -7,7 +7,8 @@ render_cycle_markdown() {
       (.result // "" | tostring) as $r |
       ($r | ascii_downcase | gsub("[ _-]"; "")) as $n |
       if $n == "allclear" then "ALL CLEAR"
-      elif $n == "shipped" then "배포 완료 (shipped)"
+      elif $n == "landed" then "반영 완료 (landed)"
+      elif $n == "shipped" then "반영 완료 (shipped)"
       elif $n == "blocked" then "차단됨 (blocked)"
       elif $n == "docfixneeded" then "문서 수정 필요 (doc_fix_needed)"
       else $r end;
@@ -43,17 +44,28 @@ render_cycle_markdown() {
       (if (.issue_url // "") != "" then " (이슈: " + (.issue_url | tostring) + ")" else "" end) +
       (if (.issue_error // "") != "" then " (이슈 생성 실패: " + (.issue_error | tostring) + ")" else "" end) +
       (if (.next_action_ko // "") != "" then " 다음 조치: " + (.next_action_ko | tostring) else "" end);
+    def review_land:
+      .review_land // .review_ship // {};
+    def change_scope_line:
+      "- 변경 범위: " + ((.change_scope.kind // "기록 없음") | tostring) +
+      (if (.change_scope.changed_files_count // null) != null then " (" + ((.change_scope.changed_files_count) | tostring) + " files)" else "" end) +
+      (if (.change_scope.contract_surface // false) then ", contract surface" else "" end);
+    def verification_plan_line:
+      "- 검증 계획: " + ((.verification_plan.profile // "기록 없음") | tostring) +
+      (if (.verification_plan.full_ci_required // true) then ", full CI 필요" else ", unit/app CI 기본 생략" end);
     [
       "사이클 \(.cycle) 브리핑",
       "",
       "- 결과: \(result_label)",
       field("이번에 한 일"; joined(.actions)),
       "- 결론: \(.conclusion.summary_ko // "기록 없음")" + (if (.conclusion.reason_ko // "") != "" then " " + (.conclusion.reason_ko | tostring) else "" end),
+      (if has("change_scope") then change_scope_line else empty end),
+      (if has("verification_plan") then verification_plan_line else empty end),
       (if ((.next_candidates // []) | length) > 0 then "- 다음 검토 후보:\n" + ((.next_candidates // []) | map("  " + candidate_line) | join("\n")) else empty end),
       (if has("auto_promotion_candidates") then (if ((.auto_promotion_candidates // []) | length) > 0 then "- 자동 승격 검토:\n" + ((.auto_promotion_candidates // []) | map("  " + promotion_candidate_line) | join("\n")) else "- 자동 승격 검토: 후보 없음" end) else empty end),
       (if has("auto_promotions") then (if ((.auto_promotions // []) | length) > 0 then "- 자동 승격:\n" + ((.auto_promotions // []) | map("  " + promotion_line) | join("\n")) else "- 자동 승격: 없음" end) else empty end),
       field("검증"; joined(.verification)),
-      "- 리뷰/배포: \(.review_ship.summary_ko // .review_ship.status // "기록 없음")",
+      "- 리뷰/반영: \(review_land.summary_ko // review_land.status // "기록 없음")",
       (if ((.risks // []) | length) > 0 then "- 리스크:\n" + ((.risks // []) | map("  - " + risk_line) | join("\n")) else "- 리스크: 없음" end)
     ] | join("\n")
   ' "$payload_file"
@@ -76,6 +88,19 @@ finish_cycle_json_file() {
     def item_summary: ((.summary_ko // .summary // .command // "") | nonempty_string);
     def optional_item_summary: ((.summary_ko // .summary // .id // "") | nonempty_string);
     def candidate_item: optional_item_summary and ((has("eligible") | not) or (.eligible | type == "boolean"));
+    def review_item: type == "object" and ((.summary_ko // .status // "") | nonempty_string);
+    def optional_change_scope:
+      (has("change_scope") | not) or
+      (.change_scope | type == "object" and (.kind | nonempty_string) and
+        ((.review_required // true) | type == "boolean") and
+        ((has("changed_files_count") | not) or ((.changed_files_count | type) == "number" and .changed_files_count >= 0)) and
+        ((has("contract_surface") | not) or ((.contract_surface | type) == "boolean")));
+    def optional_verification_plan:
+      (has("verification_plan") | not) or
+      (.verification_plan | type == "object" and (.profile | nonempty_string) and
+        ((.full_ci_required // true) | type == "boolean") and
+        ((has("checks") | not) or ((.checks | type) == "array")) and
+        ((has("skipped") | not) or ((.skipped | type) == "array")));
     type == "object" and
     .schema_version == 1 and
     ((.cycle | type) == "number") and (.cycle >= 1) and (.cycle == (.cycle | floor)) and
@@ -86,17 +111,18 @@ finish_cycle_json_file() {
     (.conclusion.summary_ko | nonempty_string) and
     (.verification | type == "array" and length > 0) and
     all(.verification[]; item_summary) and
-    (.review_ship | type == "object") and
-    ((.review_ship.summary_ko // .review_ship.status // "") | nonempty_string) and
+    ((.review_land // .review_ship) | review_item) and
     (.risks | type == "array") and
     all(.risks[]; ((.summary_ko // .summary // "") | nonempty_string)) and
     (.next_candidates // [] | type == "array") and
     (.auto_promotion_candidates // [] | type == "array") and
     all((.auto_promotion_candidates // [])[]; candidate_item) and
     (.auto_promotions // [] | type == "array") and
-    all((.auto_promotions // [])[]; optional_item_summary)
+    all((.auto_promotions // [])[]; optional_item_summary) and
+    optional_change_scope and
+    optional_verification_plan
   ' "$input_file" >/dev/null; then
-    echo "Invalid dev-cycle brief JSON. Required: schema_version=1, integer cycle, result, non-empty actions[].summary_ko, conclusion.summary_ko, non-empty verification[].summary_ko, review_ship summary/status, risks[].summary_ko when risks are present. Optional candidate/promotion arrays must contain items with summary_ko, summary, or id." >&2
+    echo "Invalid dev-cycle brief JSON. Required: schema_version=1, integer cycle, result, non-empty actions[].summary_ko, conclusion.summary_ko, non-empty verification[].summary_ko, review_land/review_ship summary/status, risks[].summary_ko when risks are present. Optional candidate/promotion arrays must contain items with summary_ko, summary, or id; optional change_scope and verification_plan must be objects with kind/profile." >&2
     return 1
   fi
 
@@ -122,6 +148,8 @@ finish_cycle_json_file() {
       recorded_at:$recorded_at,
       repo:{name:$repo, type:$repo_type, branch:$branch, head:$head_sha}
     } |
+    .review_land = (.review_land // .review_ship) |
+    .review_ship = (.review_ship // .review_land) |
     .changes = (.changes // []) |
     .next_candidates = (.next_candidates // []) |
     .risks = ([.risks[]? | select(((.summary_ko // .summary // "") | tostring | length) > 0)])' \
@@ -157,7 +185,8 @@ finish_cycle_json_file() {
       rm -f "$issue_err"
       jq --arg issue_url "$issue_url" '
         .risks = (.risks | map(. + {issue_url:$issue_url})) |
-        .review_ship.summary_ko = ((.review_ship.summary_ko // .review_ship.status // "기록 없음") + "; 리스크 이슈 생성: " + $issue_url)
+        .review_land.summary_ko = ((.review_land.summary_ko // .review_land.status // "기록 없음") + "; 리스크 이슈 생성: " + $issue_url) |
+        .review_ship = .review_land
       ' "$record_file" > "$record_file.tmp" && mv "$record_file.tmp" "$record_file" || {
         rm -f "$record_file" "$record_file.tmp"
         return 1
@@ -167,7 +196,8 @@ finish_cycle_json_file() {
       rm -f "$issue_err"
       jq --arg issue_error "$issue_msg" '
         .risks = (.risks | map(. + {issue_error:$issue_error})) |
-        .review_ship.summary_ko = ((.review_ship.summary_ko // .review_ship.status // "기록 없음") + "; 리스크 이슈 생성 실패")
+        .review_land.summary_ko = ((.review_land.summary_ko // .review_land.status // "기록 없음") + "; 리스크 이슈 생성 실패") |
+        .review_ship = .review_land
       ' "$record_file" > "$record_file.tmp" && mv "$record_file.tmp" "$record_file" || {
         rm -f "$record_file" "$record_file.tmp"
         return 1
@@ -259,6 +289,7 @@ finish_cycle() {
         conclusion:{summary_ko:$work},
         changes:[],
         verification:[{kind:"legacy", status:"recorded", summary_ko:$verification}],
+        review_land:{status:"recorded", summary_ko:$review_ship},
         review_ship:{status:"recorded", summary_ko:$review_ship},
         next_candidates:[],
         risks:[]
@@ -283,6 +314,7 @@ finish_cycle() {
         conclusion:{summary_ko:$work},
         changes:[],
         verification:[{kind:"legacy", status:"recorded", summary_ko:$verification}],
+        review_land:{status:"recorded", summary_ko:$review_ship},
         review_ship:{status:"recorded", summary_ko:$review_ship},
         next_candidates:[],
         risks:[{summary_ko:$risk, next_action_ko:$next_action}]
@@ -336,7 +368,8 @@ summary_json() {
       ($r // "" | tostring) as $v |
       ($v | ascii_downcase | gsub("[ _-]"; "")) as $n |
       if $n == "allclear" then "ALL CLEAR"
-      elif $n == "shipped" then "배포 완료 (shipped)"
+      elif $n == "landed" then "반영 완료 (landed)"
+      elif $n == "shipped" then "반영 완료 (shipped)"
       elif $n == "blocked" then "차단됨 (blocked)"
       elif $n == "docfixneeded" then "문서 수정 필요 (doc_fix_needed)"
       else $v end;
@@ -366,6 +399,9 @@ summary_json() {
       (if ((.status_before // "") != "" or (.status_after // "") != "") then " (" + ((.status_before // "?") | tostring) + " -> " + ((.status_after // "ready") | tostring) + ")" else "" end) +
       (if (.path // "") != "" then " 파일: " + (.path | tostring) else "" end) +
       (if (.reason_ko // "") != "" then " 이유: " + (.reason_ko | tostring) else "" end);
+    def review_land_text($c):
+      ($c.review_land // $c.review_ship // {}) as $r |
+      $r.summary_ko // $r.status // "기록 없음";
     def block($label; $xs):
       if ($xs | length) == 0 then "- \($label): 없음"
       elif ($xs | length) == 1 then "- \($label): \($xs[0])"
@@ -381,7 +417,7 @@ summary_json() {
       "- 결과: 총 \($count)개 사이클, 마지막 결과 \(result_label($last.result // "none"))",
       block("작업"; if $count == 0 then [] else [$cycles[] | "사이클 \(.cycle): \(headline(.))"] end),
       block("검증"; [$cycles[] as $c | ($c.verification // [])[]? | item_text as $v | "사이클 \($c.cycle): \($v)"]),
-      block("리뷰/배포"; if $count == 0 then [] else [$cycles[] | "사이클 \(.cycle): \(.review_ship.summary_ko // .review_ship.status // "기록 없음")"] end),
+      block("리뷰/반영"; if $count == 0 then [] else [$cycles[] | "사이클 \(.cycle): \(review_land_text(.))"] end),
       (if ($promotion_candidates | length) > 0 then block("자동 승격 검토"; $promotion_candidates) else empty end),
       (if ($promotions | length) > 0 then block("자동 승격"; $promotions) else empty end),
       (if ($candidates | length) > 0 then block("다음 검토 후보"; [$candidates[] | candidate_text]) else empty end),

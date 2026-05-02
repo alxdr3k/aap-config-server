@@ -30,17 +30,14 @@ expected_list() {
   sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^[[:space:]]*$/d; /^#/d' "$source_file" | sort
 }
 
-expected="$(expected_list | paste -sd '|' -)"
-actual="$("$helper" direct-push-list | sort | paste -sd '|' -)"
-
-if [[ -z "$expected" ]]; then
+if ! expected_list | grep -q .; then
   echo "direct-push-repos.txt is empty" >&2
   exit 1
 fi
 
-if [[ "$actual" != "$expected" ]]; then
+if ! diff <(expected_list) <("$helper" direct-push-list | sort) >/dev/null 2>&1; then
   echo "direct-push list drift in scripts/dev-cycle-helper.sh" >&2
-  echo "expected: $expected" >&2
-  echo "actual:   $actual" >&2
+  echo "--- expected (direct-push-repos.txt) vs actual (helper direct-push-list) ---" >&2
+  diff <(expected_list) <("$helper" direct-push-list | sort) >&2 || true
   exit 1
 fi
