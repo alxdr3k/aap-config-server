@@ -49,6 +49,7 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Batch config/env reads (`POST /api/v1/configs/batch`) | Implemented for current non-secret config/env reads with partial per-item errors |
 | Prometheus metrics (`GET /metrics`) | Implemented for HTTP latency/counts, reloads, Git operations, watch waits, and degraded state |
 | Config repo YAML schema validation | Implemented for config, env vars, defaults, and secret metadata files |
+| Configurable rate limiting | Implemented for admin, secret resolve, watch, and batch endpoint groups |
 | Config Agent binary/API client/local dry-run       | Implemented |
 | Config Agent K8s Lease leader election             | Implemented as internal module |
 | Config Agent read polling/version tracking         | Implemented as internal module |
@@ -119,6 +120,14 @@ curl http://localhost:8080/api/v1/orgs
 | `CONSOLE_REGISTRY_BOOTSTRAP_ATTEMPTS` | no            | `5`                   | Maximum startup App Registry load attempts.            |
 | `CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF` | no     | `1s`                  | Initial startup App Registry retry backoff.            |
 | `CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF` | no         | `30s`                 | Maximum startup App Registry retry backoff.            |
+| `RATE_LIMIT_ADMIN_RPS`       | no                       | `0`                   | Admin endpoint token-bucket rate; `0` disables. Pair with `RATE_LIMIT_ADMIN_BURST`. |
+| `RATE_LIMIT_ADMIN_BURST`     | no                       | `0`                   | Admin endpoint token-bucket burst; `0` disables.       |
+| `RATE_LIMIT_SECRET_RESOLVE_RPS` | no                    | `0`                   | `resolve_secrets=true` token-bucket rate; `0` disables. Pair with `RATE_LIMIT_SECRET_RESOLVE_BURST`. |
+| `RATE_LIMIT_SECRET_RESOLVE_BURST` | no                 | `0`                   | `resolve_secrets=true` token-bucket burst; `0` disables. |
+| `RATE_LIMIT_WATCH_RPS`       | no                       | `0`                   | Config/env watch endpoint token-bucket rate; `0` disables. Pair with `RATE_LIMIT_WATCH_BURST`. |
+| `RATE_LIMIT_WATCH_BURST`     | no                       | `0`                   | Config/env watch endpoint token-bucket burst; `0` disables. |
+| `RATE_LIMIT_BATCH_RPS`       | no                       | `0`                   | Batch read endpoint token-bucket rate; `0` disables. Pair with `RATE_LIMIT_BATCH_BURST`. |
+| `RATE_LIMIT_BATCH_BURST`     | no                       | `0`                   | Batch read endpoint token-bucket burst; `0` disables. |
 
 ## Config Agent dry-run
 
@@ -167,8 +176,8 @@ Most responses are JSON. The exceptions are `/healthz` and `/readyz`, which retu
 ```
 
 Current JSON error codes are `not_found`, `validation`, `conflict`,
-`unauthorized`, `git_push_failed`, `internal`, `invalid_body`, and
-`invalid_query`.
+`unauthorized`, `rate_limited`, `git_push_failed`, `internal`,
+`invalid_body`, and `invalid_query`.
 
 ### Authenticated endpoints
 
@@ -429,6 +438,12 @@ valid API key is required, and the server pulls the configured `GIT_URL` /
   (`name`, `namespace`, `key`). Env var keys under `plain` and `secret_refs`
   must be shell-compatible names. Files that violate these rules fail reload
   closed instead of loading as unreachable or half-referenced entries.
+- **Rate limiting.** Rate limits are disabled by default. Configure RPS and
+  burst pairs for the admin, secret resolve, watch, and batch endpoint groups
+  to enable token-bucket limiting. Limited requests return `429` with
+  `{"error":{"code":"rate_limited",...}}` and `Retry-After: 1`. Admin limits
+  are applied after API-key authentication so unauthorized attempts do not
+  consume admin tokens.
 - **Poll interval must be positive.** `GIT_POLL_INTERVAL=0s` (or negative) is
   rejected at startup rather than panicking inside `time.NewTicker`.
 

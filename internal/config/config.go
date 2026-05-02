@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -23,10 +24,19 @@ const (
 	defaultConsoleRegistryBootstrapAttempts       = 5
 	defaultConsoleRegistryBootstrapInitialBackoff = time.Second
 	defaultConsoleRegistryBootstrapMaxBackoff     = 30 * time.Second
+	defaultRateLimitRequestsPerSecond             = 0
+	defaultRateLimitBurst                         = 0
 	sealedSecretScopeStrict                       = "strict"
 	sealedSecretScopeNamespaceWide                = "namespace-wide"
 	sealedSecretScopeClusterWide                  = "cluster-wide"
 )
+
+// RateLimitConfig holds token-bucket settings for one endpoint group.
+// A zero value disables the limiter for that group.
+type RateLimitConfig struct {
+	RequestsPerSecond float64
+	Burst             int
+}
 
 // ServerConfig holds all runtime configuration for the Config Server.
 // Values are sourced from environment variables (primary) with flag fallbacks.
@@ -53,6 +63,10 @@ type ServerConfig struct {
 	ConsoleRegistryBootstrapAttempts       int
 	ConsoleRegistryBootstrapInitialBackoff time.Duration
 	ConsoleRegistryBootstrapMaxBackoff     time.Duration
+	RateLimitAdmin                         RateLimitConfig
+	RateLimitSecretResolve                 RateLimitConfig
+	RateLimitWatch                         RateLimitConfig
+	RateLimitBatch                         RateLimitConfig
 	LogLevel                               string
 
 	k8sApplyTimeoutExplicit bool
@@ -84,6 +98,14 @@ func Load() (*ServerConfig, error) {
 	flag.IntVar(&cfg.ConsoleRegistryBootstrapAttempts, "console-registry-bootstrap-attempts", envInt("CONSOLE_REGISTRY_BOOTSTRAP_ATTEMPTS", defaultConsoleRegistryBootstrapAttempts), "Maximum attempts for startup App Registry bootstrap")
 	flag.DurationVar(&cfg.ConsoleRegistryBootstrapInitialBackoff, "console-registry-bootstrap-initial-backoff", envDuration("CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF", defaultConsoleRegistryBootstrapInitialBackoff), "Initial backoff for startup App Registry bootstrap")
 	flag.DurationVar(&cfg.ConsoleRegistryBootstrapMaxBackoff, "console-registry-bootstrap-max-backoff", envDuration("CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF", defaultConsoleRegistryBootstrapMaxBackoff), "Maximum backoff for startup App Registry bootstrap")
+	flag.Float64Var(&cfg.RateLimitAdmin.RequestsPerSecond, "rate-limit-admin-rps", envFloat("RATE_LIMIT_ADMIN_RPS", defaultRateLimitRequestsPerSecond), "Admin endpoint rate limit in requests per second; 0 disables")
+	flag.IntVar(&cfg.RateLimitAdmin.Burst, "rate-limit-admin-burst", envInt("RATE_LIMIT_ADMIN_BURST", defaultRateLimitBurst), "Admin endpoint rate limit burst; 0 disables")
+	flag.Float64Var(&cfg.RateLimitSecretResolve.RequestsPerSecond, "rate-limit-secret-resolve-rps", envFloat("RATE_LIMIT_SECRET_RESOLVE_RPS", defaultRateLimitRequestsPerSecond), "resolve_secrets=true rate limit in requests per second; 0 disables")
+	flag.IntVar(&cfg.RateLimitSecretResolve.Burst, "rate-limit-secret-resolve-burst", envInt("RATE_LIMIT_SECRET_RESOLVE_BURST", defaultRateLimitBurst), "resolve_secrets=true rate limit burst; 0 disables")
+	flag.Float64Var(&cfg.RateLimitWatch.RequestsPerSecond, "rate-limit-watch-rps", envFloat("RATE_LIMIT_WATCH_RPS", defaultRateLimitRequestsPerSecond), "Config/env watch endpoint rate limit in requests per second; 0 disables")
+	flag.IntVar(&cfg.RateLimitWatch.Burst, "rate-limit-watch-burst", envInt("RATE_LIMIT_WATCH_BURST", defaultRateLimitBurst), "Config/env watch endpoint rate limit burst; 0 disables")
+	flag.Float64Var(&cfg.RateLimitBatch.RequestsPerSecond, "rate-limit-batch-rps", envFloat("RATE_LIMIT_BATCH_RPS", defaultRateLimitRequestsPerSecond), "Batch read endpoint rate limit in requests per second; 0 disables")
+	flag.IntVar(&cfg.RateLimitBatch.Burst, "rate-limit-batch-burst", envInt("RATE_LIMIT_BATCH_BURST", defaultRateLimitBurst), "Batch read endpoint rate limit burst; 0 disables")
 	flag.StringVar(&cfg.LogLevel, "log-level", env("LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 
 	// API_KEY and GIT_PASSWORD are env-only — never accept via flag (would expose via ps).
@@ -178,6 +200,18 @@ func (c *ServerConfig) Validate() error {
 	if c.ConsoleRegistryBootstrapMaxBackoff < c.ConsoleRegistryBootstrapInitialBackoff {
 		return fmt.Errorf("CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF must be >= CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF")
 	}
+	if err := validateRateLimitConfig("RATE_LIMIT_ADMIN", c.RateLimitAdmin); err != nil {
+		return err
+	}
+	if err := validateRateLimitConfig("RATE_LIMIT_SECRET_RESOLVE", c.RateLimitSecretResolve); err != nil {
+		return err
+	}
+	if err := validateRateLimitConfig("RATE_LIMIT_WATCH", c.RateLimitWatch); err != nil {
+		return err
+	}
+	if err := validateRateLimitConfig("RATE_LIMIT_BATCH", c.RateLimitBatch); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -222,6 +256,26 @@ func (c *ServerConfig) applyDefaults() {
 	}
 }
 
+func validateRateLimitConfig(prefix string, cfg RateLimitConfig) error {
+	if math.IsNaN(cfg.RequestsPerSecond) || math.IsInf(cfg.RequestsPerSecond, 0) {
+		return fmt.Errorf("%s_RPS must be finite, got %g", prefix, cfg.RequestsPerSecond)
+	}
+	if cfg.RequestsPerSecond < 0 {
+		return fmt.Errorf("%s_RPS must be >= 0, got %g", prefix, cfg.RequestsPerSecond)
+	}
+	if cfg.Burst < 0 {
+		return fmt.Errorf("%s_BURST must be >= 0, got %d", prefix, cfg.Burst)
+	}
+	if cfg.RequestsPerSecond == 0 && cfg.Burst == 0 {
+		return nil
+	}
+	if cfg.RequestsPerSecond <= 0 || cfg.Burst <= 0 {
+		return fmt.Errorf("%s rate limit requires both %s_RPS > 0 and %s_BURST > 0",
+			prefix, prefix, prefix)
+	}
+	return nil
+}
+
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -250,6 +304,19 @@ func envInt(key string, fallback int) int {
 	n, err := strconv.Atoi(v)
 	if err != nil {
 		slog.Warn("invalid int env var, using fallback", "key", key, "value", v, "fallback", fallback)
+		return fallback
+	}
+	return n
+}
+
+func envFloat(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		slog.Warn("invalid float env var, using fallback", "key", key, "value", v, "fallback", fallback)
 		return fallback
 	}
 	return n

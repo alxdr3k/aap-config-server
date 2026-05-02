@@ -56,6 +56,10 @@ Do not use that flag in production.
 | `CONSOLE_REGISTRY_BOOTSTRAP_ATTEMPTS` | no | `5` | Maximum startup App Registry load attempts. |
 | `CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF` | no | `1s` | Initial startup App Registry retry backoff. |
 | `CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF` | no | `30s` | Maximum startup App Registry retry backoff. |
+| `RATE_LIMIT_ADMIN_RPS` / `RATE_LIMIT_ADMIN_BURST` | no | `0` / `0` | Admin endpoint token-bucket settings. Both must be positive to enable. |
+| `RATE_LIMIT_SECRET_RESOLVE_RPS` / `RATE_LIMIT_SECRET_RESOLVE_BURST` | no | `0` / `0` | `resolve_secrets=true` token-bucket settings. Both must be positive to enable. |
+| `RATE_LIMIT_WATCH_RPS` / `RATE_LIMIT_WATCH_BURST` | no | `0` / `0` | Config/env watch token-bucket settings. Both must be positive to enable. |
+| `RATE_LIMIT_BATCH_RPS` / `RATE_LIMIT_BATCH_BURST` | no | `0` / `0` | Batch read token-bucket settings. Both must be positive to enable. |
 
 ## Database
 
@@ -78,6 +82,10 @@ snapshot for serving reads.
   endpoints. `POST /api/v1/admin/git/webhook` discards the provider payload and
   calls `RefreshFromRepo` for the configured repo/branch, making duplicate
   webhook deliveries safe (`updated:false`).
+- Optional token-bucket rate limits can protect admin, secret resolve, watch,
+  and batch endpoint groups. Limited requests return `429 rate_limited` with
+  `Retry-After: 1`; admin tokens are consumed only after successful API-key
+  authentication.
 - `/api/v1/status` reports App Registry cache/load state under
   `app_registry`; registry-only degradation appears in `degraded_components`
   but does not make `/readyz` fail.

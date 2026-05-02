@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -153,6 +154,99 @@ func TestValidate_AppliesSecretRuntimeDefaults(t *testing.T) {
 	}
 	if c.ConsoleRegistryBootstrapMaxBackoff != 30*time.Second {
 		t.Errorf("ConsoleRegistryBootstrapMaxBackoff default: got %s", c.ConsoleRegistryBootstrapMaxBackoff)
+	}
+	if c.RateLimitAdmin.RequestsPerSecond != 0 || c.RateLimitAdmin.Burst != 0 {
+		t.Errorf("RateLimitAdmin default: got %+v", c.RateLimitAdmin)
+	}
+	if c.RateLimitSecretResolve.RequestsPerSecond != 0 || c.RateLimitSecretResolve.Burst != 0 {
+		t.Errorf("RateLimitSecretResolve default: got %+v", c.RateLimitSecretResolve)
+	}
+	if c.RateLimitWatch.RequestsPerSecond != 0 || c.RateLimitWatch.Burst != 0 {
+		t.Errorf("RateLimitWatch default: got %+v", c.RateLimitWatch)
+	}
+	if c.RateLimitBatch.RequestsPerSecond != 0 || c.RateLimitBatch.Burst != 0 {
+		t.Errorf("RateLimitBatch default: got %+v", c.RateLimitBatch)
+	}
+}
+
+func TestValidate_RateLimitValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*config.ServerConfig)
+		wantErr string
+	}{
+		{
+			name: "complete settings pass",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitAdmin = config.RateLimitConfig{RequestsPerSecond: 10, Burst: 20}
+				c.RateLimitSecretResolve = config.RateLimitConfig{RequestsPerSecond: 5, Burst: 5}
+				c.RateLimitWatch = config.RateLimitConfig{RequestsPerSecond: 2.5, Burst: 3}
+				c.RateLimitBatch = config.RateLimitConfig{RequestsPerSecond: 1, Burst: 1}
+			},
+		},
+		{
+			name: "negative rps",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitAdmin = config.RateLimitConfig{RequestsPerSecond: -1, Burst: 1}
+			},
+			wantErr: "RATE_LIMIT_ADMIN_RPS",
+		},
+		{
+			name: "nan rps",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitAdmin = config.RateLimitConfig{RequestsPerSecond: math.NaN(), Burst: 1}
+			},
+			wantErr: "RATE_LIMIT_ADMIN_RPS must be finite",
+		},
+		{
+			name: "infinite rps",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitAdmin = config.RateLimitConfig{RequestsPerSecond: math.Inf(1), Burst: 1}
+			},
+			wantErr: "RATE_LIMIT_ADMIN_RPS must be finite",
+		},
+		{
+			name: "negative burst",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitWatch = config.RateLimitConfig{RequestsPerSecond: 1, Burst: -1}
+			},
+			wantErr: "RATE_LIMIT_WATCH_BURST",
+		},
+		{
+			name: "rps without burst",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitSecretResolve = config.RateLimitConfig{RequestsPerSecond: 1}
+			},
+			wantErr: "RATE_LIMIT_SECRET_RESOLVE rate limit requires both",
+		},
+		{
+			name: "burst without rps",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitBatch = config.RateLimitConfig{Burst: 1}
+			},
+			wantErr: "RATE_LIMIT_BATCH rate limit requires both",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &config.ServerConfig{
+				GitURL:          "git@host:repo.git",
+				GitPollInterval: 30 * time.Second,
+				APIKey:          "k",
+			}
+			tc.mutate(c)
+			err := c.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validate: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected %q error, got %v", tc.wantErr, err)
+			}
+		})
 	}
 }
 
