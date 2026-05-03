@@ -40,6 +40,12 @@ Do not invent commands.
 
 If validation cannot be run, report why.
 
+## Companion policy files
+
+If this repo has boilerplate-structure docs, also read when present:
+- `docs/04_IMPLEMENTATION_PLAN.policy.md` — feedback triage policy for the roadmap
+- `docs/DOCUMENTATION.policy.md` — doc update trigger policy
+
 ## Extraction tasks
 
 When asked to prepare external knowledge-base extraction (e.g. for a personal
