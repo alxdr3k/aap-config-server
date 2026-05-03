@@ -128,18 +128,20 @@ func (f *fakeRepo) CommitAndPushFunc(_ context.Context, _ string, build gitops.C
 	return f.commitHash, nil
 }
 
-func (f *fakeRepo) DeleteAndPush(_ context.Context, _ string, paths []string) (string, error) {
+func (f *fakeRepo) DeleteAndPush(_ context.Context, _ string, paths []string) (string, []string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	var deleted []string
 	for _, p := range paths {
 		for path := range f.files {
 			if path == p || strings.HasPrefix(path, p+"/") {
 				delete(f.files, path)
+				deleted = append(deleted, path)
 			}
 		}
 	}
 	f.commitHash = "delcommit"
-	return f.commitHash, nil
+	return f.commitHash, deleted, nil
 }
 
 func (f *fakeRepo) RestoreServiceFilesAndPush(
@@ -2012,12 +2014,12 @@ type reloadFailingAfterDeleteRepo struct {
 	failOnce bool
 }
 
-func (r *reloadFailingAfterDeleteRepo) DeleteAndPush(ctx context.Context, msg string, paths []string) (string, error) {
-	hash, err := r.fakeRepo.DeleteAndPush(ctx, msg, paths)
+func (r *reloadFailingAfterDeleteRepo) DeleteAndPush(ctx context.Context, msg string, paths []string) (string, []string, error) {
+	hash, deleted, err := r.fakeRepo.DeleteAndPush(ctx, msg, paths)
 	if err == nil {
 		r.failOnce = true
 	}
-	return hash, err
+	return hash, deleted, err
 }
 
 func (r *reloadFailingAfterDeleteRepo) Snapshot(fn func(path string, data []byte) error) (string, error) {

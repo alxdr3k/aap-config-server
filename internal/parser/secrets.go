@@ -20,10 +20,15 @@ func ParseSecrets(data []byte) (*SecretsConfig, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse secrets.yaml: %w", err)
 	}
+	seen := make(map[string]int, len(cfg.Secrets))
 	for i, entry := range cfg.Secrets {
 		if err := validateSecretEntry(i, entry); err != nil {
 			return nil, err
 		}
+		if prev, ok := seen[entry.ID]; ok {
+			return nil, fmt.Errorf("secrets.yaml: duplicate secret id %q (entries %d and %d)", entry.ID, prev, i)
+		}
+		seen[entry.ID] = i
 	}
 	return &cfg, nil
 }

@@ -67,6 +67,7 @@ type ServerConfig struct {
 	RateLimitSecretResolve                 RateLimitConfig
 	RateLimitWatch                         RateLimitConfig
 	RateLimitBatch                         RateLimitConfig
+	RateLimitRead                          RateLimitConfig
 	LogLevel                               string
 
 	k8sApplyTimeoutExplicit bool
@@ -106,6 +107,8 @@ func Load() (*ServerConfig, error) {
 	flag.IntVar(&cfg.RateLimitWatch.Burst, "rate-limit-watch-burst", envInt("RATE_LIMIT_WATCH_BURST", defaultRateLimitBurst), "Config/env watch endpoint rate limit burst; 0 disables")
 	flag.Float64Var(&cfg.RateLimitBatch.RequestsPerSecond, "rate-limit-batch-rps", envFloat("RATE_LIMIT_BATCH_RPS", defaultRateLimitRequestsPerSecond), "Batch read endpoint rate limit in requests per second; 0 disables")
 	flag.IntVar(&cfg.RateLimitBatch.Burst, "rate-limit-batch-burst", envInt("RATE_LIMIT_BATCH_BURST", defaultRateLimitBurst), "Batch read endpoint rate limit burst; 0 disables")
+	flag.Float64Var(&cfg.RateLimitRead.RequestsPerSecond, "rate-limit-read-rps", envFloat("RATE_LIMIT_READ_RPS", defaultRateLimitRequestsPerSecond), "History/read endpoint rate limit in requests per second; 0 disables")
+	flag.IntVar(&cfg.RateLimitRead.Burst, "rate-limit-read-burst", envInt("RATE_LIMIT_READ_BURST", defaultRateLimitBurst), "History/read endpoint rate limit burst; 0 disables")
 	flag.StringVar(&cfg.LogLevel, "log-level", env("LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 
 	// API_KEY and GIT_PASSWORD are env-only — never accept via flag (would expose via ps).
@@ -210,6 +213,9 @@ func (c *ServerConfig) Validate() error {
 		return err
 	}
 	if err := validateRateLimitConfig("RATE_LIMIT_BATCH", c.RateLimitBatch); err != nil {
+		return err
+	}
+	if err := validateRateLimitConfig("RATE_LIMIT_READ", c.RateLimitRead); err != nil {
 		return err
 	}
 	return nil
