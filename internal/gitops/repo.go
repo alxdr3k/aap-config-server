@@ -452,8 +452,15 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (h
 				return "", nil, err
 			}
 			fullPath := filepath.Join(r.localPath, path)
-			if _, statErr := os.Stat(fullPath); statErr == nil {
-				// File/dir existed on disk before removal — it will actually be deleted.
+			if len(targets) > 0 {
+				// removalTargets enumerated individual files; report those.
+				for _, t := range targets {
+					if _, statErr := os.Stat(filepath.Join(r.localPath, t)); statErr == nil {
+						actuallyDeleted = append(actuallyDeleted, filepath.ToSlash(t))
+					}
+				}
+			} else if _, statErr := os.Stat(fullPath); statErr == nil {
+				// Single file path that exists.
 				actuallyDeleted = append(actuallyDeleted, filepath.ToSlash(path))
 			}
 			if err := os.RemoveAll(fullPath); err != nil && !os.IsNotExist(err) {
@@ -898,98 +905,55 @@ func (r *Repo) ReadServiceFilesAtCommit(
 
 // IterateServiceHistory walks commits from HEAD newest-first and emits only
 // commits that changed recognized files under the requested service path.
-// fn is called for each matching entry outside the repo lock so that fn may
-// safely call other Repo methods (e.g. ReadFileAtCommit). Return an error
-// from fn to stop iteration early.
+// fn is called outside the repo lock so fn may safely call other Repo
+// methods (e.g. ReadFileAtCommit). Return an error from fn to stop early.
 func (r *Repo) IterateServiceHistory(ctx context.Context, org, project, service string, fn func(ServiceHistoryEntry) error) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	// Phase 1: scan the git log under the repo lock, streaming entries into a
-	// buffered channel.  The cancel lets the consumer signal the producer to
-	// stop early (e.g. when fn returns an error or the limit is reached).
-	scanCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	type result struct {
-		entry ServiceHistoryEntry
-		err   error
+	// Capture HEAD hash under the lock (brief; just a ref read).
+	// Commit object reads (Stats, tree walks) are pure CAS lookups on
+	// immutable objects and do not need the repo mutex.
+	r.mu.Lock()
+	head, err := r.repo.Head()
+	r.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("git head: %w", err)
 	}
-	ch := make(chan result, 8)
 
-	go func() {
-		defer close(ch)
-		r.mu.Lock()
-		defer r.mu.Unlock()
+	iter, err := r.repo.Log(&gogit.LogOptions{
+		From:  head.Hash(),
+		Order: gogit.LogOrderCommitterTime,
+	})
+	if err != nil {
+		return fmt.Errorf("git log: %w", err)
+	}
+	defer iter.Close()
 
-		head, err := r.repo.Head()
-		if err != nil {
-			select {
-			case ch <- result{err: fmt.Errorf("git head: %w", err)}:
-			case <-scanCtx.Done():
-			}
-			return
-		}
-		iter, err := r.repo.Log(&gogit.LogOptions{
-			From:  head.Hash(),
-			Order: gogit.LogOrderCommitterTime,
-		})
-		if err != nil {
-			select {
-			case ch <- result{err: fmt.Errorf("git log: %w", err)}:
-			case <-scanCtx.Done():
-			}
-			return
-		}
-		defer iter.Close()
-
-		_ = iter.ForEach(func(commit *object.Commit) error {
-			if err := scanCtx.Err(); err != nil {
-				return err
-			}
-			files, err := serviceFilesChangedInCommit(commit, org, project, service)
-			if err != nil {
-				select {
-				case ch <- result{err: err}:
-				case <-scanCtx.Done():
-				}
-				return err
-			}
-			if len(files) == 0 {
-				return nil
-			}
-			author := commit.Author.Email
-			if author == "" {
-				author = commit.Author.Name
-			}
-			entry := ServiceHistoryEntry{
-				Version:      commit.Hash.String(),
-				Message:      strings.TrimSpace(commit.Message),
-				Author:       author,
-				Timestamp:    commit.Author.When.UTC(),
-				FilesChanged: files,
-			}
-			select {
-			case ch <- result{entry: entry}:
-			case <-scanCtx.Done():
-				return scanCtx.Err()
-			}
-			return nil
-		})
-	}()
-
-	// Phase 2: consume entries and call fn without holding the lock.
-	for res := range ch {
-		if res.err != nil {
-			return res.err
-		}
-		if err := fn(res.entry); err != nil {
-			cancel() // signal producer to stop
+	return iter.ForEach(func(commit *object.Commit) error {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-	}
-	return nil
+		files, err := serviceFilesChangedInCommit(commit, org, project, service)
+		if err != nil {
+			return err
+		}
+		if len(files) == 0 {
+			return nil
+		}
+		author := commit.Author.Email
+		if author == "" {
+			author = commit.Author.Name
+		}
+		return fn(ServiceHistoryEntry{
+			Version:      commit.Hash.String(),
+			Message:      strings.TrimSpace(commit.Message),
+			Author:       author,
+			Timestamp:    commit.Author.When.UTC(),
+			FilesChanged: files,
+		})
+	})
 }
 
 func serviceFilesChangedInCommit(commit *object.Commit, org, project, service string) ([]ServiceFileChange, error) {

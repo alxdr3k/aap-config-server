@@ -948,9 +948,6 @@ func (h *Handler) writeEnvVarsResponse(
 	}
 
 	version := h.store.HeadVersion()
-	if version == "" {
-		version = h.store.HeadVersion()
-	}
 	meta := configMeta(org, project, service, version, d.UpdatedAt)
 	envConfig := d.EnvVars
 	if inherit && d.InheritedEnvVars != nil {
