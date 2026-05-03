@@ -128,6 +128,69 @@ config: {}`,
 	}
 }
 
+func TestParseConfig_RejectsSchemaViolations(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "unknown top-level field",
+			yaml: `version: "1"
+metadata:
+  service: s
+  org: o
+  project: p
+config: {}
+extra: true`,
+			want: "unknown field extra in root",
+		},
+		{
+			name: "unknown metadata field",
+			yaml: `version: "1"
+metadata:
+  service: s
+  org: o
+  project: p
+  owner: platform
+config: {}`,
+			want: "unknown field owner in metadata",
+		},
+		{
+			name: "duplicate top-level field",
+			yaml: `version: "1"
+metadata:
+  service: s
+  org: o
+  project: p
+config: {}
+config: {}`,
+			want: `duplicate key "config" in root`,
+		},
+		{
+			name: "config is not mapping",
+			yaml: `version: "1"
+metadata:
+  service: s
+  org: o
+  project: p
+config: []`,
+			want: "config must be a mapping",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parser.ParseConfig([]byte(tc.yaml))
+			if err == nil {
+				t.Fatal("expected schema validation error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error should contain %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestParseConfig_TableDriven(t *testing.T) {
 	tests := []struct {
 		name    string

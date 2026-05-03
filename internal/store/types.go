@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/aap/config-server/internal/parser"
+	"github.com/aap/config-server/internal/secret"
 )
 
 // ServiceKey uniquely identifies a service.
@@ -32,6 +33,36 @@ type ServiceData struct {
 	EnvVars   *parser.EnvVarsConfig
 	Secrets   *parser.SecretsConfig
 	UpdatedAt time.Time
+
+	InheritedSources []DefaultsSource
+	InheritedConfig  *parser.ServiceConfig
+	InheritedEnvVars *parser.EnvVarsConfig
+
+	ConfigResourceVersion  string
+	EnvVarsResourceVersion string
+
+	configDigest  string
+	envVarsDigest string
+}
+
+// DefaultsScope identifies where a _defaults/common.yaml file was found.
+type DefaultsScope string
+
+const (
+	DefaultsScopeGlobal  DefaultsScope = "global"
+	DefaultsScopeOrg     DefaultsScope = "org"
+	DefaultsScopeProject DefaultsScope = "project"
+)
+
+// DefaultsSource is service-visible metadata for defaults that can contribute
+// to inherited reads.
+type DefaultsSource struct {
+	Scope      DefaultsScope
+	Org        string
+	Project    string
+	Path       string
+	HasConfig  bool
+	HasEnvVars bool
 }
 
 // ChangeRequest carries the payload for POST /api/v1/admin/changes.
@@ -43,8 +74,16 @@ type ChangeRequest struct {
 	Config map[string]any
 	// EnvVars replaces env_vars.yaml content (nil = no change).
 	EnvVars *parser.EnvVars
-	// Secrets will be handled in Phase 2.
+	// Secrets carries plaintext secret writes grouped by K8s Secret name.
+	Secrets map[string]SecretWrite
 	Message string
+}
+
+// SecretWrite carries plaintext values for one K8s Secret object. Values must
+// not be logged and are converted to SealedSecret manifests before Git writes.
+type SecretWrite struct {
+	Namespace string
+	Data      map[string]secret.Value
 }
 
 // ChangeResult is the response to a successful ChangeRequest.
@@ -52,6 +91,11 @@ type ChangeResult struct {
 	Version   string
 	UpdatedAt time.Time
 	Files     []string // files that were written
+
+	// ApplyFailed is set when the git commit/push succeeded but applying the
+	// SealedSecret manifest(s) to Kubernetes failed.
+	ApplyFailed bool
+	ApplyError  string
 
 	// ReloadFailed is set when the git commit/push succeeded but the in-memory
 	// snapshot could not be refreshed from the new HEAD. Callers must treat
@@ -78,6 +122,64 @@ type DeleteResult struct {
 	// snapshot stays in place; callers must treat this as "deleted but stale read".
 	ReloadFailed bool
 	ReloadError  string
+}
+
+// RevertRequest identifies a service and target commit for a future rollback.
+type RevertRequest struct {
+	Org           string
+	Project       string
+	Service       string
+	TargetVersion string
+	Message       string
+}
+
+// RevertPlan is a validated, non-mutating restore plan. Files uses
+// repo-relative paths and DeletedFiles uses service-relative paths.
+type RevertPlan struct {
+	Org           string
+	Project       string
+	Service       string
+	TargetVersion string
+	Message       string
+	Files         map[string][]byte
+	RestoredFiles []string
+	DeletedFiles  []string
+	Noop          bool
+}
+
+// RevertResult is the result of applying a RevertRequest.
+type RevertResult struct {
+	Version       string
+	TargetVersion string
+	UpdatedAt     time.Time
+	RestoredFiles []string
+	DeletedFiles  []string
+	Noop          bool
+
+	ApplyFailed bool
+	ApplyError  string
+
+	ReloadFailed bool
+	ReloadError  string
+}
+
+// HistoryOptions controls service history listing.
+type HistoryOptions struct {
+	Org     string
+	Project string
+	Service string
+	File    string
+	Limit   int
+	Before  string
+}
+
+// HistoryEntry is one service-scoped Git commit exposed by the history API.
+type HistoryEntry struct {
+	Version      string
+	Message      string
+	Author       string
+	Timestamp    time.Time
+	FilesChanged []string
 }
 
 // StoreStatus holds operational status information about the store.

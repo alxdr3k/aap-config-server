@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -112,5 +113,244 @@ func TestValidate_HappyPathBasicAuth(t *testing.T) {
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("validate: %v", err)
+	}
+}
+
+func TestValidate_AppliesSecretRuntimeDefaults(t *testing.T) {
+	c := &config.ServerConfig{
+		GitURL:          "git@host:repo.git",
+		GitPollInterval: 30 * time.Second,
+		APIKey:          "k",
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if c.SecretMountPath != "/secrets" {
+		t.Errorf("SecretMountPath default: want /secrets, got %q", c.SecretMountPath)
+	}
+	if c.SealedSecretControllerNamespace != "kube-system" {
+		t.Errorf("controller namespace default: got %q", c.SealedSecretControllerNamespace)
+	}
+	if c.SealedSecretControllerName != "sealed-secrets-controller" {
+		t.Errorf("controller name default: got %q", c.SealedSecretControllerName)
+	}
+	if c.SealedSecretScope != "strict" {
+		t.Errorf("scope default: got %q", c.SealedSecretScope)
+	}
+	if c.K8sApplyTimeout != 10*time.Second {
+		t.Errorf("K8sApplyTimeout default: got %s", c.K8sApplyTimeout)
+	}
+	if !c.SecretAuditEnabled() {
+		t.Error("SecretAuditLogEnabled default should be true")
+	}
+	if c.ConsoleAPITimeout != 5*time.Second {
+		t.Errorf("ConsoleAPITimeout default: got %s", c.ConsoleAPITimeout)
+	}
+	if c.ConsoleRegistryBootstrapAttempts != 5 {
+		t.Errorf("ConsoleRegistryBootstrapAttempts default: got %d", c.ConsoleRegistryBootstrapAttempts)
+	}
+	if c.ConsoleRegistryBootstrapInitialBackoff != time.Second {
+		t.Errorf("ConsoleRegistryBootstrapInitialBackoff default: got %s", c.ConsoleRegistryBootstrapInitialBackoff)
+	}
+	if c.ConsoleRegistryBootstrapMaxBackoff != 30*time.Second {
+		t.Errorf("ConsoleRegistryBootstrapMaxBackoff default: got %s", c.ConsoleRegistryBootstrapMaxBackoff)
+	}
+	if c.RateLimitAdmin.RequestsPerSecond != 0 || c.RateLimitAdmin.Burst != 0 {
+		t.Errorf("RateLimitAdmin default: got %+v", c.RateLimitAdmin)
+	}
+	if c.RateLimitSecretResolve.RequestsPerSecond != 0 || c.RateLimitSecretResolve.Burst != 0 {
+		t.Errorf("RateLimitSecretResolve default: got %+v", c.RateLimitSecretResolve)
+	}
+	if c.RateLimitWatch.RequestsPerSecond != 0 || c.RateLimitWatch.Burst != 0 {
+		t.Errorf("RateLimitWatch default: got %+v", c.RateLimitWatch)
+	}
+	if c.RateLimitBatch.RequestsPerSecond != 0 || c.RateLimitBatch.Burst != 0 {
+		t.Errorf("RateLimitBatch default: got %+v", c.RateLimitBatch)
+	}
+}
+
+func TestValidate_RateLimitValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*config.ServerConfig)
+		wantErr string
+	}{
+		{
+			name: "complete settings pass",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitAdmin = config.RateLimitConfig{RequestsPerSecond: 10, Burst: 20}
+				c.RateLimitSecretResolve = config.RateLimitConfig{RequestsPerSecond: 5, Burst: 5}
+				c.RateLimitWatch = config.RateLimitConfig{RequestsPerSecond: 2.5, Burst: 3}
+				c.RateLimitBatch = config.RateLimitConfig{RequestsPerSecond: 1, Burst: 1}
+			},
+		},
+		{
+			name: "negative rps",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitAdmin = config.RateLimitConfig{RequestsPerSecond: -1, Burst: 1}
+			},
+			wantErr: "RATE_LIMIT_ADMIN_RPS",
+		},
+		{
+			name: "nan rps",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitAdmin = config.RateLimitConfig{RequestsPerSecond: math.NaN(), Burst: 1}
+			},
+			wantErr: "RATE_LIMIT_ADMIN_RPS must be finite",
+		},
+		{
+			name: "infinite rps",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitAdmin = config.RateLimitConfig{RequestsPerSecond: math.Inf(1), Burst: 1}
+			},
+			wantErr: "RATE_LIMIT_ADMIN_RPS must be finite",
+		},
+		{
+			name: "negative burst",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitWatch = config.RateLimitConfig{RequestsPerSecond: 1, Burst: -1}
+			},
+			wantErr: "RATE_LIMIT_WATCH_BURST",
+		},
+		{
+			name: "rps without burst",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitSecretResolve = config.RateLimitConfig{RequestsPerSecond: 1}
+			},
+			wantErr: "RATE_LIMIT_SECRET_RESOLVE rate limit requires both",
+		},
+		{
+			name: "burst without rps",
+			mutate: func(c *config.ServerConfig) {
+				c.RateLimitBatch = config.RateLimitConfig{Burst: 1}
+			},
+			wantErr: "RATE_LIMIT_BATCH rate limit requires both",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &config.ServerConfig{
+				GitURL:          "git@host:repo.git",
+				GitPollInterval: 30 * time.Second,
+				APIKey:          "k",
+			}
+			tc.mutate(c)
+			err := c.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validate: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected %q error, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestValidate_PreservesExplicitSecretAuditDisabled(t *testing.T) {
+	disabled := false
+	c := &config.ServerConfig{
+		GitURL:                     "git@host:repo.git",
+		GitPollInterval:            30 * time.Second,
+		APIKey:                     "k",
+		SecretAuditLogEnabled:      &disabled,
+		SecretMountPath:            "/custom-secrets",
+		SealedSecretScope:          "namespace-wide",
+		SealedSecretControllerName: "sealed-secrets-controller",
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if c.SecretAuditEnabled() {
+		t.Fatal("explicit audit disabled setting should be preserved")
+	}
+	if c.K8sApplyTimeout != 10*time.Second {
+		t.Errorf("partial runtime config should default K8sApplyTimeout, got %s", c.K8sApplyTimeout)
+	}
+	if c.SealedSecretControllerNamespace != "kube-system" {
+		t.Errorf("partial runtime config should default controller namespace, got %q", c.SealedSecretControllerNamespace)
+	}
+}
+
+func TestValidate_SecretRuntimeValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*config.ServerConfig)
+		want   string
+	}{
+		{
+			name: "relative mount path",
+			mutate: func(c *config.ServerConfig) {
+				c.SecretMountPath = "secrets"
+			},
+			want: "SECRET_MOUNT_PATH",
+		},
+		{
+			name: "bad sealed secret scope",
+			mutate: func(c *config.ServerConfig) {
+				c.SealedSecretScope = "wide"
+			},
+			want: "SEALED_SECRET_SCOPE",
+		},
+		{
+			name: "negative k8s apply timeout",
+			mutate: func(c *config.ServerConfig) {
+				c.K8sApplyTimeout = -time.Second
+			},
+			want: "K8S_APPLY_TIMEOUT",
+		},
+		{
+			name: "bad console api url",
+			mutate: func(c *config.ServerConfig) {
+				c.ConsoleAPIURL = "ftp://console.example"
+			},
+			want: "CONSOLE_API_URL",
+		},
+		{
+			name: "negative console api timeout",
+			mutate: func(c *config.ServerConfig) {
+				c.ConsoleAPITimeout = -time.Second
+			},
+			want: "CONSOLE_API_TIMEOUT",
+		},
+		{
+			name: "negative registry bootstrap attempts",
+			mutate: func(c *config.ServerConfig) {
+				c.ConsoleRegistryBootstrapAttempts = -1
+			},
+			want: "CONSOLE_REGISTRY_BOOTSTRAP_ATTEMPTS",
+		},
+		{
+			name: "negative registry bootstrap initial backoff",
+			mutate: func(c *config.ServerConfig) {
+				c.ConsoleRegistryBootstrapInitialBackoff = -time.Second
+			},
+			want: "CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF",
+		},
+		{
+			name: "registry bootstrap max below initial",
+			mutate: func(c *config.ServerConfig) {
+				c.ConsoleRegistryBootstrapInitialBackoff = 2 * time.Second
+				c.ConsoleRegistryBootstrapMaxBackoff = time.Second
+			},
+			want: "CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &config.ServerConfig{
+				GitURL:          "git@host:repo.git",
+				GitPollInterval: 30 * time.Second,
+				APIKey:          "k",
+			}
+			tc.mutate(c)
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %s error, got %v", tc.want, err)
+			}
+		})
 	}
 }

@@ -6,9 +6,9 @@ every `config.yaml` / `env_vars.yaml` / `secrets.yaml` into an in-memory
 snapshot, and swaps the snapshot atomically when the repo changes.
 
 > **Status:** Phase-1 MVP. The [PRD](docs/01_PRD.md) and [HLD](docs/02_HLD.md) describe a
-> larger target architecture (Config Agent, SealedSecret controller, registry
-> webhook, history/revert, watch). Those are **not** implemented yet — see the
-> feature matrix below.
+> larger target architecture (Config Agent rollout, history/revert, watch,
+> inheritance, and related production extensions). Some of that target is still
+> planned — see the feature matrix below.
 
 ## Feature matrix
 
@@ -19,25 +19,63 @@ snapshot, and swaps the snapshot atomically when the repo changes.
 | Admin write (`POST /api/v1/admin/changes` config + env_vars) | Implemented |
 | Admin delete (`DELETE /api/v1/admin/changes`)             | Implemented |
 | Admin reload (`POST /api/v1/admin/reload`)                | Implemented |
+| Git webhook refresh (`POST /api/v1/admin/git/webhook`)    | Implemented (auth-gated immediate `git pull` + refresh trigger) |
 | API key auth (Authorization: Bearer, X-API-Key)    | Implemented |
 | Last-known-good snapshot on parse error            | Implemented |
 | `committed_but_reload_failed` post-commit signal   | Implemented |
+| `committed_but_apply_failed` secret apply signal   | Implemented |
 | `deleted_but_reload_failed` post-delete signal     | Implemented |
 | Degraded state exposed via `/readyz` and `/api/v1/status` | Implemented |
 | Secret metadata read (`GET .../secrets`)           | Implemented (auth-gated) |
-| Secret **write** via `secrets` field on POST       | **Not implemented** — rejected with 400 |
-| SealedSecret generation / kubeseal integration     | Not implemented |
-| K8s apply of SealedSecret objects                  | Not implemented |
-| Watch / stream endpoint                            | Not implemented |
-| History / revert endpoints                         | Not implemented |
-| Config Agent, registry webhook                     | Not implemented |
+| Secret **write** via `secrets` field on POST       | Implemented when Kubernetes SealedSecret adapters are configured |
+| SealedSecret generation / kubeseal integration     | Implemented with deterministic YAML generation and Bitnami public-key encryption |
+| K8s apply of SealedSecret objects                  | Implemented for admin secret writes |
+| Secret value resolve (`env_vars?resolve_secrets=true`) | Implemented with API key auth, mounted secret refresh, and `Cache-Control: no-store` |
+| Secret audit logging                               | Implemented for admin secret writes and resolved env var secret reads |
+| App Registry startup bootstrap                     | Implemented when `CONSOLE_API_URL` is set |
+| App Registry webhook                               | Implemented (auth-gated cache upsert/delete) |
+| App Registry state in `/api/v1/status`             | Implemented |
+| Store version-wait primitive for watch endpoints | Implemented as internal module |
+| Config watch endpoint (`GET .../config/watch`)  | Implemented with resource-scoped version query and max 30s long-poll timeout |
+| Env vars watch endpoint (`GET .../env_vars/watch`) | Implemented with resource-scoped version query and max 30s long-poll timeout |
+| Git history iterator / service file classifier   | Implemented as internal module |
+| History API (`GET .../history`)                  | Implemented with `file`, `limit`, and `before` filtering |
+| Versioned config/env reads (`?version=...`)      | Implemented for historical Git commits; secret resolution is current-only |
+| Revert target validation / restore plan          | Implemented as internal module |
+| Revert endpoint (`POST /api/v1/admin/changes/revert`) | Implemented with forward-only Git commit, reload, and restored SealedSecret apply |
+| Config/env inheritance (`inherit=true/false`) | Implemented for current and versioned read APIs; admin writes remain service-level |
+| ETag / `If-None-Match` for config/env reads | Implemented for non-secret current and versioned config/env responses; resolved secret responses remain no-store/no ETag |
+| gzip compression for config/env reads | Implemented for non-secret config/env JSON responses when `Accept-Encoding` allows gzip; resolved secret responses are not compressed |
+| Batch config/env reads (`POST /api/v1/configs/batch`) | Implemented for current non-secret config/env reads with partial per-item errors |
+| Prometheus metrics (`GET /metrics`) | Implemented for HTTP latency/counts, reloads, Git operations, watch waits, and degraded state |
+| Config repo YAML schema validation | Implemented for config, env vars, defaults, and secret metadata files |
+| Configurable rate limiting | Implemented for admin, secret resolve, watch, and batch endpoint groups |
+| Config Agent binary/API client/local dry-run       | Implemented |
+| Config Agent K8s Lease leader election             | Implemented as internal module |
+| Config Agent read polling/version tracking         | Implemented as internal module |
+| Config Agent native config/env.sh rendering        | Implemented as internal module |
+| Config Agent ConfigMap/Secret apply                | Implemented as internal module |
+| Config Agent Deployment rollout patch              | Implemented as internal module |
+| Config Agent leading-edge debounce                 | Implemented as internal module |
+| Config Agent image build                           | Implemented |
+| Config Agent RBAC/deployment handoff examples      | Documented; external deployment owner per `DEC-003` |
+| Config Agent fake-client e2e smoke coverage        | Implemented |
+| Config Agent live non-dry-run entrypoint           | Not implemented |
+
+> **Config Agent caveat:** The "Implemented as internal module" rows above
+> describe code that lives under `internal/agent/` and is exercised by unit /
+> e2e tests. The shipping `cmd/config-agent` binary today calls only
+> `agent.RunDryRun(...)` and exits — leader election, fetch loop, K8s apply,
+> rollout patch, and debounce are NOT yet wired into the live entrypoint. Do
+> not deploy the `config-agent` image as a long-running reconciler; it will
+> exit immediately after the dry-run pass.
 
 If a feature is listed as "Not implemented", treat descriptions in the PRD/HLD
 as planned design — the server will refuse requests that depend on them.
 
 ## Quickstart
 
-Prerequisites: Go 1.24+, a Git repo (SSH or HTTPS) that holds the config tree
+Prerequisites: Go 1.26+, a Git repo (SSH or HTTPS) that holds the config tree
 under `configs/orgs/<org>/projects/<proj>/services/<svc>/`.
 
 ```bash
@@ -79,8 +117,54 @@ curl http://localhost:8080/api/v1/orgs
 | `ALLOW_UNAUTHENTICATED_DEV`  | no                       | `false`               | Set to `true` to boot without an API key — dev/test only. |
 | `ADDR`                       | no                       | `:8080`               | HTTP listen address.                                   |
 | `LOG_LEVEL`                  | no                       | `info`                | `debug`, `info`, `warn`, `error`.                     |
-| `SECRET_MOUNT_PATH`          | no                       | `/secrets`            | Reserved for future secret-mount logic.                |
-| `CONSOLE_API_URL`            | no                       | —                     | Reserved.                                              |
+| `SECRET_MOUNT_PATH`          | no                       | `/secrets`            | Absolute root for mounted K8s Secret volume reads.      |
+| `SEALED_SECRET_CONTROLLER_NAMESPACE` | no                | `kube-system`         | Namespace for SealedSecret controller public-key lookup and admin write integration. |
+| `SEALED_SECRET_CONTROLLER_NAME` | no                    | `sealed-secrets-controller` | Controller service name for SealedSecret public-key lookup and admin write integration. |
+| `SEALED_SECRET_SCOPE`        | no                       | `strict`              | SealedSecret scope used by internal sealing adapters: `strict`, `namespace-wide`, or `cluster-wide`. |
+| `K8S_APPLY_TIMEOUT`          | no                       | `10s`                 | Timeout for SealedSecret apply adapter calls.          |
+| `SECRET_AUDIT_LOG_ENABLED`   | no                       | `true`                | Enables non-sensitive secret audit logging.            |
+| `CONSOLE_API_URL`            | no                       | —                     | AAP Console base URL for startup App Registry load.    |
+| `CONSOLE_API_TIMEOUT`        | no                       | `5s`                  | Timeout for AAP Console API calls.                     |
+| `CONSOLE_REGISTRY_BOOTSTRAP_ATTEMPTS` | no            | `5`                   | Maximum startup App Registry load attempts.            |
+| `CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF` | no     | `1s`                  | Initial startup App Registry retry backoff.            |
+| `CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF` | no         | `30s`                 | Maximum startup App Registry retry backoff.            |
+| `RATE_LIMIT_ADMIN_RPS`       | no                       | `0`                   | Admin endpoint token-bucket rate; `0` disables. Pair with `RATE_LIMIT_ADMIN_BURST`. |
+| `RATE_LIMIT_ADMIN_BURST`     | no                       | `0`                   | Admin endpoint token-bucket burst; `0` disables.       |
+| `RATE_LIMIT_SECRET_RESOLVE_RPS` | no                    | `0`                   | `resolve_secrets=true` token-bucket rate; `0` disables. Pair with `RATE_LIMIT_SECRET_RESOLVE_BURST`. |
+| `RATE_LIMIT_SECRET_RESOLVE_BURST` | no                 | `0`                   | `resolve_secrets=true` token-bucket burst; `0` disables. |
+| `RATE_LIMIT_WATCH_RPS`       | no                       | `0`                   | Config/env watch endpoint token-bucket rate; `0` disables. Pair with `RATE_LIMIT_WATCH_BURST`. |
+| `RATE_LIMIT_WATCH_BURST`     | no                       | `0`                   | Config/env watch endpoint token-bucket burst; `0` disables. |
+| `RATE_LIMIT_BATCH_RPS`       | no                       | `0`                   | Batch read endpoint token-bucket rate; `0` disables. Pair with `RATE_LIMIT_BATCH_BURST`. |
+| `RATE_LIMIT_BATCH_BURST`     | no                       | `0`                   | Batch read endpoint token-bucket burst; `0` disables. |
+| `RATE_LIMIT_READ_RPS`        | no                       | `0`                   | History/read endpoint token-bucket rate; `0` disables. Pair with `RATE_LIMIT_READ_BURST`. **Recommended to enable** — history scans the full Git log per request and has no authentication gate. |
+| `RATE_LIMIT_READ_BURST`      | no                       | `0`                   | History/read endpoint token-bucket burst; `0` disables. |
+
+## Config Agent dry-run
+
+`config-agent` currently exposes local dry-run summary output. Runtime config,
+Config Server reads, leader election, fetch/render, and ConfigMap/Secret apply
+and rollout/debounce behavior exist as internal modules. The Dockerfile also
+has a `config-agent` image target, and `make test-e2e` covers the fake-client
+Agent smoke path. Live non-dry-run entrypoint wiring remains target design.
+
+```bash
+make build-agent
+
+CONFIG_SERVER_URL=http://localhost:8080 \
+CONFIG_AGENT_ORG=myorg \
+CONFIG_AGENT_PROJECT=ai \
+CONFIG_AGENT_SERVICE=litellm \
+./bin/config-agent --dry-run
+```
+
+Image build:
+
+```bash
+make docker-build-agent
+```
+
+Use `--resolve-secrets` only when the agent has `CONFIG_AGENT_API_KEY` or
+`API_KEY`; the dry-run output reports counts and does not print secret values.
 
 ### Auth: fail-closed by default
 
@@ -102,7 +186,8 @@ Most responses are JSON. The exceptions are `/healthz` and `/readyz`, which retu
 ```
 
 Current JSON error codes are `not_found`, `validation`, `conflict`,
-`unauthorized`, `git_push_failed`, `internal`, and `invalid_body`.
+`unauthorized`, `rate_limited`, `git_push_failed`, `internal`,
+`invalid_body`, and `invalid_query`.
 
 ### Authenticated endpoints
 
@@ -114,11 +199,12 @@ Authorization: Bearer <API_KEY>
 X-API-Key: <API_KEY>
 ```
 
-Admin endpoints (`POST /api/v1/admin/changes`, `DELETE /api/v1/admin/changes`,
+Admin endpoints (`POST /api/v1/admin/changes`,
+`POST /api/v1/admin/changes/revert`, `DELETE /api/v1/admin/changes`,
 `POST /api/v1/admin/reload`) and the secret-metadata read
-(`GET /api/v1/orgs/.../secrets`) require auth. Config and env_vars reads are
-currently unauthenticated; deploy behind a NetworkPolicy that only admits the
-expected clients.
+(`GET /api/v1/orgs/.../secrets`) require auth. Config, env_vars, versioned
+config/env, and history reads are currently unauthenticated; deploy behind a
+NetworkPolicy that only admits the expected clients.
 
 ### Read
 
@@ -135,9 +221,19 @@ GET /api/v1/orgs/{org}/projects/{project}/services
 
 # Per-service reads
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/config
+GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/config?version={commit}
+GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/config/watch?version={ver}[&timeout=30s]
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars
+GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars?version={commit}
+GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars/watch?version={ver}[&timeout=30s]
+GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/env_vars?resolve_secrets=true   # auth required, no-store
+POST /api/v1/configs/batch
+GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/history[?file=config&limit=20&before={ver}]
 GET /api/v1/orgs/{org}/projects/{project}/services/{svc}/secrets   # auth required
 ```
+
+`env_vars?version={commit}` returns historical `plain` and `secret_refs` only;
+`version` cannot be combined with `resolve_secrets=true`.
 
 ### Write
 
@@ -154,9 +250,24 @@ curl -X POST http://localhost:8080/api/v1/admin/changes \
       "plain":       { "LOG_LEVEL": "INFO" },
       "secret_refs": { "API_KEY": "litellm-api-key" }
     },
+    "secrets": {
+      "litellm-secrets": {
+        "namespace": "ai-platform",
+        "data": { "api-key": "actual-secret-value" }
+      }
+    },
     "message": "bump retries"
   }'
 ```
+
+App Registry webhook:
+
+```bash
+POST /api/v1/admin/app-registry/webhook   # auth required
+```
+
+Webhook events must include `updated_at` (RFC3339) so delayed async retries
+cannot overwrite newer cache state or resurrect entries after a newer delete.
 
 Successful response:
 
@@ -165,7 +276,7 @@ Successful response:
   "status":     "committed",
   "version":    "<commit hash>",
   "updated_at": "2026-04-23T10:00:00Z",
-  "files":      ["config.yaml", "env_vars.yaml"]
+  "files":      ["config.yaml", "env_vars.yaml", "secrets.yaml", "sealed-secrets/ai-platform/litellm-secrets.yaml"]
 }
 ```
 
@@ -183,18 +294,43 @@ If the Git push succeeded but the in-memory snapshot could not be refreshed
 Operators should investigate before trusting subsequent reads — the serving
 snapshot is the last-known-good view, which may be stale.
 
+If the Git commit succeeded but applying a generated SealedSecret failed, the
+response is `503 committed_but_apply_failed` with `apply_error`. The encrypted
+manifest remains committed and should be reconciled or re-applied by an
+operator.
+
+Secret writes require the server to run with Kubernetes SealedSecret adapters
+configured. If they are unavailable, the request fails validation before any
+Git commit. Secret namespaces and K8s Secret object names are also validated
+against Kubernetes DNS naming rules before any Git write.
+
+Revert a service to the files from a previous service-history commit:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/admin/changes/revert \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "org": "myorg",
+    "project": "ai",
+    "service": "litellm",
+    "target_version": "a3f2b1c",
+    "message": "rollback litellm to stable config"
+  }'
+```
+
+The endpoint validates that `target_version` is in the selected service's own
+history, restores recognized service files from that commit, deletes recognized
+current files absent from the target, commits and pushes a new forward-only Git
+commit, applies restored SealedSecret manifests, and reloads the in-memory
+snapshot. A no-op target returns `status: "noop"` without creating a commit.
+Post-commit apply/reload failures are explicit `503` responses with
+`rolled_back_but_apply_failed`, `rolled_back_but_reload_failed`, or
+`rolled_back_but_apply_and_reload_failed`.
+
 #### Rejected fields
 
 The server refuses unknown JSON fields on admin endpoints (`DisallowUnknownFields`).
-In particular:
-
-```json
-{ "secrets": [ ... ] }        // 400
-```
-
-is rejected with a message explaining that secret writes are not part of
-Phase-1. This prevents silent data loss for clients that follow the PRD v2.1
-schema.
 
 ### Delete
 
@@ -211,7 +347,7 @@ Successful response:
 {
   "status":        "deleted",
   "version":       "<commit hash>",
-  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml"]
+  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml", "sealed-secrets/"]
 }
 ```
 
@@ -222,7 +358,7 @@ from the new HEAD, the response is `503` with:
 {
   "status":        "deleted_but_reload_failed",
   "version":       "<commit hash>",
-  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml"],
+  "deleted_files": ["config.yaml", "env_vars.yaml", "secrets.yaml", "sealed-secrets/"],
   "reload_error":  "refusing to swap snapshot: 1 file(s) failed to parse: ..."
 }
 ```
@@ -234,24 +370,54 @@ curl -X POST http://localhost:8080/api/v1/admin/reload \
   -H "Authorization: Bearer $API_KEY"
 ```
 
+### Git webhook refresh
+
+```bash
+curl -X POST http://localhost:8080/api/v1/admin/git/webhook \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"ref":"refs/heads/main"}'
+```
+
+The webhook payload is not trusted for authorization or service selection; a
+valid API key is required, and the server pulls the configured `GIT_URL` /
+`GIT_BRANCH`.
+
 ## Operational notes
 
 - **Last-known-good snapshot.** The store only swaps the serving snapshot when
-  every file parses. A malformed `config.yaml` in the repo will fail the
-  reload; reads keep returning the previous snapshot. Check logs for
-  `"refusing to swap snapshot"` errors and fix the offending file.
+  every file parses and passes schema validation. A malformed or schema-invalid
+  config repo file will fail the reload; reads keep returning the previous
+  snapshot. Check logs for `"refusing to swap snapshot"` errors and fix the
+  offending file.
 - **Degraded state.** When the last reload failed (background poll or admin
   reload), the server is in a degraded state: it serves the last-known-good
   snapshot but the snapshot may be stale. In this state:
   - `/readyz` returns `503 degraded` so Kubernetes removes the pod from load
     balancer rotation until the underlying YAML is fixed.
   - `/api/v1/status` returns `"status": "degraded"` with `is_degraded: true`
-    and `last_reload_error` describing the parse failure.
+    and `last_reload_error` describing the parse or schema failure.
+- **App Registry status.** `/api/v1/status` includes `app_registry.status`,
+  `apps_loaded`, `last_loaded_at`, `last_updated_at`, and `last_load_error`
+  when present. A registry-only load failure is reported in
+  `degraded_components` but does not make `/readyz` fail; Config Server keeps
+  serving Git-backed config so Console and Config Server do not deadlock on
+  startup order. If `CONSOLE_API_URL` is unset, webhook updates can change
+  `apps_loaded` and `last_updated_at`, but `app_registry.status` stays
+  `not_configured` because no full Console snapshot was loaded.
 - **Post-commit reload.** `ApplyChanges` commits and pushes before reloading.
   A successful commit with a failed reload produces the `committed_but_reload_failed`
   response documented above rather than a bare `200`. Similarly,
   `DeleteChanges` produces `deleted_but_reload_failed` if the post-delete
   reload fails.
+- **Secret audit logs.** When `SECRET_AUDIT_LOG_ENABLED=true`, admin secret
+  writes and `resolve_secrets=true` env var reads emit non-sensitive audit
+  events with action, result, service identity, and secret IDs. Plaintext
+  values are not logged.
+- **App Registry bootstrap.** If `CONSOLE_API_URL` is set, startup loads
+  `GET /api/v1/apps?all=true` into an in-memory cache with bounded
+  exponential backoff. Final failure is logged and startup continues with the
+  existing cache, which is empty on a fresh process.
 - **Post-reload admin endpoint.** `POST /api/v1/admin/reload` is a **force
   reload**: it pulls, then re-parses the current checkout unconditionally.
   Unlike the background poll (which skips the reload when HEAD hasn't moved),
@@ -273,12 +439,21 @@ curl -X POST http://localhost:8080/api/v1/admin/reload \
   write path (modified, staged, or untracked files). Such drift would make
   `/api/v1/status.version` lie about what's being served, so the reload fails
   closed and the server enters the degraded state documented above.
-- **Schema validation.** `config.yaml` and `env_vars.yaml` require
+- **Schema validation.** Config repo YAML is validated before typed parsing.
+  `config.yaml`, `env_vars.yaml`, `_defaults/common.yaml`, and `secrets.yaml`
+  reject unknown top-level or known nested fields, duplicate keys in validated
+  blocks, and invalid node shapes. `config.yaml` and `env_vars.yaml` require
   `metadata.service` / `metadata.org` / `metadata.project`; every
   `secrets.yaml` entry requires an `id` and a complete `k8s_secret` pointer
-  (`name`, `namespace`, `key`). Files that parse as valid YAML but miss
-  these fields fail the reload instead of loading as an unreachable or
-  half-referenced entry.
+  (`name`, `namespace`, `key`). Env var keys under `plain` and `secret_refs`
+  must be shell-compatible names. Files that violate these rules fail reload
+  closed instead of loading as unreachable or half-referenced entries.
+- **Rate limiting.** Rate limits are disabled by default. Configure RPS and
+  burst pairs for the admin, secret resolve, watch, and batch endpoint groups
+  to enable token-bucket limiting. Limited requests return `429` with
+  `{"error":{"code":"rate_limited",...}}` and `Retry-After: 1`. Admin limits
+  are applied after API-key authentication so unauthorized attempts do not
+  consume admin tokens.
 - **Poll interval must be positive.** `GIT_POLL_INTERVAL=0s` (or negative) is
   rejected at startup rather than panicking inside `time.NewTicker`.
 
@@ -291,23 +466,29 @@ For the repo-local Go toolchain and caches:
 ```
 
 ```bash
-make build          # compile the binary
+make build          # compile config-server and config-agent
+make build-server   # compile only config-server
+make build-agent    # compile only config-agent
 make test           # go test ./...
 make test-race      # go test -race ./...
+make test-e2e       # go test -tags=e2e ./...
 make lint           # golangci-lint (if installed)
-make docker-build   # build the container image
+make docker-build        # build the config-server container image
+make docker-build-agent  # build the config-agent container image
 ```
 
 Container image build support does not include Helm/Kubernetes manifest
 ownership; see `docs/current/OPERATIONS.md`.
 
 The CI pipeline (`.github/workflows/ci.yml`) runs `go vet`, race tests, and
-`govulncheck` on every push to or pull request targeting `main`.
+`govulncheck` on pull requests and direct pushes targeting `dev` or `main`.
 
 ## Repository layout
 
 ```
 cmd/config-server/     # main()
+cmd/config-agent/      # Config Agent dry-run entrypoint
+internal/agent/        # Config Agent runtime config + Config Server client
 internal/config/       # env/flag parsing + Validate()
 internal/gitops/       # go-git wrapper (clone, pull, commit, push, snapshot)
 internal/store/        # atomic snapshot, parse + aggregate

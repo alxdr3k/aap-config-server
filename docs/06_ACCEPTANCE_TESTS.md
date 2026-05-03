@@ -27,12 +27,15 @@ Then  <기대 결과>
 | `AC-006` | `FR-16`, `FR-17` | Given protected endpoints, When credentials are missing or invalid, Then the server returns 401; valid Bearer or `X-API-Key` succeeds. | `TEST-006` | `passing` |
 | `AC-007` | `FR-1`, `FR-15` | Given a failed reload after a good snapshot, When readiness/status are queried, Then the server reports degraded while serving last-known-good data. | `TEST-007` | `passing` |
 | `AC-008` | `FR-1` | Given the local `configs/` worktree is dirty outside server writes, When snapshot reload runs, Then reload fails closed. | `TEST-008` | `passing` |
-| `AC-009` | `FR-4` | Given a Phase-1 admin write body includes `secrets`, When decoded, Then the request fails with 400 instead of silently dropping data. | `TEST-009` | `passing` |
+| `AC-009` | `FR-4` | Given an admin write body includes an unknown field, When decoded, Then the request fails with 400 instead of silently dropping data. The "known fields" set is the admin handler's current contract and was extended by `SECRET-1A.6` to include `secrets`. | `TEST-009` | `passing` |
 | `AC-014` | Documentation migration | Given a new session, When it follows `AGENTS.md`, Then current status, code map, testing, runtime, and roadmap are discoverable from canonical docs. | manual link check + PR #10 CI | `passing` |
 | `AC-015` | Documentation workflow | Given a PR changes Go source/runtime paths, When doc freshness runs, Then it comments with matching doc update candidates without blocking merge. | workflow YAML parse + pattern review | `passing` |
-| `AC-020` | `FR-7`, `FR-17` | Secret write/resolve handles SealedSecret generation, K8s apply, no-store response, and audit logging. | future tests | `defined` |
-| `AC-030` | `FR-9` | Config Agent detects config changes, updates K8s resources, and triggers controlled rollout. | future tests | `defined` |
-| `AC-040` | `FR-6`, `FR-10`, `FR-13`, `FR-14` | Watch/history/revert/inheritance/metrics features satisfy target PRD contracts. | future tests | `defined` |
+| `AC-020` | `FR-7`, `FR-17` | Secret write/resolve handles SealedSecret generation, K8s apply, no-store response, and audit logging. | `TEST-020` | `passing` |
+| `AC-021` | `FR-8` | App Registry bootstrap and webhook cache keep service registration state available to readiness/status and recover from missed webhooks. | `TEST-021` | `passing` |
+| `AC-030` | `FR-9` | Config Agent detects config changes, updates K8s resources, and triggers controlled rollout. | `TEST-030` | `passing` |
+| `AC-040` | `FR-6`, `FR-10`, `FR-13`, `FR-14` | Watch/history/revert/inheritance features satisfy target PRD contracts. | `TEST-040` | `passing` |
+| `AC-041` | operational extensions | ETag, gzip, batch reads, Prometheus metrics, and Git webhook refresh satisfy target PRD contracts without exposing secret plaintext. | `TEST-041` | `passing` |
+| `AC-042` | production hardening | Schema validation, rate limiting, integration/load test harnesses, and deployment handoff docs are complete for the target architecture. | `TEST-042` (schema validation + rate limiting + integration harness + load/concurrency profiles landed; deployment handoff docs remain) | `defined` (`HARDEN-1A.5` deployment docs remaining) |
 
 ## Status vocabulary
 
@@ -59,7 +62,13 @@ staging / manual acceptance가 아직 실행되지 않은 상태인지 분리한
 | `TEST-006` | API key auth tests | `internal/handler/handler_test.go`, `internal/config/config_test.go` | `AC-006` |
 | `TEST-007` | Degraded/reload tests | `internal/store/store_test.go`, `internal/handler/handler_test.go` | `AC-007` |
 | `TEST-008` | Dirty checkout snapshot tests | `internal/gitops/repo_test.go` | `AC-008` |
-| `TEST-009` | Secret field rejection tests | `internal/handler/handler_test.go` | `AC-009` |
+| `TEST-009` | Unknown admin field rejection tests | `internal/handler/handler_test.go` | `AC-009` |
+| `TEST-020` | Secret write/resolve tests | `internal/config/config_test.go`, `internal/secret/types_test.go`, `internal/secret/volume_test.go`, `internal/secret/sealed_test.go`, `internal/secret/encrypt_test.go`, `internal/secret/apply_test.go`, `internal/store/store_test.go`, `internal/handler/handler_test.go` | `AC-020` |
+| `TEST-021` | App Registry tests | `internal/registry/*_test.go`, `internal/handler/handler_test.go` | `AC-021` |
+| `TEST-030` | Config Agent tests | `internal/agent/*_test.go`, `internal/agent/e2e_smoke_test.go` | `AC-030` bootstrap, leader election, fetch loop, rendering, ConfigMap/Secret apply, rollout patch, debounce coverage, and fake-client e2e smoke for fetch/render/apply/rollout |
+| `TEST-040` | Console extension tests | `internal/store/store_test.go`, `internal/handler/handler_test.go`, `internal/gitops/repo_test.go` | `AC-040` store version wait primitive, resource-scoped config/env watch endpoints, git history iterator/classifier, public history API, versioned config/env reads, revert target validation/restore plan, public revert endpoint flow, defaults source parsing, internal merge semantics, public `inherit` query behavior, and admin write preservation regression landed |
+| `TEST-041` | Operational extension tests | `internal/handler/handler_test.go`, `internal/metrics/metrics_test.go`, `internal/store/store_test.go`, `internal/gitops/repo_test.go` | `AC-041` ETag/`If-None-Match`, gzip, batch read, Prometheus metrics, and authenticated Git webhook refresh coverage landed |
+| `TEST-042` | Production hardening tests | `internal/parser/*_test.go`, `internal/config/config_test.go`, `internal/handler/handler_test.go`, `internal/integration/harness_integration_test.go`, `internal/integration/load_concurrency_integration_test.go` | `AC-042` schema validation, rate limiting, integration harness (6 hermetic scenarios), and load/concurrency profiles (5 scenarios: concurrent admin config/env writes, watch unblock-on-write, Config Agent polling, mixed reads+writes — all passing under `make test-integration` (`make test-race` excludes integration build tag)) landed; deployment handoff docs (`HARDEN-1A.5`) remain |
 
 ## Manual / Static Checks
 

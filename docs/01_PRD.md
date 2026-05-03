@@ -2,8 +2,8 @@
 
 > **버전**: 2.1
 > **작성일**: 2026-03-12
-> **최종 수정일**: 2026-04-29
-> **상태**: **Approved design — Phase-1 implementation in progress.** 문서가 설명하는 전체 v2.1 계약(SealedSecret 생성, Config Agent, watch/history/revert, resolve_secrets 등) 중 상당 부분은 아직 구현되지 않았다. 실제로 현재 제공되는 범위는 [README.md](../README.md#feature-matrix) 의 Feature Matrix를 기준으로 한다. 본 문서의 API/저장소/아키텍처 기술은 **목표 계약**이며, 구현되지 않은 엔드포인트·필드는 Phase-1에서 명시적으로 거부된다 (예: `POST /api/v1/admin/changes` 의 `secrets` 필드는 400).
+> **최종 수정일**: 2026-04-30
+> **상태**: **Approved design — Phase-1 implementation in progress.** 문서가 설명하는 전체 v2.1 계약 중 Config Agent는 binary/API client/local dry-run bootstrap, K8s Lease leader election module, read polling/version tracking module, native config/env.sh rendering module, ConfigMap/Secret apply module, Deployment rollout patch module, leading-edge debounce module, image build target, RBAC/deployment handoff examples, fake-client e2e smoke coverage까지 구현되어 있고, store version-wait primitive, `config/watch`/`env_vars/watch` endpoints, Git history iterator/service file classifier, public history API, versioned config/env reads, revert target validation/restore plan, public revert endpoint/commit flow, config/env inheritance read path, service-level admin write preservation regression, non-secret config/env ETag/`If-None-Match` handling, gzip compression, batch config/env read API, Prometheus `/metrics` endpoint, authenticated Git webhook refresh trigger도 구현되어 있다. live non-dry-run entrypoint 등은 아직 구현되지 않았다. SealedSecret write/resolve path와 App Registry bootstrap/webhook/status cache path는 구현되어 있으며, 실제로 현재 제공되는 범위는 [README.md](../README.md#feature-matrix) 의 Feature Matrix를 기준으로 한다. 본 문서의 API/저장소/아키텍처 기술은 **목표 계약**이며, 구현되지 않은 엔드포인트·필드는 Phase-1에서 명시적으로 거부된다.
 > **참조**: [HLD](./02_HLD.md) · [development-process.md](./development-process.md) · [README.md Feature Matrix](../README.md#feature-matrix)
 
 ---
@@ -359,34 +359,35 @@ secrets:
 #### 메모리 구조
 
 ```go
-// 핵심 자료구조 (상세: HLD 섹션 6.3, 11.2 참조)
+// 핵심 자료구조 (상세: HLD 섹션 6.3, 11.2 및 internal/store/store.go 참조)
 type Store struct {
-    mu       sync.RWMutex
-    configs  map[string]*ResolvedConfig  // key: "org/project/service"
-    version  string                       // current git commit hash
-    repo     GitRepo                      // interface 주입 (DI)
+    snapshot   atomic.Pointer[snapshot]    // 읽기 경로: lock-free swap
+    lastReload atomic.Pointer[reloadState] // /readyz · /api/v1/status
+
+    mu         sync.Mutex                  // 쓰기 경로 직렬화 (Phase-1 global, ADR-005)
+    repo       gitops.GitRepo              // interface 주입 (DI)
 }
 
 // 모든 public 메서드는 context.Context를 첫 번째 파라미터로 받는다
-func (s *Store) GetConfig(ctx context.Context, org, project, service string) (*ResolvedConfig, error)
+func (s *Store) GetConfig(ctx context.Context, org, project, service string) (*ServiceData, error)
 func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeResult, error)
 ```
 
-- 모든 읽기는 `RLock` → 동시 읽기 무제한
-- 쓰기(설정 갱신)는 `Lock` → COW(Copy-on-Write) 패턴으로 읽기 차단 최소화
-- 외부 의존성(Git 등)은 interface로 추상화하여 테스트에서 mock 교체 가능
+- 읽기는 어떤 lock도 잡지 않는다. `snapshot` 포인터를 `Load()`만 하므로 동시 읽기 무제한.
+- 쓰기(설정 갱신)는 `mu`로 직렬화하고 새 `*snapshot`을 생성한 뒤 통째로 `Store()` 한다. 기존 snapshot은 진행 중인 reader가 끝나면 GC.
+- 외부 의존성(Git 등)은 interface로 추상화하여 테스트에서 mock 교체 가능.
 
 #### Copy-on-Write 갱신
 
 ```
 1. 새 Git 변경 감지
 2. 변경된 설정만 파싱 (diff 기반)
-3. 새 map 생성 (기존 map 복사 + 변경분 적용)
-4. atomic pointer swap (sync.RWMutex Lock 최소 구간)
-5. 기존 map은 진행 중인 요청 완료 후 GC
+3. 새 *snapshot 생성 (기존 map 복사 + 변경분 적용 + 상속 pre-compute)
+4. atomic.Pointer[snapshot].Store(new) — reader 차단 0
+5. 기존 snapshot 은 진행 중인 reader 완료 후 GC
 ```
 
-갱신 중에도 읽기 요청은 거의 차단되지 않는다.
+갱신 중에도 읽기 요청은 차단되지 않는다.
 
 #### HTTP 최적화
 
@@ -416,7 +417,7 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config
 
 | 헤더 | 필수 | 설명 |
 |------|------|------|
-| `Authorization` | Y | `Bearer <API_KEY>` — 환경변수로 설정된 API Key |
+| `Authorization` | (목표 설계) | `Bearer <API_KEY>` — 목표 설계는 read 경로도 인증을 요구하지만 Phase-1 현재 구현은 config/env_vars/history/discovery/batch read를 인증 없이 노출한다. 운영 시 K8s Network Policy로 클러스터 내부 호출만 허용한다. 자세한 사항은 README "Authenticated endpoints"와 `docs/current/RUNTIME.md` 참조. |
 
 **Query Parameters**:
 
@@ -634,13 +635,13 @@ POST /api/v1/admin/changes
 
 #### 동시 변경 처리
 
-동일 서비스에 대한 요청은 **서비스 경로별 mutex**(`sync.Map`에 서비스 경로(`"org/project/service"`)를 key로 하여 mutex를 저장)로 직렬화한다. 다른 서비스 간 요청은 서로 다른 파일을 수정하므로 **Git 충돌이 구조적으로 불가능**하다. Mutex는 Git 작업(파일 수정 → commit → push, ~1-2초)만 보호하며, 이후의 Config Agent polling → rolling restart는 완전 비동기이다.
+**Phase-1 (현재 구현, ADR-005)**: admin 쓰기와 store reload는 단일 `sync.Mutex`로 **전역 직렬화**된다. 동일 서비스든 서로 다른 서비스든 한 번에 한 건의 Git 작업만 진행한다. Mutex는 파일 수정 → commit → push (~1-2초)만 보호하며, 이후 Config Agent polling → rolling restart는 완전 비동기이다. `git push` rejected 시 pull-rebase 후 최대 3회 재시도 후 `503`.
 
-다른 서비스 간 병렬 처리 시 `git push` rejected가 발생할 수 있으나, 파일이 다르므로 **pull-rebase로 항상 자동 해결**된다 (최대 3회 재시도 후 `503`).
+**목표 설계 (ADR-003)**: 동일 서비스에 대한 요청은 **서비스 경로별 mutex**(`sync.Map`에 `"org/project/service"`를 key로 mutex 저장)로 직렬화하고, 다른 서비스 간 요청은 병렬 처리한다. 서로 다른 파일을 수정하므로 Git 충돌이 구조적으로 불가능하지만 비-fast-forward push 시 pull-rebase로 자동 해결한다.
 
-> 상세 설계: [ADR-003: 동시 변경 처리 — 서비스별 Mutex](./adr/003-concurrent-change-per-service-mutex.md)
-> Phase-1 current implementation serializes Git/store writes globally; see
-> [ADR-005: Phase-1 global Git serialization](./adr/005-phase-1-global-git-serialization.md).
+> 상세 설계:
+> - [ADR-005: Phase-1 global Git serialization](./adr/005-phase-1-global-git-serialization.md) (현재 동작)
+> - [ADR-003: 동시 변경 처리 — 서비스별 Mutex](./adr/003-concurrent-change-per-service-mutex.md) (Phase-2 목표)
 
 ### 4.5 FR-5: 설정/시크릿 일괄 삭제 Admin API `[FR-5]`
 
@@ -671,7 +672,7 @@ DELETE /api/v1/admin/changes
 ```
 
 **처리 흐름**:
-1. 해당 서비스 디렉토리의 config.yaml, env_vars.yaml, secrets.yaml, sealed-secrets/ 삭제
+1. 해당 서비스 디렉토리의 config.yaml, env_vars.yaml, secrets.yaml, sealed-secrets/ 삭제 (`_defaults/common.yaml`은 admin write/delete/revert 범위에서 제외, RUNTIME 참조)
 2. 단일 Git commit & push
 3. In-memory store에서 해당 서비스 설정 제거
 4. Config Agent가 다음 polling 시 변경 감지 → ConfigMap/Secret 정리
@@ -684,8 +685,9 @@ DELETE /api/v1/admin/changes
 GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch?version={current_version}
 ```
 
-- 현재 클라이언트가 가진 `version`(git commit hash)과 서버의 최신 버전이 다르면 즉시 응답
+- 현재 클라이언트가 가진 `version`(해당 config payload가 마지막으로 변경된 git commit hash)과 서버의 최신 config resource version이 다르면 즉시 응답
 - 같으면 변경이 생길 때까지 hold (최대 30초 후 `304 Not Modified`)
+- 선택적 `timeout` query는 Go duration 형식으로 더 짧은 wait을 지정할 수 있으며 최대 30초를 초과할 수 없다
 - 클라이언트는 응답 받은 후 다시 요청 (long polling loop)
 
 #### 환경변수 변경 감지
@@ -696,8 +698,9 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch?vers
 
 설정 변경 감지 API와 동일한 동작. Config Agent는 config/watch와 env_vars/watch를 **병렬로** 호출하여 각각의 변경을 독립적으로 감지한다.
 
-- `version`이 서버 최신과 다르면 즉시 응답
+- `version`이 서버의 최신 env vars resource version과 다르면 즉시 응답
 - 같으면 변경 시까지 hold (최대 30초 후 `304 Not Modified`)
+- 선택적 `timeout` query는 설정 변경 감지 API와 동일하게 최대 30초를 초과할 수 없다
 
 ### 4.7 FR-7: 시크릿 관리 `[FR-7]`
 
@@ -801,10 +804,15 @@ Config Agent → Config Server API fetch
 #### Config Agent RBAC
 
 Config Agent에 필요한 최소 권한 (대상 리소스에만 `resourceNames`로 제한):
-- `leases` (coordination.k8s.io): get, create, update (leader election용)
-- `configmaps`: get, create, update, patch (대상 ConfigMap만)
-- `secrets`: get, create, update, patch (환경변수 Secret만)
-- `deployments`: get, patch (대상 Deployment만, annotation 패치용)
+
+| 리소스 | 사전 생성된 대상이 있는 경우 (권장) | Agent가 누락 리소스를 생성해야 하는 경우 |
+|---|---|---|
+| `leases` (coordination.k8s.io) | get, patch, update | get, patch, update + namespace-scoped `create` |
+| `configmaps` | get, patch, update | get, patch, update + namespace-scoped `create` |
+| `secrets` | get, patch, update | get, patch, update + namespace-scoped `create` |
+| `deployments` (apps) | get, patch | get, patch |
+
+> Kubernetes RBAC은 `create` 동사를 `resourceNames`로 제한하지 못한다 — 운영자가 자원 사전 생성 vs. agent 자가 생성 정책을 명시적으로 결정한 뒤 적절한 verb 세트를 부여해야 한다. 자세한 manifest 예시는 `docs/current/OPERATIONS.md` 참조.
 
 #### 설정 파일 생성
 
@@ -850,7 +858,7 @@ Config Agent가 ConfigMap/Secret 업데이트 후 Deployment의 Pod template ann
 
 #### 연속 변경과 재시작 폭풍 방지 (Debounce)
 
-**Leading-edge Debounce**: 첫 변경은 즉시 적용, 이후 연속 변경만 배칭한다. 파라미터: `--debounce-cooldown=10s`, `--debounce-quiet-period=10s`, `--debounce-max-wait=2m`.
+**Leading-edge Debounce**: 첫 변경은 즉시 적용, 이후 연속 변경만 배칭한다. 파라미터: `--debounce-cooldown=10s`, `--debounce-quiet-period=10s`, `--debounce-max-wait=2m`. `max-wait`는 `cooldown`과 `quiet-period` 이상이어야 한다.
 
 | 시나리오 | 동작 | litellm 반영 지연 |
 |----------|------|-------------------|
@@ -875,7 +883,14 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config
 GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars?resolve_secrets=true
 # → env.sh용 (시크릿 평문 포함 → K8s Secret에 저장)
 
-# 3. 변경 감지 (long polling loop)
+# 3. 변경 감지 (Phase-1 현재 구현: 콘텐츠 해시 기반 폴링)
+#    → 2026-04 시점 internal/agent/fetch_loop.go 는 위의 read 엔드포인트를
+#      `--poll-interval` 주기로 호출하고 응답 페이로드 해시 차이를 비교한다.
+#      `/config/watch`, `/env_vars/watch` long-poll 엔드포인트는 서버에 구현되어
+#      있고 Console 등 다른 클라이언트가 사용하지만, Agent fetch loop 자체는 이를
+#      소비하지 않는다. 자세한 사항은 docs/current/RUNTIME.md 참조.
+#
+# (목표 설계, future): Config Agent도 long-poll watch 전환
 GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch?version={ver}
 GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch?version={ver}
 ```
@@ -1112,6 +1127,9 @@ GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config?version={com
 ```
 
 기존 설정 조회 API(FR-2)에 `version` 파라미터를 추가하여, 특정 시점의 설정을 조회할 수 있다. 변경 이력과 함께 사용하여 diff/rollback에 활용한다.
+현재 구현은 `env_vars?version={commit_hash}`도 지원해 historical `plain`과
+`secret_refs`를 반환한다. `resolve_secrets=true`는 mounted Secret 현재값을
+사용하는 current-only 경로이므로 `version`과 함께 사용할 수 없다.
 
 ### 4.14 FR-14: 설정 롤백 API `[FR-14]`
 
@@ -1143,20 +1161,23 @@ POST /api/v1/admin/changes/revert
   "status": "rolled_back",
   "version": "d7e8f9a",
   "target_version": "a3f2b1c",
-  "restored_files": ["config.yaml", "env_vars.yaml", "sealed-secrets/litellm-secrets.yaml"],
+  "restored_files": ["config.yaml", "env_vars.yaml", "sealed-secrets/ai-platform/litellm-secrets.yaml"],
+  "deleted_files": [],
   "updated_at": "2026-03-10T12:00:00Z"
 }
 ```
 
 - `version`: 롤백으로 생성된 **새로운** Git commit hash (롤백도 새 커밋이다)
-- `restored_files`: 복원된 파일 목록
+- `restored_files`: 대상 commit에서 복원한 recognized service file 목록
+- `deleted_files`: 현재 HEAD에는 있지만 대상 commit에는 없어 삭제한 recognized service file 목록
+- 현재 HEAD와 대상 commit의 recognized service file set/content가 같으면 `status`는 `noop`이고 새 commit을 만들지 않는다.
 
 **처리 흐름**:
 1. `target_version` commit이 해당 서비스 경로의 변경을 포함하는지 검증
-2. `git show {target_version}:orgs/.../config.yaml` 등으로 해당 시점의 파일 내용 추출
-3. config.yaml, env_vars.yaml 파일을 해당 시점 내용으로 덮어쓰기
-4. SealedSecret 파일도 해당 시점 내용으로 복원 → K8s API apply
-5. 모든 변경을 **단일 Git commit** & push
+2. 해당 commit의 recognized service file(`config.yaml`, `env_vars.yaml`, `secrets.yaml`, `sealed-secrets/**`) 내용을 추출
+3. 현재 recognized service file을 대상 commit의 파일 set과 content로 맞춤
+4. 모든 변경을 **단일 Git commit** & push
+5. 복원된 SealedSecret 파일을 K8s API apply
 6. In-memory config store 갱신
 7. 다음 Config Agent polling 시 변경 감지 → ConfigMap/Secret 업데이트 → rolling restart
 
@@ -1171,14 +1192,18 @@ POST /api/v1/admin/changes/revert
 | `target_version`이 존재하지 않음 | `404` | 유효하지 않은 commit hash |
 | `target_version`에 해당 서비스 파일 없음 | `404` | 해당 시점에 서비스가 존재하지 않았음 |
 | 현재 설정과 동일 | `200` (no-op) | 변경 없음, 새 commit 생성하지 않음 |
+| Git commit 후 SealedSecret apply 실패 | `503` | `rolled_back_but_apply_failed`, commit은 유지됨 |
+| Git commit 후 reload 실패 | `503` | `rolled_back_but_reload_failed`, last-known-good snapshot 유지 |
 
 ### 4.15 FR-15: 헬스체크 / 운영 API `[FR-15]`
 
 ```
 GET  /healthz                                    # Liveness
-GET  /readyz                                     # Readiness (git sync + App Registry 로드 완료 여부)
-GET  /api/v1/status                              # 서버 상태 (마지막 sync 시각, 로드된 설정 수 등)
-POST /api/v1/admin/reload                        # 수동 설정 리로드 트리거
+GET  /readyz                                     # Readiness (프로세스 + Git-backed store readiness)
+GET  /metrics                                    # Prometheus 메트릭 (HTTP / reload / Git / watch waits / degraded state)
+GET  /api/v1/status                              # 서버 상태 (마지막 sync, 로드된 설정 수, App Registry cache/load 상태 등)
+POST /api/v1/admin/reload                        # 수동 설정 리로드 트리거 (인증 필요)
+POST /api/v1/admin/git/webhook                   # Git webhook 기반 즉시 refresh 트리거 (인증 필요)
 ```
 
 ### 4.16 FR-16: 인증/인가 `[FR-16]`
@@ -1186,7 +1211,7 @@ POST /api/v1/admin/reload                        # 수동 설정 리로드 트�
 | 계층 | 방식 |
 |------|------|
 | 네트워크 수준 | 클러스터 내부 통신 (K8s Network Policy로 접근 제어) |
-| API 인증 | **환경변수 기반 API Key** — `Authorization: Bearer <api-key>` 헤더로 전송 |
+| API 인증 | **환경변수 기반 API Key** — canonical: `Authorization: Bearer <api-key>` / legacy alias: `X-API-Key: <api-key>` |
 | 시크릿 접근 제어 | 유효한 API Key를 가진 클라이언트만 `resolve_secrets=true` 사용 가능 |
 
 #### API Key 설정
@@ -1197,7 +1222,7 @@ POST /api/v1/admin/reload                        # 수동 설정 리로드 트�
 |------|------|
 | **Config Server** | 환경변수 `API_KEY`에 키 값 설정. K8s Secret으로 주입 권장 |
 | **Console** | 환경변수 `CONFIG_SERVER_API_KEY`에 동일한 키 값 설정 |
-| **검증** | 요청의 `Authorization: Bearer <key>`에서 키를 추출 → 환경변수 값과 constant-time 비교 |
+| **검증** | 요청의 `Authorization: Bearer <key>` (또는 legacy `X-API-Key: <key>`)에서 키를 추출 → 환경변수 값과 constant-time 비교 |
 | **키 교체** | 양쪽 환경변수 변경 → Pod 재시작 (Helm values 또는 K8s Secret 업데이트) |
 
 #### 인증 흐름
@@ -1260,8 +1285,8 @@ Config Agent는 설정 조회 + 변경 감지 API를 호출한다.
 |--------|----------|------|
 | GET | `/api/v1/orgs/{org}/projects/{project}/services/{service}/config` | 설정 조회 (os.environ/ 참조 유지) |
 | GET | `/api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars` | 환경변수 조회 (resolve_secrets=true 시 시크릿 평문 포함) |
-| GET | `/api/v1/.../config/watch?version={ver}` | 설정 변경 감지 (long polling) |
-| GET | `/api/v1/.../env_vars/watch?version={ver}` | 환경변수 변경 감지 (long polling) |
+| GET | `/api/v1/.../config/watch?version={ver}` | 설정 변경 감지 (서버 long polling, Phase-1 Agent fetch loop는 비-watch read를 폴링) |
+| GET | `/api/v1/.../env_vars/watch?version={ver}` | 환경변수 변경 감지 (서버 long polling, Phase-1 Agent fetch loop는 비-watch read를 폴링) |
 
 #### Console → Config Server (읽기 API)
 
@@ -1281,9 +1306,11 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 | Method | Endpoint | 용도 |
 |--------|----------|------|
 | GET | `/healthz` | Liveness |
-| GET | `/readyz` | Readiness (git sync + App Registry 로드 완료) |
-| GET | `/api/v1/status` | 서버 상태 |
-| POST | `/api/v1/admin/reload` | 수동 설정 리로드 |
+| GET | `/readyz` | Readiness (프로세스 + Git-backed store readiness) |
+| GET | `/metrics` | Prometheus 메트릭 (HTTP / reload / Git / watch waits / degraded state) |
+| GET | `/api/v1/status` | 서버 상태 및 App Registry cache/load 상태 |
+| POST | `/api/v1/admin/reload` | 수동 설정 리로드 (인증 필요) |
+| POST | `/api/v1/admin/git/webhook` | Git webhook 기반 즉시 refresh (인증 필요) |
 
 ---
 
@@ -1320,13 +1347,13 @@ Console이 설정 조회/탐색/이력 확인을 위해 사용하는 API.
 
 ## 7. 기술 스택
 
-**Go Module**: `github.com/aap/config-server` (Go 1.24+)
+**Go Module**: `github.com/aap/config-server` (Go 1.26+)
 
 | 구성 요소 | 기술 | 선택 이유 |
 |-----------|------|-----------|
-| 언어 | **Go 1.24+** | 고성능 HTTP 서버, 단일 바이너리, 낮은 메모리, K8s 생태계 친화 |
+| 언어 | **Go 1.26+** | 고성능 HTTP 서버, 단일 바이너리, 낮은 메모리, K8s 생태계 친화 |
 | HTTP 서버 | `net/http` (stdlib) | 외부 의존성 최소화, HTTP/2 기본 지원 |
-| Router | stdlib `mux` (Go 1.24+ `http.NewServeMux` enhanced routing) | 외부 의존성 zero, 메서드+패턴 라우팅 지원 |
+| Router | stdlib `mux` (Go 1.26+ `http.NewServeMux` enhanced routing) | 외부 의존성 zero, 메서드+패턴 라우팅 지원 |
 | Git 연동 | `go-git` 또는 shell exec `git` | in-process git 조작 |
 | YAML 파싱 | `gopkg.in/yaml.v3` | 표준 YAML 라이브러리 |
 | 파일 감시 | `fsnotify` | Volume Mount 변경 감지 |

@@ -14,9 +14,19 @@ canonical view만 유지한다. 구현 단계의 얇은 문서 레이어
 | Milestone | 제품 / 사용자 관점의 delivery gate | `P0-M1` | "사용자가 어떤 상태를 얻는가"를 기준으로 정의 |
 | Track | 기술 영역 또는 큰 구현 흐름 | `CORE` | api, data, runtime, ops 같은 영역 |
 | Phase | track 안의 구현 단계 | `CORE-1A` | 같은 track 안에서 순서가 있는 단계 |
-| Slice / Task | 커밋 가능한 구현 단위 | `CORE-1A.1` | PR / commit / issue와 연결 가능한 크기 |
+| Slice | 커밋 가능한 구현/검증 단위 | `CORE-1A.1` | PR / commit / issue와 연결 가능한 크기 |
 | Gate | 검증 / acceptance 기준 | `AC-001` / `TEST-001` | `06_ACCEPTANCE_TESTS.md` 또는 테스트 위치로 연결 |
 | Evidence | 완료를 뒷받침하는 근거 | PR, code, tests, current docs | 본문 복제 대신 링크 / ID로 남김 |
+
+## Unplanned feedback
+
+User feedback from real usage is triaged before it enters the roadmap.
+
+- Clear defects, UX regressions, or acceptance failures may become small hotfix slices.
+- Broader product or architecture changes go through Q / DEC / PRD / roadmap updates.
+- Keep detailed feedback threads in the issue tracker. Record only the actionable
+  slice, gate, evidence, and next step here.
+- Bug fixes should leave regression evidence when practical.
 
 ## Status vocabulary
 
@@ -48,11 +58,11 @@ Gate status:
 | Milestone | Product / user gate | Target date | Status | Gate | Evidence | Notes |
 |---|---|---|---|---|---|---|
 | `P0-M1` | Phase-1 Config Server MVP serves Git-backed config/env data and supports admin config/env writes. |  | `accepted` | `AC-001`~`AC-005` | `cmd/config-server`, `internal/*`, `README.md`, PR #10 CI | Existing implementation predates this ledger. |
-| `P0-M2` | Operational hardening for auth, degraded state, reload, dirty checkout safety, and unsupported secret writes. |  | `accepted` | `AC-006`~`AC-009` | `internal/store`, `internal/handler`, `internal/gitops`, PR #10 CI | Some PRD phase labels differ from actual landing order. |
+| `P0-M2` | Operational hardening for auth, degraded state, reload, dirty checkout safety, and fail-closed admin write decoding. |  | `accepted` | `AC-006`~`AC-009` | `internal/store`, `internal/handler`, `internal/gitops`, PR #10 CI | Some PRD phase labels differ from actual landing order. Secret write support is tracked by `SECRET-1A.6`. |
 | `P0-M3` | Documentation system migrated to boilerplate structure. |  | `accepted` | `AC-014`, `AC-015` | `docs/00_*`, `docs/current/*`, `AGENTS.md`, `.github/`, PR #10 | Migration landed on main. |
-| `P1-M1` | Secret write/resolve with SealedSecret and K8s apply. |  | `planned` | `AC-020` | ADR-004 | Target design only. |
-| `P1-M2` | Config Agent rollout path. |  | `planned` | `AC-030` | ADR-001, ADR-002 | Target design only. |
-| `P1-M3` | Watch/history/revert/inheritance/metrics operational features. |  | `planned` | `AC-040` | `docs/01_PRD.md` | Target design only. |
+| `P1-M1` | Secret write/resolve with SealedSecret, K8s apply, and Console App Registry integration. |  | `accepted` | `AC-020`, `AC-021` | ADR-004, `internal/secret`, `internal/registry`, `internal/handler` | Secret path and App Registry integration landed. |
+| `P1-M2` | Config Agent rollout path. |  | `accepted` | `AC-030` | ADR-001, ADR-002, `internal/agent`, `Dockerfile`, `docs/current/OPERATIONS.md` | `AGENT-1A.1`~`AGENT-1A.8` landed with fake-client e2e smoke coverage. |
+| `P1-M3` | Console integration extensions and production hardening. |  | `in_progress` | `AC-040`~`AC-042` | `docs/01_PRD.md`, `DEC-003` | `EXT-1A.1`~`EXT-1D.5` and `HARDEN-1A.1`~`HARDEN-1A.5` landed; `AC-042` gate review pending. |
 
 ## Tracks
 
@@ -61,9 +71,11 @@ Gate status:
 | `CORE` | Core Config Server runtime, parser, store, Git sync, read/write APIs. | `CORE-1A` | `accepted` | Code exists in `cmd/` and `internal/`; CI passed on PR #10. |
 | `OPS` | Auth, readiness, degraded state, reload, CI/runtime operations. | `OPS-1A` | `accepted` | Runtime docs now live under `docs/current/`; CI passed on PR #10. |
 | `DOC` | Boilerplate documentation migration and status ledger. | `DOC-1A` | `accepted` | Landed through PR #10. |
-| `SECRET` | Secret write/resolve and SealedSecret integration. | `SECRET-1A` | `planned` | Planned. |
-| `AGENT` | Config Agent and rollout orchestration. | `AGENT-1A` | `planned` | Planned. |
-| `EXT` | Watch/history/revert/inheritance/metrics extensions. | `EXT-1A` | `planned` | Planned. |
+| `SECRET` | Secret write/resolve and SealedSecret integration. | `SECRET-1A` | `accepted` | Runtime boundaries, volume reader, deterministic SealedSecret YAML generation, public-key encryption, admin secret writes, K8s apply, secret value resolve, and audit hardening landed. |
+| `REGISTRY` | AAP Console App Registry bootstrap and webhook cache. | `REGISTRY-1A` | `accepted` | Startup bootstrap, webhook cache updates, and status observability landed. |
+| `AGENT` | Config Agent and rollout orchestration. | `AGENT-1A` | `accepted` | Agent bootstrap, leader election, read polling, rendering, ConfigMap/Secret apply, rollout patch, debounce, image target, and e2e smoke coverage landed. |
+| `EXT` | Watch, history, revert, inheritance, batch, webhook, metrics, and HTTP response extensions. | `EXT-1D` | `accepted` | `EXT-1A` watch slices, `EXT-1B.1`~`EXT-1B.5` history/versioned-read/revert slices, `EXT-1C.1`~`EXT-1C.4` inheritance slices, and `EXT-1D.1`~`EXT-1D.5` HTTP response/batch/metrics/webhook extensions landed. |
+| `HARDEN` | Schema validation, rate limiting, integration/load tests, and deployment handoff docs. | `HARDEN-1A` | `in_progress` | All `HARDEN-1A.1`~`HARDEN-1A.5` slices landed; `AC-042` gate review pending. |
 
 ## Phases / Slices
 
@@ -77,12 +89,50 @@ Gate status:
 | `OPS-1A.1` | `P0-M2` | `OPS` | `OPS-1A` | API key auth for admin and secret metadata endpoints. | `CORE-1A.4` | `AC-006` / `TEST-006` | `passing` | `accepted` | `internal/handler`, `internal/config`, PR #10 CI |  |
 | `OPS-1A.2` | `P0-M2` | `OPS` | `OPS-1A` | Degraded state, last-known-good snapshot, force reload. | `CORE-1A.3` | `AC-007` / `TEST-007` | `passing` | `accepted` | `internal/store`, `internal/handler`, PR #10 CI |  |
 | `OPS-1A.3` | `P0-M2` | `OPS` | `OPS-1A` | Dirty `configs/` checkout reload protection. | `CORE-1A.3` | `AC-008` / `TEST-008` | `passing` | `accepted` | `internal/gitops`, PR #10 CI |  |
-| `OPS-1A.4` | `P0-M2` | `OPS` | `OPS-1A` | Reject unsupported secret payloads in Phase-1 admin writes. | `CORE-1A.5` | `AC-009` / `TEST-009` | `passing` | `accepted` | `internal/handler`, PR #10 CI |  |
+| `OPS-1A.4` | `P0-M2` | `OPS` | `OPS-1A` | Reject unknown admin write fields fail-closed instead of silently dropping data. | `CORE-1A.5` | `AC-009` / `TEST-009` | `passing` | `accepted` | `internal/handler`, PR #10 CI | Historical `secrets` rejection was superseded by `SECRET-1A.6`. |
 | `DOC-1A.1` | `P0-M3` | `DOC` | `DOC-1A` | Add boilerplate docs and move PRD/HLD to numbered canonical files. |  | `AC-014` | `passing` | `accepted` | `docs/`, `AGENTS.md`, PR #10 |  |
 | `DOC-1A.2` | `P0-M3` | `DOC` | `DOC-1A` | Add PR template and doc freshness soft-check for Go source paths. | `DOC-1A.1` | `AC-015` | `passing` | `accepted` | `.github/pull_request_template.md`, `.github/workflows/doc-freshness.yml`, PR #10 |  |
-| `SECRET-1A.1` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement secret write acceptance and explicit value handling. | `OPS-1A.1` | `AC-020` | `defined` | `planned` | ADR-004 | Define implementation slices. |
-| `AGENT-1A.1` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement Config Agent polling/apply/restart path. | `SECRET-1A.1` | `AC-030` | `defined` | `planned` | ADR-001, ADR-002 | Define implementation slices. |
-| `EXT-1A.1` | `P1-M3` | `EXT` | `EXT-1A` | Implement watch/history/revert/inheritance/metrics backlog. | `CORE-1A` | `AC-040` | `defined` | `planned` | `docs/01_PRD.md` | Prioritize backlog. |
+| `SECRET-1A.1` | `P1-M1` | `SECRET` | `SECRET-1A` | Add secret runtime config, interfaces, and dependency boundaries for volume reads, sealing, K8s apply, and audit logging. | `OPS-1A.1` | `AC-020` | `passing` | `landed` | `internal/config`, `internal/secret`, `docs/current/*` |  |
+| `SECRET-1A.2` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement Volume Mount secret reader and fsnotify-backed refresh for mounted secret files. | `SECRET-1A.1` | `AC-020` | `passing` | `landed` | `internal/secret/volume.go`, `internal/secret/volume_test.go` |  |
+| `SECRET-1A.3` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement SealedSecret generation adapter and deterministic YAML output for secret payloads. | `SECRET-1A.1` | `AC-020` | `passing` | `landed` | `internal/secret/sealed.go`, `internal/secret/sealed_test.go` |  |
+| `SECRET-1A.4` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement K8s apply adapter for SealedSecret objects with context-aware error handling. | `SECRET-1A.3` | `AC-020` | `passing` | `landed` | `internal/secret/apply.go`, `internal/secret/apply_test.go` |  |
+| `SECRET-1A.5` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement SealedSecret controller public-key lookup and encryptor wiring for deterministic SealedSecret generation. | `SECRET-1A.3` | `AC-020` | `passing` | `landed` | `internal/secret/encrypt.go`, `internal/secret/encrypt_test.go` |  |
+| `SECRET-1A.6` | `P1-M1` | `SECRET` | `SECRET-1A` | Accept `secrets` in admin writes, write metadata plus SealedSecret files in one Git commit, apply to K8s, and reload outcome explicitly. | `SECRET-1A.2`, `SECRET-1A.4`, `SECRET-1A.5`, `CORE-1A.5` | `AC-020` | `passing` | `landed` | `internal/store`, `internal/handler`, `cmd/config-server` |  |
+| `SECRET-1A.7` | `P1-M1` | `SECRET` | `SECRET-1A` | Implement `resolve_secrets=true` for env var reads with auth, Volume Mount lookup, `Cache-Control: no-store`, and no ETag. | `SECRET-1A.2`, `SECRET-1A.6` | `AC-020` | `passing` | `landed` | `internal/handler`, `cmd/config-server` |  |
+| `SECRET-1A.8` | `P1-M1` | `SECRET` | `SECRET-1A` | Add secret audit logging, no-plaintext log assertions, and best-effort memory cleanup for secret handling paths. | `SECRET-1A.6`, `SECRET-1A.7` | `AC-020` | `passing` | `landed` | `internal/secret/audit.go`, `internal/store`, `internal/handler` |  |
+| `REGISTRY-1A.1` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | Add AAP Console API client, runtime config, startup registry load, and bounded exponential backoff. | `OPS-1A.1` | `AC-021` | `passing` | `landed` | `internal/registry`, `internal/config`, `cmd/config-server` |  |
+| `REGISTRY-1A.2` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | Add authenticated App Registry webhook endpoint and in-memory cache update semantics. | `REGISTRY-1A.1` | `AC-021` | `passing` | `landed` | `internal/handler`, `internal/registry` |  |
+| `REGISTRY-1A.3` | `P1-M1` | `REGISTRY` | `REGISTRY-1A` | Integrate registry load/cache state into readiness, status, and operations docs. | `REGISTRY-1A.2`, `OPS-1A.2` | `AC-021` | `passing` | `landed` | `internal/handler`, `internal/registry`, `docs/current/*` |  |
+| `AGENT-1A.1` | `P1-M2` | `AGENT` | `AGENT-1A` | Add Config Agent binary, runtime config, Config Server API client, and local dry-run mode. | `SECRET-1A.7` | `AC-030` | `passing` | `landed` | `cmd/config-agent`, `internal/agent`, `Makefile` |  |
+| `AGENT-1A.2` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement K8s Lease leader election with standby takeover behavior. | `AGENT-1A.1` | `AC-030` | `passing` | `landed` | `internal/agent` |  |
+| `AGENT-1A.3` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement config/env fetch loop, version tracking, and retry/backoff behavior using read API polling. | `AGENT-1A.1` | `AC-030` | `passing` | `landed` | `internal/agent` |  |
+| `AGENT-1A.4` | `P1-M2` | `AGENT` | `AGENT-1A` | Render native service config and `env.sh` payloads while preserving secret references in ConfigMaps. | `AGENT-1A.3` | `AC-030` | `passing` | `landed` | `internal/agent` |  |
+| `AGENT-1A.5` | `P1-M2` | `AGENT` | `AGENT-1A` | Apply target ConfigMap and Secret resources with create/update/patch behavior constrained to configured resource names. | `AGENT-1A.4` | `AC-030` | `passing` | `landed` | `internal/agent` |  |
+| `AGENT-1A.6` | `P1-M2` | `AGENT` | `AGENT-1A` | Patch target Deployment annotations to trigger controlled rolling restarts. | `AGENT-1A.5` | `AC-030` | `passing` | `landed` | `internal/agent` |  |
+| `AGENT-1A.7` | `P1-M2` | `AGENT` | `AGENT-1A` | Implement leading-edge debounce with cooldown, quiet period, and max-wait controls. | `AGENT-1A.6` | `AC-030` | `passing` | `landed` | `internal/agent` |  |
+| `AGENT-1A.8` | `P1-M2` | `AGENT` | `AGENT-1A` | Add Config Agent image build, RBAC/deployment examples, and e2e smoke coverage with fake K8s/client dependencies. | `AGENT-1A.7` | `AC-030` | `passing` | `landed` | `Dockerfile`, `Makefile`, `internal/agent/e2e_smoke_test.go`, `docs/current/OPERATIONS.md` | Keeps Helm/K8s manifest ownership external per `DEC-003`. |
+| `EXT-1A.1` | `P1-M3` | `EXT` | `EXT-1A` | Add store notification and version-wait primitive for long-poll watch endpoints. | `CORE-1A.3` | `AC-040` | `passing` | `landed` | `internal/store/store.go`, `internal/store/store_test.go`, `docs/current/RUNTIME.md` |  |
+| `EXT-1A.2` | `P1-M3` | `EXT` | `EXT-1A` | Implement `config/watch` long-poll endpoint with timeout and version mismatch behavior. | `EXT-1A.1`, `CORE-1A.4` | `AC-040` | `passing` | `landed` | `internal/handler/handler.go`, `internal/handler/handler_test.go`, `README.md` |  |
+| `EXT-1A.3` | `P1-M3` | `EXT` | `EXT-1A` | Implement `env_vars/watch` long-poll endpoint with timeout and independent change detection. | `EXT-1A.1`, `CORE-1A.4` | `AC-040` | `passing` | `landed` | `internal/store/store.go`, `internal/handler/handler.go`, `internal/handler/handler_test.go`, `README.md` |  |
+| `EXT-1B.1` | `P1-M3` | `EXT` | `EXT-1B` | Add Git history iterator and file-change classifier for service-scoped history. | `CORE-1A.3` | `AC-040` | `passing` | `landed` | `internal/gitops/repo.go`, `internal/gitops/repo_test.go` |  |
+| `EXT-1B.2` | `P1-M3` | `EXT` | `EXT-1B` | Implement history API with `file`, `limit`, and `before` filtering. | `EXT-1B.1`, `CORE-1A.4` | `AC-040` | `passing` | `landed` | `internal/store/store.go`, `internal/handler/handler.go`, `internal/handler/handler_test.go` |  |
+| `EXT-1B.3` | `P1-M3` | `EXT` | `EXT-1B` | Add versioned config/env reads from historical Git commits. | `EXT-1B.1`, `CORE-1A.4` | `AC-040` | `passing` | `landed` | `internal/store/store.go`, `internal/handler/handler.go`, `internal/store/store_test.go`, `internal/handler/handler_test.go` |  |
+| `EXT-1B.4` | `P1-M3` | `EXT` | `EXT-1B` | Validate revert targets and restore service files from a selected commit without mutating history. | `EXT-1B.3`, `CORE-1A.5` | `AC-040` | `passing` | `landed` | `internal/gitops/repo.go`, `internal/store/store.go`, `internal/store/store_test.go` |  |
+| `EXT-1B.5` | `P1-M3` | `EXT` | `EXT-1B` | Implement revert commit/push/reload flow, including SealedSecret rollback apply when secret files are restored. | `EXT-1B.4`, `SECRET-1A.4` | `AC-040` | `passing` | `landed` | `internal/gitops/repo.go`, `internal/store/store.go`, `internal/handler/handler.go`, `internal/*/*_test.go`, `README.md`, `docs/current/*` |  |
+| `EXT-1C.1` | `P1-M3` | `EXT` | `EXT-1C` | Parse global/org/project `_defaults/common.yaml` files and expose inherited source metadata for tests. | `CORE-1A.2` | `AC-040` | `passing` | `landed` | `internal/store/store.go`, `internal/store/store_test.go`, `docs/current/*` |  |
+| `EXT-1C.2` | `P1-M3` | `EXT` | `EXT-1C` | Implement deep merge with scalar override, recursive map merge, array replacement, and null deletion. | `EXT-1C.1` | `AC-040` | `passing` | `landed` | `internal/store/store.go`, `internal/store/store_test.go`, `docs/current/*` |  |
+| `EXT-1C.3` | `P1-M3` | `EXT` | `EXT-1C` | Apply `inherit=true/false` query semantics to config and env var read paths. | `EXT-1C.2`, `CORE-1A.4` | `AC-040` | `passing` | `landed` | `internal/handler/handler.go`, `internal/store/store.go`, `internal/*/*_test.go`, `docs/current/*` |  |
+| `EXT-1C.4` | `P1-M3` | `EXT` | `EXT-1C` | Preserve service-level admin write behavior while inherited reads are enabled, with docs and regression tests. | `EXT-1C.3`, `CORE-1A.5` | `AC-040` | `passing` | `landed` | `internal/store/store_test.go`, `internal/handler/handler_test.go`, `docs/current/*` |  |
+| `EXT-1D.1` | `P1-M3` | `EXT` | `EXT-1D` | Add ETag and `If-None-Match` support for non-secret config/env responses. | `CORE-1A.4`, `SECRET-1A.7` | `AC-041` | `passing` | `landed` | `internal/handler/handler.go`, `internal/handler/handler_test.go`, `docs/current/*` |  |
+| `EXT-1D.2` | `P1-M3` | `EXT` | `EXT-1D` | Add gzip response compression for eligible read APIs. | `EXT-1D.1` | `AC-041` | `passing` | `landed` | `internal/handler/handler.go`, `internal/handler/handler_test.go`, `docs/current/*` |  |
+| `EXT-1D.3` | `P1-M3` | `EXT` | `EXT-1D` | Implement batch config/env read API for multiple services. | `EXT-1C.3`, `CORE-1A.4` | `AC-041` | `passing` | `landed` | `internal/handler/handler.go`, `internal/handler/handler_test.go`, `README.md`, `docs/current/*` |  |
+| `EXT-1D.4` | `P1-M3` | `EXT` | `EXT-1D` | Add Prometheus metrics for reloads, Git operations, API latency, watch waits, and degraded state. | `OPS-1A.2`, `EXT-1A.3` | `AC-041` | `passing` | `landed` | `internal/metrics`, `internal/handler`, `internal/store`, `internal/gitops`, `docs/current/*` |  |
+| `EXT-1D.5` | `P1-M3` | `EXT` | `EXT-1D` | Add authenticated Git webhook trigger for immediate refresh after config repo changes. | `OPS-1A.1`, `OPS-1A.2` | `AC-041` | `passing` | `landed` | `internal/handler/handler.go`, `internal/handler/handler_test.go`, `docs/current/*` |  |
+| `HARDEN-1A.1` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add explicit schema validation layer for config, env vars, defaults, and secret metadata files. | `EXT-1C.1`, `SECRET-1A.6` | `AC-042` | `passing` | `landed` | `internal/parser/validate.go`, `internal/parser/*_test.go`, `docs/current/*` |  |
+| `HARDEN-1A.2` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add configurable rate limiting for admin, secret resolve, watch, and batch endpoints. | `OPS-1A.1`, `EXT-1D.3`, `HARDEN-1A.1` | `AC-042` | `passing` | `landed` | `internal/config`, `internal/handler`, `cmd/config-server`, `docs/current/*` |  |
+| `HARDEN-1A.3` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Build integration test harness with fake Git, fake K8s, and fake Console dependencies. | `SECRET-1A.8`, `REGISTRY-1A.3`, `AGENT-1A.8` | `AC-042` | `passing` | `landed` | `internal/integration/harness_integration_test.go`; 6 hermetic scenarios: startup/load, Console bootstrap with status assertion, admin config write, admin env_vars write, secret write with fake K8s adapters, out-of-band Git push detected by ReloadFromRepo |  |
+| `HARDEN-1A.4` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add load/concurrency test profiles for admin writes, watch waits, and Config Agent polling. | `HARDEN-1A.3`, `EXT-1A.3` | `AC-042` | `passing` | `landed` | `internal/integration/load_concurrency_integration_test.go`; 5 hermetic load/concurrency scenarios: concurrent admin config writes (8 workers), concurrent admin env-var writes (8 workers), concurrent watch unblock-on-write (6 watchers), concurrent Config Agent polling (16 agents × 5 polls), concurrent mixed reads/writes (4 writers + 12 readers); all pass under `make test-integration` (`-tags=integration`; race coverage excluded from `make test-race` which omits the integration tag) |  |
+| `HARDEN-1A.5` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Finalize deployment handoff docs for image, env vars, network policy expectations, and external manifest ownership (per `DEC-003`). | `HARDEN-1A.4` | `AC-042` | `passing` | `landed` | `README.md` (RATE_LIMIT_READ_RPS/BURST added), `docs/current/RUNTIME.md` (history rate limit mention added), `docs/current/OPERATIONS.md` (image build section, Config Server NetworkPolicy handoff example, external manifest ownership section added), `docs/05_RUNBOOK.md` (network policy reference clarified) |  |
 
 ## Gates / Acceptance
 
@@ -101,7 +151,8 @@ Gate status:
 
 - External systems: Git repository referenced by `GIT_URL`.
 - Libraries / vendors: `go-git`, `yaml.v3`, Go standard library HTTP stack.
-- Planned: Kubernetes API, Bitnami SealedSecrets, Config Agent runtime.
+- Planned: AAP Console API, Kubernetes API, Bitnami SealedSecrets,
+  Config Agent runtime, and remaining production hardening.
 
 ## Risks (open)
 

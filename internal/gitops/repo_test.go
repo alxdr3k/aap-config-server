@@ -2,8 +2,11 @@ package gitops_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/aap/config-server/internal/gitops"
+	"github.com/aap/config-server/internal/metrics"
 )
 
 // newLocalRepo creates a bare "remote" repo seeded with one commit,
@@ -108,6 +112,34 @@ func TestCloneOrOpen_Open(t *testing.T) {
 	}
 }
 
+func TestRepo_RecordsGitOperationMetrics(t *testing.T) {
+	metrics.ResetForTest()
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	if _, _, err := repo.Pull(ctx); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if _, err := repo.CommitAndPush(ctx, "noop", nil); err != nil {
+		t.Fatalf("CommitAndPush noop: %v", err)
+	}
+
+	body := string(metrics.RenderPrometheus(nil))
+	checks := []string{
+		`aap_config_server_git_operations_total{operation="clone_or_open",outcome="success"} 1`,
+		`aap_config_server_git_operations_total{operation="pull",outcome="success"} 1`,
+		`aap_config_server_git_operations_total{operation="commit_and_push",outcome="noop"} 1`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Fatalf("metrics body missing %q:\n%s", check, body)
+		}
+	}
+}
+
 func TestCommitAndPush(t *testing.T) {
 	_, repo := newLocalRepo(t)
 	ctx := context.Background()
@@ -145,7 +177,7 @@ func TestDeleteAndPush(t *testing.T) {
 	}
 
 	// Now delete it.
-	hash, err := repo.DeleteAndPush(ctx, "delete svc", []string{
+	hash, _, err := repo.DeleteAndPush(ctx, "delete svc", []string{
 		"configs/orgs/myorg/projects/p/services/svc/config.yaml",
 	})
 	if err != nil {
@@ -188,8 +220,8 @@ func TestWalkConfigs(t *testing.T) {
 	}
 
 	files := map[string][]byte{
-		"configs/orgs/org1/projects/proj/services/svc/config.yaml":    []byte("a"),
-		"configs/orgs/org1/projects/proj/services/svc/env_vars.yaml":  []byte("b"),
+		"configs/orgs/org1/projects/proj/services/svc/config.yaml":   []byte("a"),
+		"configs/orgs/org1/projects/proj/services/svc/env_vars.yaml": []byte("b"),
 	}
 	if _, err := repo.CommitAndPush(ctx, "add files", files); err != nil {
 		t.Fatalf("CommitAndPush: %v", err)
@@ -308,7 +340,7 @@ func TestDeleteAndPush_RetriesOnRejectedPush(t *testing.T) {
 	})
 	defer restore()
 
-	hash, err := repo.DeleteAndPush(ctx, "delete svc", []string{target})
+	hash, _, err := repo.DeleteAndPush(ctx, "delete svc", []string{target})
 	if err != nil {
 		t.Fatalf("DeleteAndPush: %v", err)
 	}
@@ -354,7 +386,7 @@ func TestSnapshot_RejectsDirtyConfigsWorktree(t *testing.T) {
 	if err := os.WriteFile(dirty, []byte("stray"), 0o644); err != nil {
 		t.Fatalf("write stray: %v", err)
 	}
-	defer os.Remove(dirty)
+	t.Cleanup(func() { _ = os.Remove(dirty) })
 
 	if _, err := repo.Snapshot(func(path string, data []byte) error { return nil }); err == nil {
 		t.Error("Snapshot should fail when configs/ worktree has an untracked file")
@@ -380,7 +412,7 @@ func TestSnapshot_IgnoresDirtyOutsideConfigs(t *testing.T) {
 	if err := os.WriteFile(stray, []byte("anything"), 0o644); err != nil {
 		t.Fatalf("write stray: %v", err)
 	}
-	defer os.Remove(stray)
+	t.Cleanup(func() { _ = os.Remove(stray) })
 
 	if _, err := repo.Snapshot(func(path string, data []byte) error { return nil }); err != nil {
 		t.Errorf("Snapshot with dirty non-configs file should pass, got %v", err)
@@ -418,5 +450,287 @@ func TestReadFileAtCommit(t *testing.T) {
 	}
 	if string(got) != string(original) {
 		t.Errorf("ReadFileAtCommit: want %q, got %q", original, got)
+	}
+}
+
+func TestReadFileAtCommit_NotFoundSentinels(t *testing.T) {
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	hash, err := repo.CommitAndPush(ctx, "v1", map[string][]byte{
+		"configs/file.yaml": []byte("content"),
+	})
+	if err != nil {
+		t.Fatalf("CommitAndPush: %v", err)
+	}
+
+	if _, err := repo.ReadFileAtCommit(hash, "configs/missing.yaml"); !errors.Is(err, gitops.ErrFileNotFoundAtCommit) {
+		t.Fatalf("missing file should wrap ErrFileNotFoundAtCommit, got %v", err)
+	}
+	if _, err := repo.ReadFileAtCommit("0000000000000000000000000000000000000000", "configs/file.yaml"); !errors.Is(err, gitops.ErrCommitNotFound) {
+		t.Fatalf("missing commit should wrap ErrCommitNotFound, got %v", err)
+	}
+}
+
+func TestReadServiceFilesAtCommit(t *testing.T) {
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	hash, err := repo.CommitAndPush(ctx, "service files", map[string][]byte{
+		"configs/orgs/myorg/projects/proj/services/litellm/config.yaml":                         []byte("config\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm/env_vars.yaml":                       []byte("env\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm/sealed-secrets/ns/secret.yaml":       []byte("sealed\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm/notes.txt":                           []byte("ignored\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm2/config.yaml":                        []byte("sibling\n"),
+		"configs/orgs/myorg/projects/other/services/litellm/config.yaml":                        []byte("other project\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm/sealed-secrets/ns/another.yaml":      []byte("sealed2\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm/sealed-secrets/ns/nested/third.yaml": []byte("sealed3\n"),
+	})
+	if err != nil {
+		t.Fatalf("CommitAndPush: %v", err)
+	}
+
+	files, err := repo.ReadServiceFilesAtCommit(ctx, hash, "myorg", "proj", "litellm")
+	if err != nil {
+		t.Fatalf("ReadServiceFilesAtCommit: %v", err)
+	}
+	got := make([]string, 0, len(files))
+	for _, file := range files {
+		got = append(got, file.Path)
+		if len(file.Data) == 0 {
+			t.Fatalf("file %s has empty data", file.Path)
+		}
+	}
+	want := []string{
+		"config.yaml",
+		"env_vars.yaml",
+		"sealed-secrets/ns/another.yaml",
+		"sealed-secrets/ns/nested/third.yaml",
+		"sealed-secrets/ns/secret.yaml",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("service files: want %v, got %v", want, got)
+	}
+}
+
+func TestRestoreServiceFilesAndPush(t *testing.T) {
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	base := "configs/orgs/myorg/projects/proj/services/litellm"
+	if _, err := repo.CommitAndPush(ctx, "current", map[string][]byte{
+		base + "/config.yaml":                           []byte("current config\n"),
+		base + "/env_vars.yaml":                         []byte("current env\n"),
+		base + "/sealed-secrets/ns/current.yaml":        []byte("current sealed\n"),
+		base + "/sealed-secrets/ns/remove-me.yaml":      []byte("remove\n"),
+		base + "/notes.txt":                             []byte("ignored\n"),
+		base + "2/env_vars.yaml":                        []byte("sibling\n"),
+		"configs/orgs/myorg/projects/other/config.yaml": []byte("other\n"),
+	}); err != nil {
+		t.Fatalf("CommitAndPush current: %v", err)
+	}
+
+	hash, deleted, err := repo.RestoreServiceFilesAndPush(ctx, "restore", "myorg", "proj", "litellm", map[string][]byte{
+		base + "/config.yaml":                    []byte("target config\n"),
+		base + "/sealed-secrets/ns/current.yaml": []byte("target sealed\n"),
+	})
+	if err != nil {
+		t.Fatalf("RestoreServiceFilesAndPush: %v", err)
+	}
+	if hash == "" {
+		t.Fatal("expected non-empty hash")
+	}
+	if strings.Join(deleted, ",") != "env_vars.yaml,sealed-secrets/ns/remove-me.yaml" {
+		t.Fatalf("deleted files: got %v", deleted)
+	}
+	config, err := repo.ReadFile(base + "/config.yaml")
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	if string(config) != "target config\n" {
+		t.Fatalf("config content: got %q", config)
+	}
+	if _, err := repo.ReadFile(base + "/env_vars.yaml"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("env_vars should be deleted, got %v", err)
+	}
+	sibling, err := repo.ReadFile(base + "2/env_vars.yaml")
+	if err != nil {
+		t.Fatalf("ReadFile sibling: %v", err)
+	}
+	if string(sibling) != "sibling\n" {
+		t.Fatalf("sibling content changed: %q", sibling)
+	}
+}
+
+func TestClassifyServiceFileChange(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		wantOK   bool
+		wantRel  string
+		wantKind gitops.ServiceFileKind
+	}{
+		{
+			name:     "config",
+			path:     "configs/orgs/myorg/projects/proj/services/litellm/config.yaml",
+			wantOK:   true,
+			wantRel:  "config.yaml",
+			wantKind: gitops.ServiceFileConfig,
+		},
+		{
+			name:     "env vars",
+			path:     "configs/orgs/myorg/projects/proj/services/litellm/env_vars.yaml",
+			wantOK:   true,
+			wantRel:  "env_vars.yaml",
+			wantKind: gitops.ServiceFileEnvVars,
+		},
+		{
+			name:     "secrets metadata",
+			path:     "configs/orgs/myorg/projects/proj/services/litellm/secrets.yaml",
+			wantOK:   true,
+			wantRel:  "secrets.yaml",
+			wantKind: gitops.ServiceFileSecrets,
+		},
+		{
+			name:     "sealed secret manifest",
+			path:     "configs/orgs/myorg/projects/proj/services/litellm/sealed-secrets/ns/name.yaml",
+			wantOK:   true,
+			wantRel:  "sealed-secrets/ns/name.yaml",
+			wantKind: gitops.ServiceFileSealedSecret,
+		},
+		{
+			name:   "sibling service with shared prefix",
+			path:   "configs/orgs/myorg/projects/proj/services/litellm-canary/config.yaml",
+			wantOK: false,
+		},
+		{
+			name:   "unknown file under service",
+			path:   "configs/orgs/myorg/projects/proj/services/litellm/notes.txt",
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := gitops.ClassifyServiceFileChange(tt.path, "myorg", "proj", "litellm")
+			if ok != tt.wantOK {
+				t.Fatalf("ok: want %v, got %v", tt.wantOK, ok)
+			}
+			if !ok {
+				return
+			}
+			if got.Path != tt.wantRel || got.Kind != tt.wantKind {
+				t.Fatalf("change: want (%s, %s), got (%s, %s)", tt.wantRel, tt.wantKind, got.Path, got.Kind)
+			}
+		})
+	}
+}
+
+func TestIterateServiceHistory(t *testing.T) {
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+
+	if _, err := repo.CommitAndPush(ctx, "add litellm config", map[string][]byte{
+		"configs/orgs/myorg/projects/proj/services/litellm/config.yaml": []byte("version: \"1\"\nconfig: {}\n"),
+	}); err != nil {
+		t.Fatalf("CommitAndPush litellm config: %v", err)
+	}
+	if _, err := repo.CommitAndPush(ctx, "update sibling env", map[string][]byte{
+		"configs/orgs/myorg/projects/proj/services/other/env_vars.yaml": []byte("version: \"1\"\nenv_vars: {}\n"),
+	}); err != nil {
+		t.Fatalf("CommitAndPush sibling env: %v", err)
+	}
+	if _, err := repo.CommitAndPush(ctx, "update litellm secrets", map[string][]byte{
+		"configs/orgs/myorg/projects/proj/services/litellm/secrets.yaml":                []byte("version: \"1\"\nsecrets: []\n"),
+		"configs/orgs/myorg/projects/proj/services/litellm/sealed-secrets/ns/name.yaml": []byte("sealed\n"),
+	}); err != nil {
+		t.Fatalf("CommitAndPush litellm secrets: %v", err)
+	}
+
+	var got []gitops.ServiceHistoryEntry
+	if err := repo.IterateServiceHistory(ctx, "myorg", "proj", "litellm", func(entry gitops.ServiceHistoryEntry) error {
+		got = append(got, entry)
+		return nil
+	}); err != nil {
+		t.Fatalf("IterateServiceHistory: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("history length: want 2, got %d: %#v", len(got), got)
+	}
+	if got[0].Message != "update litellm secrets" {
+		t.Fatalf("newest message: want update litellm secrets, got %q", got[0].Message)
+	}
+	if got[1].Message != "add litellm config" {
+		t.Fatalf("oldest message: want add litellm config, got %q", got[1].Message)
+	}
+	if got[0].Version == "" || got[0].Author == "" || got[0].Timestamp.IsZero() {
+		t.Fatalf("newest entry missing metadata: %#v", got[0])
+	}
+
+	assertChangedPaths(t, got[0].FilesChanged, []string{"sealed-secrets/ns/name.yaml", "secrets.yaml"})
+	assertChangedPaths(t, got[1].FilesChanged, []string{"config.yaml"})
+}
+
+func TestIterateServiceHistory_CallbackCanReadRepo(t *testing.T) {
+	_, repo := newLocalRepo(t)
+	ctx := context.Background()
+
+	if err := repo.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+
+	path := "configs/orgs/myorg/projects/proj/services/litellm/config.yaml"
+	want := []byte("version: \"1\"\nconfig: {}\n")
+	if _, err := repo.CommitAndPush(ctx, "add litellm config", map[string][]byte{path: want}); err != nil {
+		t.Fatalf("CommitAndPush litellm config: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- repo.IterateServiceHistory(ctx, "myorg", "proj", "litellm", func(entry gitops.ServiceHistoryEntry) error {
+			got, err := repo.ReadFileAtCommit(entry.Version, path)
+			if err != nil {
+				return err
+			}
+			if string(got) != string(want) {
+				return fmt.Errorf("ReadFileAtCommit content: want %q, got %q", want, got)
+			}
+			return nil
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("IterateServiceHistory: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("IterateServiceHistory callback deadlocked while re-entering repo")
+	}
+}
+
+func assertChangedPaths(t *testing.T, got []gitops.ServiceFileChange, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("changed files length: want %d, got %d: %#v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i].Path != want[i] {
+			t.Fatalf("changed file %d: want %q, got %q", i, want[i], got[i].Path)
+		}
 	}
 }

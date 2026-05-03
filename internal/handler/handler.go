@@ -1,27 +1,44 @@
 package handler
 
 import (
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aap/config-server/internal/apperror"
+	"github.com/aap/config-server/internal/metrics"
 	"github.com/aap/config-server/internal/parser"
+	"github.com/aap/config-server/internal/registry"
+	"github.com/aap/config-server/internal/secret"
 	"github.com/aap/config-server/internal/store"
 )
 
 // ConfigStore is the interface the handlers need from the store.
 type ConfigStore interface {
 	GetConfig(ctx context.Context, org, project, service string) (*store.ServiceData, error)
+	GetConfigAtVersion(ctx context.Context, org, project, service, version string) (*store.ServiceData, error)
+	GetInheritedConfigAtVersion(ctx context.Context, org, project, service, version string) (*store.ServiceData, error)
+	GetEnvVarsAtVersion(ctx context.Context, org, project, service, version string) (*store.ServiceData, error)
+	GetInheritedEnvVarsAtVersion(ctx context.Context, org, project, service, version string) (*store.ServiceData, error)
+	History(ctx context.Context, opts store.HistoryOptions) ([]store.HistoryEntry, error)
+	ResourceVersion(ctx context.Context, org, project, service, resource string) (string, string, error)
+	WaitForVersionChange(ctx context.Context, version string) (string, bool, error)
 	ListOrgs() []string
 	ListProjects(org string) []string
 	ListServices(org, project string) []store.ServiceInfo
 	ApplyChanges(ctx context.Context, req *store.ChangeRequest) (*store.ChangeResult, error)
+	ApplyRevert(ctx context.Context, req *store.RevertRequest) (*store.RevertResult, error)
 	DeleteChanges(ctx context.Context, req *store.DeleteRequest) (*store.DeleteResult, error)
 	HeadVersion() string
 	RefreshFromRepo(ctx context.Context) (bool, error)
@@ -37,45 +54,168 @@ type Readiness interface {
 
 // Handler groups all HTTP handlers together.
 type Handler struct {
-	store     ConfigStore
-	readiness Readiness
-	apiKey    string
+	store        ConfigStore
+	readiness    Readiness
+	apiKey       string
+	appRegistry  *registry.Cache
+	secretDeps   secret.Dependencies
+	rateLimiters endpointRateLimiters
+}
+
+const (
+	defaultWatchTimeout = 30 * time.Second
+	maxWatchTimeout     = 30 * time.Second
+	defaultHistoryLimit = 20
+	maxHistoryLimit     = 100
+	maxBatchReadQueries = 100
+)
+
+// Option customizes Handler dependencies.
+type Option func(*Handler)
+
+// WithSecretDependencies wires secret read dependencies into handlers that
+// resolve secret-backed env vars.
+func WithSecretDependencies(deps secret.Dependencies) Option {
+	return func(h *Handler) {
+		h.secretDeps = deps.WithDefaults()
+	}
+}
+
+// WithAppRegistry wires the Console-owned App Registry cache for future
+// registry webhook/status endpoints.
+func WithAppRegistry(cache *registry.Cache) Option {
+	return func(h *Handler) {
+		h.appRegistry = cache
+	}
+}
+
+// WithRateLimits wires endpoint-group token buckets. Omitted or zero-value
+// groups are disabled.
+func WithRateLimits(settings RateLimitSettings) Option {
+	return func(h *Handler) {
+		h.rateLimiters = newEndpointRateLimiters(settings)
+	}
 }
 
 // New creates a Handler. If apiKey is empty, authenticated endpoints are left
 // open — this is intended only for tests; production wiring must pass a key
 // (enforced by config.Validate).
-func New(st ConfigStore, ready Readiness, apiKey string) *Handler {
-	return &Handler{store: st, readiness: ready, apiKey: apiKey}
+func New(st ConfigStore, ready Readiness, apiKey string, opts ...Option) *Handler {
+	h := &Handler{store: st, readiness: ready, apiKey: apiKey}
+	for _, opt := range opts {
+		opt(h)
+	}
+	h.secretDeps = h.secretDeps.WithDefaults()
+	if h.appRegistry == nil {
+		h.appRegistry = registry.NewCache()
+	}
+	return h
 }
 
 // Routes registers all routes on the given mux.
 func (h *Handler) Routes(mux *http.ServeMux) {
 	// Health & ops
-	mux.HandleFunc("GET /healthz", h.healthz)
-	mux.HandleFunc("GET /readyz", h.readyz)
-	mux.HandleFunc("GET /api/v1/status", h.status)
+	h.handle(mux, "GET /healthz", h.healthz)
+	h.handle(mux, "GET /readyz", h.readyz)
+	h.handle(mux, "GET /api/v1/status", h.status)
+	mux.HandleFunc("GET /metrics", h.prometheusMetrics)
 
 	// Service discovery
-	mux.HandleFunc("GET /api/v1/orgs", h.listOrgs)
-	mux.HandleFunc("GET /api/v1/orgs/{org}/projects", h.listProjects)
-	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services", h.listServices)
+	h.handle(mux, "GET /api/v1/orgs", h.listOrgs)
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects", h.listProjects)
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services", h.listServices)
 
 	// Config read
-	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config",
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config",
 		h.getConfig)
-	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars",
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch",
+		h.limitWatch(h.watchConfig))
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars",
 		h.getEnvVars)
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/env_vars/watch",
+		h.limitWatch(h.watchEnvVars))
+	h.handle(mux, "POST /api/v1/configs/batch", h.limitBatch(h.postConfigsBatch))
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/history",
+		h.limitRead(h.getHistory))
 	// Secret metadata is privileged even though values are never returned; auth
 	// is required so unauthenticated callers cannot enumerate which K8s secret
 	// objects back a service.
-	mux.HandleFunc("GET /api/v1/orgs/{org}/projects/{project}/services/{service}/secrets",
+	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/secrets",
 		h.requireKey(h.getSecrets))
 
 	// Admin write — protected by API key
-	mux.HandleFunc("POST /api/v1/admin/changes", h.requireKey(h.postChanges))
-	mux.HandleFunc("DELETE /api/v1/admin/changes", h.requireKey(h.deleteChanges))
-	mux.HandleFunc("POST /api/v1/admin/reload", h.requireKey(h.adminReload))
+	h.handle(mux, "POST /api/v1/admin/changes", h.requireKey(h.limitAdmin(h.postChanges)))
+	h.handle(mux, "POST /api/v1/admin/changes/revert", h.requireKey(h.limitAdmin(h.postRevert)))
+	h.handle(mux, "DELETE /api/v1/admin/changes", h.requireKey(h.limitAdmin(h.deleteChanges)))
+	h.handle(mux, "POST /api/v1/admin/reload", h.requireKey(h.limitAdmin(h.adminReload)))
+	h.handle(mux, "POST /api/v1/admin/git/webhook", h.requireKey(h.limitAdmin(h.gitWebhook)))
+	h.handle(mux, "POST /api/v1/admin/app-registry/webhook", h.requireKey(h.limitAdmin(h.appRegistryWebhook)))
+}
+
+func (h *Handler) handle(mux *http.ServeMux, pattern string, next http.HandlerFunc) {
+	mux.HandleFunc(pattern, instrumentHTTP(pattern, next))
+}
+
+func instrumentHTTP(pattern string, next http.HandlerFunc) http.HandlerFunc {
+	route := routeLabel(pattern)
+	return func(w http.ResponseWriter, r *http.Request) {
+		recorder := &statusRecorder{ResponseWriter: w}
+		start := time.Now()
+		defer func() {
+			if rec := recover(); rec != nil {
+				if !recorder.headerWritten {
+					recorder.WriteHeader(http.StatusInternalServerError)
+				}
+				slog.Error("panic in HTTP handler", "route", route, "method", r.Method, "panic", rec)
+			}
+			metrics.RecordHTTPRequest(r.Method, route, recorder.statusCode(), time.Since(start))
+		}()
+		next(recorder, r)
+	}
+}
+
+func routeLabel(pattern string) string {
+	if _, path, ok := strings.Cut(pattern, " "); ok {
+		return path
+	}
+	return pattern
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status        int
+	headerWritten bool
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.headerWritten {
+		return
+	}
+	r.headerWritten = true
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(data []byte) (int, error) {
+	if !r.headerWritten {
+		r.headerWritten = true
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(data)
+}
+
+func (r *statusRecorder) statusCode() int {
+	if !r.headerWritten {
+		// Go's http.Server auto-emits 200 OK when the handler returns
+		// without calling WriteHeader or Write. Match that wire reality
+		// so the metric agrees with what the client actually sees.
+		return http.StatusOK
+	}
+	return r.status
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 // ---- health ----
@@ -100,20 +240,79 @@ func (h *Handler) readyz(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	si := h.store.StatusInfo()
+	registryStatus := h.appRegistry.Status()
+	degradedComponents := make([]string, 0, 2)
 	resp := map[string]any{
 		"status":          "ok",
 		"version":         si.Version,
 		"services_loaded": si.ServicesLoaded,
+		"app_registry":    registryStatusBody(registryStatus),
 	}
 	if !si.LastReloadAt.IsZero() {
 		resp["last_reload_at"] = si.LastReloadAt.UTC().Format(time.RFC3339)
 	}
 	if si.IsDegraded {
-		resp["status"] = "degraded"
-		resp["is_degraded"] = true
+		degradedComponents = append(degradedComponents, "store")
 		resp["last_reload_error"] = si.LastReloadError
 	}
+	if registryStatus.IsDegraded {
+		degradedComponents = append(degradedComponents, "app_registry")
+	}
+	if len(degradedComponents) > 0 {
+		resp["status"] = "degraded"
+		resp["is_degraded"] = true
+		resp["degraded_components"] = degradedComponents
+	}
 	respondJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) prometheusMetrics(w http.ResponseWriter, _ *http.Request) {
+	storeStatus := h.store.StatusInfo()
+	registryStatus := h.appRegistry.Status()
+	metrics.WritePrometheus(w, []metrics.GaugeSample{
+		{
+			Name: metrics.DegradedStateMetric,
+			Labels: []metrics.Label{
+				{Name: "component", Value: "store"},
+			},
+			Value: boolFloat(storeStatus.IsDegraded),
+		},
+		{
+			Name: metrics.DegradedStateMetric,
+			Labels: []metrics.Label{
+				{Name: "component", Value: "app_registry"},
+			},
+			Value: boolFloat(registryStatus.IsDegraded),
+		},
+	})
+}
+
+func boolFloat(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func registryStatusBody(status registry.Status) map[string]any {
+	state := status.State
+	if state == "" {
+		state = "not_configured"
+	}
+	body := map[string]any{
+		"status":      state,
+		"apps_loaded": status.AppsLoaded,
+	}
+	if !status.LastLoadedAt.IsZero() {
+		body["last_loaded_at"] = status.LastLoadedAt.UTC().Format(time.RFC3339)
+	}
+	if !status.LastUpdatedAt.IsZero() {
+		body["last_updated_at"] = status.LastUpdatedAt.UTC().Format(time.RFC3339)
+	}
+	if status.LastLoadError != "" {
+		body["last_load_error"] = status.LastLoadError
+	}
+	return body
 }
 
 // adminReload force-reloads the store from the repo. It pulls any remote
@@ -138,6 +337,106 @@ func (h *Handler) adminReload(w http.ResponseWriter, r *http.Request) {
 		"updated": updated,
 		"version": h.store.HeadVersion(),
 	})
+}
+
+func (h *Handler) gitWebhook(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if _, err := io.Copy(io.Discard, r.Body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			respondErrorCode(w, http.StatusRequestEntityTooLarge, "payload_too_large",
+				"webhook payload must be at most 1MiB")
+			return
+		}
+		respondErrorCode(w, http.StatusBadRequest, "invalid_body", "failed to read webhook payload")
+		return
+	}
+
+	updated, err := h.store.RefreshFromRepo(r.Context())
+	if err != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status":        "refresh_failed",
+			"refresh_error": err.Error(),
+			"version":       h.store.HeadVersion(),
+		})
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
+		"status":  "ok",
+		"updated": updated,
+		"version": h.store.HeadVersion(),
+	})
+}
+
+type appRegistryWebhookRequest struct {
+	Action    string        `json:"action"`
+	App       *registry.App `json:"app"`
+	Org       string        `json:"org"`
+	Project   string        `json:"project"`
+	Service   string        `json:"service"`
+	Name      string        `json:"name"`
+	UpdatedAt string        `json:"updated_at"`
+}
+
+func (h *Handler) appRegistryWebhook(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body appRegistryWebhookRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		h.handleDecodeError(w, err)
+		return
+	}
+
+	action := strings.ToLower(strings.TrimSpace(body.Action))
+	app := body.registryApp()
+	now := time.Now().UTC()
+	switch action {
+	case "create", "update", "upsert":
+		if _, _, err := h.appRegistry.Upsert(app, now); err != nil {
+			respondErrorCode(w, http.StatusBadRequest, "validation", err.Error())
+			return
+		}
+	case "delete":
+		if _, _, err := h.appRegistry.Delete(app, now); err != nil {
+			respondErrorCode(w, http.StatusBadRequest, "validation", err.Error())
+			return
+		}
+	default:
+		respondErrorCode(w, http.StatusBadRequest, "validation",
+			"action must be one of create, update, upsert, or delete")
+		return
+	}
+
+	status := h.appRegistry.Status()
+	respondJSON(w, http.StatusOK, map[string]any{
+		"status":      "ok",
+		"action":      action,
+		"apps_loaded": status.AppsLoaded,
+	})
+}
+
+func (r appRegistryWebhookRequest) registryApp() registry.App {
+	app := registry.App{}
+	if r.App != nil {
+		app = *r.App
+	}
+	if app.Org == "" {
+		app.Org = r.Org
+	}
+	if app.Project == "" {
+		app.Project = r.Project
+	}
+	if app.Service == "" {
+		app.Service = r.Service
+	}
+	if app.Name == "" {
+		app.Name = r.Name
+	}
+	if app.UpdatedAt == "" {
+		app.UpdatedAt = r.UpdatedAt
+	}
+	return app
 }
 
 // ---- service discovery ----
@@ -191,26 +490,394 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
 	project := r.PathValue("project")
 	service := r.PathValue("service")
+	version := strings.TrimSpace(r.URL.Query().Get("version"))
+	inherit, err := parseInheritQuery(r)
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	if version != "" {
+		h.writeConfigAtVersionResponse(w, r, org, project, service, version, inherit)
+		return
+	}
 
-	d, err := h.store.GetConfig(r.Context(), org, project, service)
+	h.writeConfigResponse(w, r, org, project, service, inherit)
+}
+
+func (h *Handler) watchConfig(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("org")
+	project := r.PathValue("project")
+	service := r.PathValue("service")
+	inherit, err := parseInheritQuery(r)
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+
+	if !h.waitForWatchChange(w, r, org, project, service, "config", inherit) {
+		return
+	}
+
+	h.writeConfigResponse(w, r, org, project, service, inherit)
+}
+
+func (h *Handler) watchEnvVars(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("org")
+	project := r.PathValue("project")
+	service := r.PathValue("service")
+	inherit, err := parseInheritQuery(r)
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+
+	if !h.waitForWatchChange(w, r, org, project, service, "env_vars", inherit) {
+		return
+	}
+
+	h.writeEnvVarsResponse(w, r, org, project, service, false, inherit)
+}
+
+func (h *Handler) waitForWatchChange(
+	w http.ResponseWriter,
+	r *http.Request,
+	org, project, service, resource string,
+	inherit bool,
+) bool {
+	version := strings.TrimSpace(r.URL.Query().Get("version"))
+	if version == "" {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", "version query parameter is required")
+		return false
+	}
+	timeout, err := parseWatchTimeout(r)
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return false
+	}
+
+	start := time.Now()
+	outcome := "error"
+	defer func() {
+		metrics.RecordWatchWait(resource, outcome, time.Since(start))
+	}()
+
+	waitCtx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	for {
+		if waitCtx.Err() != nil {
+			outcome = watchOutcome(waitCtx, r.Context())
+			w.WriteHeader(http.StatusNotModified)
+			return false
+		}
+		resourceVersion, headVersion, err := h.resourceVersion(r.Context(), org, project, service, resource, inherit)
+		if err != nil {
+			respondError(w, err)
+			return false
+		}
+		if resourceVersion != version {
+			outcome = "changed"
+			return true
+		}
+
+		_, changed, err := h.store.WaitForVersionChange(waitCtx, headVersion)
+		if err != nil {
+			if !changed && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
+				outcome = watchOutcome(waitCtx, r.Context())
+				w.WriteHeader(http.StatusNotModified)
+				return false
+			}
+			slog.Error("watch failed", "resource", resource, "err", err)
+			respondErrorCode(w, http.StatusInternalServerError, "internal", "internal server error")
+			return false
+		}
+		if !changed {
+			outcome = watchOutcome(waitCtx, r.Context())
+			w.WriteHeader(http.StatusNotModified)
+			return false
+		}
+	}
+}
+
+// watchOutcome returns the metric outcome label for a non-change watch exit.
+// If the request context was canceled (client disconnect) the outcome differs
+// from a server-side deadline expiry so the two are distinguishable in metrics.
+func watchOutcome(waitCtx, reqCtx context.Context) string {
+	if errors.Is(reqCtx.Err(), context.Canceled) {
+		return "client_canceled"
+	}
+	_ = waitCtx
+	return "timeout"
+}
+
+func (h *Handler) resourceVersion(
+	ctx context.Context,
+	org, project, service, resource string,
+	inherit bool,
+) (string, string, error) {
+	resourceVersion, headVersion, err := h.store.ResourceVersion(ctx, org, project, service, resource)
+	if err != nil || !inherit {
+		return resourceVersion, headVersion, err
+	}
+	d, err := h.store.GetConfig(ctx, org, project, service)
+	if err != nil {
+		return "", "", err
+	}
+	switch resource {
+	case "config":
+		if hasInheritedConfigSource(d) {
+			return headVersion, headVersion, nil
+		}
+	case "env_vars":
+		if hasInheritedEnvVarsSource(d) {
+			return headVersion, headVersion, nil
+		}
+	}
+	return resourceVersion, headVersion, nil
+}
+
+func (h *Handler) writeConfigResponse(
+	w http.ResponseWriter,
+	r *http.Request,
+	org, project, service string,
+	inherit bool,
+) {
+	payload, err := h.currentConfigPayload(r.Context(), org, project, service, inherit)
 	if err != nil {
 		respondError(w, err)
 		return
 	}
 
-	meta := configMeta(org, project, service, h.store.HeadVersion(), d.UpdatedAt)
+	respondCacheableJSON(
+		w,
+		r,
+		cacheableResponseETag(r, "config", org, project, service, payload.version, payload.updatedAt, inherit),
+		payload.body,
+	)
+}
 
-	if d.Config == nil {
-		respondJSON(w, http.StatusOK, map[string]any{
+type cacheableReadPayload struct {
+	body      map[string]any
+	version   string
+	updatedAt time.Time
+}
+
+func (h *Handler) currentConfigPayload(
+	ctx context.Context,
+	org, project, service string,
+	inherit bool,
+) (cacheableReadPayload, error) {
+	d, err := h.store.GetConfig(ctx, org, project, service)
+	if err != nil {
+		return cacheableReadPayload{}, err
+	}
+	return h.configPayloadFromData(d, org, project, service, inherit), nil
+}
+
+func (h *Handler) configPayloadFromData(
+	d *store.ServiceData,
+	org, project, service string,
+	inherit bool,
+) cacheableReadPayload {
+	version := d.ConfigResourceVersion
+	if inherit && hasInheritedConfigSource(d) {
+		version = h.store.HeadVersion()
+	}
+	if version == "" {
+		version = h.store.HeadVersion()
+	}
+	meta := configMeta(org, project, service, version, d.UpdatedAt)
+	cfg := d.Config
+	if inherit && d.InheritedConfig != nil {
+		cfg = d.InheritedConfig
+	}
+
+	config := map[string]any{}
+	if cfg != nil && cfg.Config != nil {
+		config = cfg.Config
+	}
+	return cacheableReadPayload{
+		body: map[string]any{
 			"metadata": meta,
-			"config":   map[string]any{},
-		})
+			"config":   config,
+		},
+		version:   version,
+		updatedAt: d.UpdatedAt,
+	}
+}
+
+func (h *Handler) currentEnvVarsPayload(
+	ctx context.Context,
+	org, project, service string,
+	inherit bool,
+) (cacheableReadPayload, error) {
+	d, err := h.store.GetConfig(ctx, org, project, service)
+	if err != nil {
+		return cacheableReadPayload{}, err
+	}
+	return h.envVarsPayloadFromData(d, org, project, service, inherit), nil
+}
+
+func (h *Handler) envVarsPayloadFromData(
+	d *store.ServiceData,
+	org, project, service string,
+	inherit bool,
+) cacheableReadPayload {
+	version := h.store.HeadVersion()
+	if (!inherit || !hasInheritedEnvVarsSource(d)) && d.EnvVarsResourceVersion != "" {
+		version = d.EnvVarsResourceVersion
+	}
+	if version == "" {
+		version = h.store.HeadVersion()
+	}
+	meta := configMeta(org, project, service, version, d.UpdatedAt)
+	envConfig := d.EnvVars
+	if inherit && d.InheritedEnvVars != nil {
+		envConfig = d.InheritedEnvVars
+	}
+
+	envVars := map[string]any{
+		"plain":       map[string]string{},
+		"secret_refs": map[string]string{},
+	}
+	if envConfig != nil {
+		envVars["plain"] = nullToEmpty(envConfig.EnvVars.Plain)
+		envVars["secret_refs"] = nullToEmpty(envConfig.EnvVars.SecretRefs)
+	}
+	return cacheableReadPayload{
+		body: map[string]any{
+			"metadata": meta,
+			"env_vars": envVars,
+		},
+		version:   version,
+		updatedAt: d.UpdatedAt,
+	}
+}
+
+func (h *Handler) postConfigsBatch(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body batchReadRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		h.handleDecodeError(w, err)
+		return
+	}
+	if len(body.Queries) == 0 {
+		respondErrorCode(w, http.StatusBadRequest, "validation", "queries must not be empty")
+		return
+	}
+	if len(body.Queries) > maxBatchReadQueries {
+		respondErrorCode(w, http.StatusBadRequest, "validation", "queries must contain at most 100 items")
 		return
 	}
 
-	respondJSON(w, http.StatusOK, map[string]any{
+	inherit := true
+	if body.Inherit != nil {
+		inherit = *body.Inherit
+	}
+
+	results := make([]batchReadResult, 0, len(body.Queries))
+	for _, query := range body.Queries {
+		query = query.normalized()
+		if err := query.validate(); err != nil {
+			respondErrorCode(w, http.StatusBadRequest, "validation", err.Error())
+			return
+		}
+		result := batchReadResult{
+			Org:     query.Org,
+			Project: query.Project,
+			Service: query.Service,
+		}
+		d, err := h.store.GetConfig(r.Context(), query.Org, query.Project, query.Service)
+		if err != nil {
+			detail := errorDetailFor(err)
+			result.Error = &detail
+			results = append(results, result)
+			continue
+		}
+		configPayload := h.configPayloadFromData(d, query.Org, query.Project, query.Service, inherit)
+		envPayload := h.envVarsPayloadFromData(d, query.Org, query.Project, query.Service, inherit)
+		result.Config = configPayload.body
+		result.EnvVars = envPayload.body
+		results = append(results, result)
+	}
+
+	resp := map[string]any{"results": results}
+	respondCacheableJSON(w, r, cacheableBodyETag(r, resp), resp)
+}
+
+type batchReadRequest struct {
+	Queries []batchReadQuery `json:"queries"`
+	Inherit *bool            `json:"inherit"`
+}
+
+type batchReadQuery struct {
+	Org     string `json:"org"`
+	Project string `json:"project"`
+	Service string `json:"service"`
+}
+
+func (q batchReadQuery) normalized() batchReadQuery {
+	q.Org = strings.TrimSpace(q.Org)
+	q.Project = strings.TrimSpace(q.Project)
+	q.Service = strings.TrimSpace(q.Service)
+	return q
+}
+
+func (q batchReadQuery) validate() error {
+	switch {
+	case q.Org == "":
+		return errors.New("query org is required")
+	case q.Project == "":
+		return errors.New("query project is required")
+	case q.Service == "":
+		return errors.New("query service is required")
+	default:
+		return nil
+	}
+}
+
+type batchReadResult struct {
+	Org     string         `json:"org"`
+	Project string         `json:"project"`
+	Service string         `json:"service"`
+	Config  map[string]any `json:"config,omitempty"`
+	EnvVars map[string]any `json:"env_vars,omitempty"`
+	Error   *errorDetail   `json:"error,omitempty"`
+}
+
+func (h *Handler) writeConfigAtVersionResponse(
+	w http.ResponseWriter,
+	r *http.Request,
+	org, project, service, version string,
+	inherit bool,
+) {
+	ctx := r.Context()
+	var (
+		d   *store.ServiceData
+		err error
+	)
+	if inherit {
+		d, err = h.store.GetInheritedConfigAtVersion(ctx, org, project, service, version)
+	} else {
+		d, err = h.store.GetConfigAtVersion(ctx, org, project, service, version)
+	}
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	meta := configMeta(org, project, service, version, d.UpdatedAt)
+	config := map[string]any{}
+	cfg := d.Config
+	if inherit && d.InheritedConfig != nil {
+		cfg = d.InheritedConfig
+	}
+	if cfg != nil && cfg.Config != nil {
+		config = cfg.Config
+	}
+	respondCacheableJSON(w, r, cacheableResponseETag(r, "config", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
 		"metadata": meta,
-		"config":   d.Config.Config,
+		"config":   config,
 	})
 }
 
@@ -218,33 +885,211 @@ func (h *Handler) getEnvVars(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
 	project := r.PathValue("project")
 	service := r.PathValue("service")
+	version := strings.TrimSpace(r.URL.Query().Get("version"))
+	resolveSecrets, err := parseBoolQuery(r, "resolve_secrets")
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	inherit, err := parseInheritQuery(r)
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	if version != "" && resolveSecrets {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", "version cannot be combined with resolve_secrets")
+		return
+	}
+	if resolveSecrets {
+		if !h.authenticate(w, r) {
+			return
+		}
+		if !h.allowSecretResolve(w) {
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Del("ETag")
+	}
+	if version != "" {
+		h.writeEnvVarsAtVersionResponse(w, r, org, project, service, version, inherit)
+		return
+	}
 
-	d, err := h.store.GetConfig(r.Context(), org, project, service)
+	h.writeEnvVarsResponse(w, r, org, project, service, resolveSecrets, inherit)
+}
+
+func (h *Handler) writeEnvVarsResponse(
+	w http.ResponseWriter,
+	r *http.Request,
+	org, project, service string,
+	resolveSecrets bool,
+	inherit bool,
+) {
+	ctx := r.Context()
+	if !resolveSecrets {
+		payload, err := h.currentEnvVarsPayload(ctx, org, project, service, inherit)
+		if err != nil {
+			respondError(w, err)
+			return
+		}
+		respondCacheableJSON(
+			w,
+			r,
+			cacheableResponseETag(r, "env_vars", org, project, service, payload.version, payload.updatedAt, inherit),
+			payload.body,
+		)
+		return
+	}
+
+	d, err := h.store.GetConfig(ctx, org, project, service)
 	if err != nil {
 		respondError(w, err)
 		return
 	}
 
-	meta := configMeta(org, project, service, h.store.HeadVersion(), d.UpdatedAt)
+	version := h.store.HeadVersion()
+	meta := configMeta(org, project, service, version, d.UpdatedAt)
+	envConfig := d.EnvVars
+	if inherit && d.InheritedEnvVars != nil {
+		envConfig = d.InheritedEnvVars
+	}
 
-	if d.EnvVars == nil {
+	if envConfig == nil {
+		h.recordSecretAudit(context.WithoutCancel(ctx), secret.AuditEvent{
+			Action:    "secret_env_resolve",
+			Result:    "no_env_vars",
+			Org:       org,
+			Project:   project,
+			Service:   service,
+			SecretIDs: []string{},
+		})
 		respondJSON(w, http.StatusOK, map[string]any{
 			"metadata": meta,
 			"env_vars": map[string]any{
-				"plain":       map[string]string{},
-				"secret_refs": map[string]string{},
+				"plain":   map[string]string{},
+				"secrets": map[string]string{},
 			},
 		})
 		return
 	}
 
+	resolveData := *d
+	resolveData.EnvVars = envConfig
+	resolved, err := h.resolveEnvSecrets(ctx, org, project, service, &resolveData)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
 	respondJSON(w, http.StatusOK, map[string]any{
 		"metadata": meta,
 		"env_vars": map[string]any{
-			"plain":       nullToEmpty(d.EnvVars.EnvVars.Plain),
-			"secret_refs": nullToEmpty(d.EnvVars.EnvVars.SecretRefs),
+			"plain":   nullToEmpty(envConfig.EnvVars.Plain),
+			"secrets": resolved,
 		},
 	})
+}
+
+func (h *Handler) writeEnvVarsAtVersionResponse(
+	w http.ResponseWriter,
+	r *http.Request,
+	org, project, service, version string,
+	inherit bool,
+) {
+	ctx := r.Context()
+	var (
+		d   *store.ServiceData
+		err error
+	)
+	if inherit {
+		d, err = h.store.GetInheritedEnvVarsAtVersion(ctx, org, project, service, version)
+	} else {
+		d, err = h.store.GetEnvVarsAtVersion(ctx, org, project, service, version)
+	}
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	meta := configMeta(org, project, service, version, d.UpdatedAt)
+	envVars := map[string]any{
+		"plain":       map[string]string{},
+		"secret_refs": map[string]string{},
+	}
+	envConfig := d.EnvVars
+	if inherit && d.InheritedEnvVars != nil {
+		envConfig = d.InheritedEnvVars
+	}
+	if envConfig != nil {
+		envVars["plain"] = nullToEmpty(envConfig.EnvVars.Plain)
+		envVars["secret_refs"] = nullToEmpty(envConfig.EnvVars.SecretRefs)
+	}
+	respondCacheableJSON(w, r, cacheableResponseETag(r, "env_vars", org, project, service, version, d.UpdatedAt, inherit), map[string]any{
+		"metadata": meta,
+		"env_vars": envVars,
+	})
+}
+
+func (h *Handler) resolveEnvSecrets(ctx context.Context, org, project, service string, d *store.ServiceData) (map[string]string, error) {
+	refs := d.EnvVars.EnvVars.SecretRefs
+	auditResult := "success"
+	auditSecretIDs := secretRefAuditIDs(refs)
+	defer func() {
+		h.recordSecretAudit(context.WithoutCancel(ctx), secret.AuditEvent{
+			Action:    "secret_env_resolve",
+			Result:    auditResult,
+			Org:       org,
+			Project:   project,
+			Service:   service,
+			SecretIDs: auditSecretIDs,
+		})
+	}()
+	if len(refs) == 0 {
+		return map[string]string{}, nil
+	}
+	if h.secretDeps.VolumeReader == nil {
+		auditResult = "configuration_error"
+		return nil, apperror.New(apperror.CodeInternal, "secret volume reader is not configured")
+	}
+	if d.Secrets == nil {
+		auditResult = "metadata_missing"
+		return nil, apperror.New(apperror.CodeInternal, "secret metadata is required to resolve env var secret_refs")
+	}
+
+	byID := make(map[string]parser.SecretEntry, len(d.Secrets.Secrets))
+	for _, entry := range d.Secrets.Secrets {
+		if _, exists := byID[entry.ID]; exists {
+			auditResult = "duplicate_secret_id"
+			return nil, apperror.New(apperror.CodeInternal,
+				"secret metadata contains duplicate id")
+		}
+		byID[entry.ID] = entry
+	}
+
+	resolved := make(map[string]string, len(refs))
+	for envName, secretID := range refs {
+		entry, ok := byID[secretID]
+		if !ok {
+			auditResult = "unknown_secret_id"
+			return nil, apperror.New(apperror.CodeInternal,
+				"env var secret_ref references unknown secret metadata id")
+		}
+		value, err := h.secretDeps.VolumeReader.Refresh(ctx, secret.Reference{
+			ID:        entry.ID,
+			Namespace: entry.K8sSecret.Namespace,
+			Name:      entry.K8sSecret.Name,
+			Key:       entry.K8sSecret.Key,
+		})
+		if err != nil {
+			auditResult = "read_failed"
+			return nil, apperror.Wrap(apperror.CodeInternal, "read mounted secret value", err)
+		}
+		bytes := value.Bytes()
+		resolved[envName] = string(bytes)
+		value.Destroy()
+		for i := range bytes {
+			bytes[i] = 0
+		}
+	}
+	return resolved, nil
 }
 
 func (h *Handler) getSecrets(w http.ResponseWriter, r *http.Request) {
@@ -274,24 +1119,72 @@ func (h *Handler) getSecrets(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) getHistory(w http.ResponseWriter, r *http.Request) {
+	opts, err := parseHistoryOptions(r)
+	if err != nil {
+		respondErrorCode(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	opts.Org = r.PathValue("org")
+	opts.Project = r.PathValue("project")
+	opts.Service = r.PathValue("service")
+
+	entries, err := h.store.History(r.Context(), opts)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+
+	type historyEntryBody struct {
+		Version      string   `json:"version"`
+		Message      string   `json:"message"`
+		Author       string   `json:"author"`
+		Timestamp    string   `json:"timestamp"`
+		FilesChanged []string `json:"files_changed"`
+	}
+
+	history := make([]historyEntryBody, len(entries))
+	for i, entry := range entries {
+		history[i] = historyEntryBody{
+			Version:      entry.Version,
+			Message:      entry.Message,
+			Author:       entry.Author,
+			Timestamp:    entry.Timestamp.UTC().Format(time.RFC3339),
+			FilesChanged: entry.FilesChanged,
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"metadata": map[string]string{
+			"org":     opts.Org,
+			"project": opts.Project,
+			"service": opts.Service,
+		},
+		"history": history,
+	})
+}
+
 // ---- admin write ----
 
-// postChangesRequest matches the Phase-1 POST /api/v1/admin/changes payload.
-// The `secrets` field from PRD v2.1 is intentionally not accepted here: the
-// server rejects any unknown field (including secrets) with 400 so callers
-// don't silently lose data while secret handling is unimplemented.
+// postChangesRequest matches the POST /api/v1/admin/changes payload.
 type postChangesRequest struct {
-	Org     string         `json:"org"`
-	Project string         `json:"project"`
-	Service string         `json:"service"`
-	Config  map[string]any `json:"config"`
-	EnvVars *envVarsBody   `json:"env_vars"`
-	Message string         `json:"message"`
+	Org     string                     `json:"org"`
+	Project string                     `json:"project"`
+	Service string                     `json:"service"`
+	Config  map[string]any             `json:"config"`
+	EnvVars *envVarsBody               `json:"env_vars"`
+	Secrets map[string]secretWriteBody `json:"secrets"`
+	Message string                     `json:"message"`
 }
 
 type envVarsBody struct {
 	Plain      map[string]string `json:"plain"`
 	SecretRefs map[string]string `json:"secret_refs"`
+}
+
+type secretWriteBody struct {
+	Namespace string            `json:"namespace"`
+	Data      map[string]string `json:"data"`
 }
 
 func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
@@ -300,7 +1193,7 @@ func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_body", h.explainDecodeError(err))
+		h.handleDecodeError(w, err)
 		return
 	}
 
@@ -317,6 +1210,20 @@ func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
 			SecretRefs: body.EnvVars.SecretRefs,
 		}
 	}
+	if body.Secrets != nil {
+		req.Secrets = make(map[string]store.SecretWrite, len(body.Secrets))
+		for name, write := range body.Secrets {
+			data := make(map[string]secret.Value, len(write.Data))
+			for key, value := range write.Data {
+				data[key] = secret.NewValue([]byte(value))
+			}
+			req.Secrets[name] = store.SecretWrite{
+				Namespace: write.Namespace,
+				Data:      data,
+			}
+		}
+		defer destroySecretWrites(req.Secrets)
+	}
 
 	result, err := h.store.ApplyChanges(r.Context(), req)
 	if err != nil {
@@ -326,7 +1233,14 @@ func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
 
 	status := "committed"
 	code := http.StatusOK
-	if result.ReloadFailed {
+	switch {
+	case result.ApplyFailed && result.ReloadFailed:
+		status = "committed_but_apply_and_reload_failed"
+		code = http.StatusServiceUnavailable
+	case result.ApplyFailed:
+		status = "committed_but_apply_failed"
+		code = http.StatusServiceUnavailable
+	case result.ReloadFailed:
 		// Git write succeeded but the serving snapshot could not be refreshed
 		// from the new HEAD. We surface this explicitly so operators can react
 		// instead of trusting a plain 200.
@@ -343,20 +1257,94 @@ func (h *Handler) postChanges(w http.ResponseWriter, r *http.Request) {
 	if result.ReloadFailed && result.ReloadError != "" {
 		resp["reload_error"] = result.ReloadError
 	}
+	if result.ApplyFailed && result.ApplyError != "" {
+		resp["apply_error"] = result.ApplyError
+	}
 	respondJSON(w, code, resp)
 }
 
-// explainDecodeError gives a slightly friendlier hint for the common case of
-// an unknown field (the PRD v2.1 `secrets` field, for example).
+type postRevertRequest struct {
+	Org           string `json:"org"`
+	Project       string `json:"project"`
+	Service       string `json:"service"`
+	TargetVersion string `json:"target_version"`
+	Message       string `json:"message"`
+}
+
+func (h *Handler) postRevert(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body postRevertRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		h.handleDecodeError(w, err)
+		return
+	}
+
+	result, err := h.store.ApplyRevert(r.Context(), &store.RevertRequest{
+		Org:           body.Org,
+		Project:       body.Project,
+		Service:       body.Service,
+		TargetVersion: body.TargetVersion,
+		Message:       body.Message,
+	})
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+
+	status := "rolled_back"
+	code := http.StatusOK
+	switch {
+	case result.Noop:
+		status = "noop"
+	case result.ApplyFailed && result.ReloadFailed:
+		status = "rolled_back_but_apply_and_reload_failed"
+		code = http.StatusServiceUnavailable
+	case result.ApplyFailed:
+		status = "rolled_back_but_apply_failed"
+		code = http.StatusServiceUnavailable
+	case result.ReloadFailed:
+		status = "rolled_back_but_reload_failed"
+		code = http.StatusServiceUnavailable
+	}
+
+	resp := map[string]any{
+		"status":         status,
+		"version":        result.Version,
+		"target_version": result.TargetVersion,
+		"restored_files": result.RestoredFiles,
+		"deleted_files":  result.DeletedFiles,
+		"updated_at":     result.UpdatedAt,
+	}
+	if result.ReloadFailed && result.ReloadError != "" {
+		resp["reload_error"] = result.ReloadError
+	}
+	if result.ApplyFailed && result.ApplyError != "" {
+		resp["apply_error"] = result.ApplyError
+	}
+	respondJSON(w, code, resp)
+}
+
+// explainDecodeError gives a slightly friendlier hint for unknown fields.
 func (h *Handler) explainDecodeError(err error) string {
 	msg := err.Error()
-	if strings.Contains(msg, "unknown field \"secrets\"") {
-		return "secrets are not accepted by POST /api/v1/admin/changes in Phase-1; see docs for planned behaviour"
-	}
 	if strings.Contains(msg, "unknown field") {
 		return "request contains an unknown field: " + msg
 	}
 	return "invalid JSON body: " + msg
+}
+
+// handleDecodeError responds with 413 for oversized payloads and 400 for all
+// other JSON decode errors. Call immediately after a failed dec.Decode.
+func (h *Handler) handleDecodeError(w http.ResponseWriter, err error) {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		respondErrorCode(w, http.StatusRequestEntityTooLarge, "payload_too_large",
+			"request body must be at most 1MiB")
+		return
+	}
+	respondErrorCode(w, http.StatusBadRequest, "invalid_body", h.explainDecodeError(err))
 }
 
 type deleteChangesRequest struct {
@@ -371,7 +1359,7 @@ func (h *Handler) deleteChanges(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_body", "invalid JSON body: "+err.Error())
+		h.handleDecodeError(w, err)
 		return
 	}
 
@@ -411,16 +1399,22 @@ func (h *Handler) deleteChanges(w http.ResponseWriter, r *http.Request) {
 // production startup requires a key (or an explicit dev opt-in flag).
 func (h *Handler) requireKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.apiKey == "" {
-			next(w, r)
-			return
-		}
-		if !authorized(r, h.apiKey) {
-			respondErrorCode(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API key")
+		if !h.authenticate(w, r) {
 			return
 		}
 		next(w, r)
 	}
+}
+
+func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) bool {
+	if h.apiKey == "" {
+		return true
+	}
+	if !authorized(r, h.apiKey) {
+		respondErrorCode(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API key")
+		return false
+	}
+	return true
 }
 
 // authorized reports whether r presents a valid credential matching key. The
@@ -463,6 +1457,241 @@ func configMeta(org, project, service, version string, updatedAt time.Time) map[
 	}
 }
 
+func respondCacheableJSON(w http.ResponseWriter, r *http.Request, etag string, v any) {
+	addVary(w.Header(), "Accept-Encoding")
+	w.Header().Set("ETag", etag)
+	if ifNoneMatch(r, etag) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return
+		}
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	if responseContentEncoding(r) == "gzip" {
+		respondGzipJSON(w, http.StatusOK, v)
+		return
+	}
+	respondJSON(w, http.StatusOK, v)
+}
+
+func cacheableResponseETag(
+	r *http.Request,
+	resource, org, project, service, version string,
+	updatedAt time.Time,
+	inherit bool,
+) string {
+	return responseETag(resource, org, project, service, version, updatedAt, inherit, responseContentEncoding(r))
+}
+
+func cacheableBodyETag(r *http.Request, v any) string {
+	body, err := json.Marshal(v)
+	if err != nil {
+		slog.Error("marshal cache validator body", "err", err)
+		body = []byte(err.Error())
+	}
+	raw := append([]byte(responseContentEncoding(r)+"\x00"), body...)
+	sum := sha256.Sum256(raw)
+	return `"` + hex.EncodeToString(sum[:]) + `"`
+}
+
+func responseETag(
+	resource, org, project, service, version string,
+	updatedAt time.Time,
+	inherit bool,
+	contentEncoding string,
+) string {
+	raw := strings.Join([]string{
+		resource,
+		org,
+		project,
+		service,
+		version,
+		updatedAt.UTC().Format(time.RFC3339Nano),
+		strconv.FormatBool(inherit),
+		contentEncoding,
+	}, "\x00")
+	sum := sha256.Sum256([]byte(raw))
+	return `"` + hex.EncodeToString(sum[:]) + `"`
+}
+
+func responseContentEncoding(r *http.Request) string {
+	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		return "gzip"
+	}
+	return "identity"
+}
+
+func acceptsGzip(raw string) bool {
+	gzipSpecified := false
+	gzipAccepted := false
+	wildcardAccepted := false
+	for _, candidate := range strings.Split(raw, ",") {
+		parts := strings.Split(candidate, ";")
+		coding := strings.TrimSpace(strings.ToLower(parts[0]))
+		if coding != "gzip" && coding != "*" {
+			continue
+		}
+		enabled := true
+		for _, param := range parts[1:] {
+			key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
+			if !ok || !strings.EqualFold(key, "q") {
+				continue
+			}
+			q, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if err == nil && q <= 0 {
+				enabled = false
+			}
+		}
+		switch coding {
+		case "gzip":
+			gzipSpecified = true
+			gzipAccepted = enabled
+		case "*":
+			wildcardAccepted = enabled
+		}
+	}
+	if gzipSpecified {
+		return gzipAccepted
+	}
+	return wildcardAccepted
+}
+
+func respondGzipJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Encoding", "gzip")
+	w.WriteHeader(code)
+	gz := gzip.NewWriter(w)
+	if err := json.NewEncoder(gz).Encode(v); err != nil {
+		slog.Error("encode gzip response", "err", err)
+	}
+	if err := gz.Close(); err != nil {
+		slog.Error("close gzip response", "err", err)
+	}
+}
+
+func addVary(header http.Header, value string) {
+	current := header.Get("Vary")
+	if current == "" {
+		header.Set("Vary", value)
+		return
+	}
+	for _, existing := range strings.Split(current, ",") {
+		if strings.EqualFold(strings.TrimSpace(existing), "*") ||
+			strings.EqualFold(strings.TrimSpace(existing), value) {
+			return
+		}
+	}
+	header.Set("Vary", current+", "+value)
+}
+
+func ifNoneMatch(r *http.Request, etag string) bool {
+	raw := r.Header.Get("If-None-Match")
+	if raw == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(raw, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || candidate == etag {
+			return true
+		}
+		if strings.HasPrefix(candidate, "W/") && strings.TrimSpace(strings.TrimPrefix(candidate, "W/")) == etag {
+			return true
+		}
+	}
+	return false
+}
+
+func parseBoolQuery(r *http.Request, name string) (bool, error) {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, errors.New(name + " must be a boolean")
+	}
+	return value, nil
+}
+
+func parseInheritQuery(r *http.Request) (bool, error) {
+	raw := r.URL.Query().Get("inherit")
+	if raw == "" {
+		return true, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, errors.New("inherit must be a boolean")
+	}
+	return value, nil
+}
+
+func hasInheritedConfigSource(d *store.ServiceData) bool {
+	for _, source := range d.InheritedSources {
+		if source.HasConfig {
+			return true
+		}
+	}
+	return false
+}
+
+func hasInheritedEnvVarsSource(d *store.ServiceData) bool {
+	for _, source := range d.InheritedSources {
+		if source.HasEnvVars {
+			return true
+		}
+	}
+	return false
+}
+
+func parseWatchTimeout(r *http.Request) (time.Duration, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("timeout"))
+	if raw == "" {
+		return defaultWatchTimeout, nil
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, errors.New("timeout must be a duration like 30s")
+	}
+	if timeout <= 0 {
+		return 0, errors.New("timeout must be greater than 0")
+	}
+	if timeout > maxWatchTimeout {
+		return 0, errors.New("timeout must be less than or equal to 30s")
+	}
+	return timeout, nil
+}
+
+func parseHistoryOptions(r *http.Request) (store.HistoryOptions, error) {
+	opts := store.HistoryOptions{
+		File:   strings.TrimSpace(r.URL.Query().Get("file")),
+		Before: strings.TrimSpace(r.URL.Query().Get("before")),
+		Limit:  defaultHistoryLimit,
+	}
+	switch opts.File {
+	case "", "config", "env_vars", "secrets":
+	default:
+		return opts, errors.New("file must be one of config, env_vars, or secrets")
+	}
+
+	rawLimit := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if rawLimit == "" {
+		return opts, nil
+	}
+	limit, err := strconv.Atoi(rawLimit)
+	if err != nil {
+		return opts, errors.New("limit must be an integer")
+	}
+	if limit <= 0 {
+		return opts, errors.New("limit must be greater than 0")
+	}
+	if limit > maxHistoryLimit {
+		return opts, errors.New("limit must be less than or equal to 100")
+	}
+	opts.Limit = limit
+	return opts, nil
+}
+
 func respondJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -485,7 +1714,38 @@ func respondErrorCode(w http.ResponseWriter, status int, code, message string) {
 	respondJSON(w, status, errorBody{Error: errorDetail{Code: code, Message: message}})
 }
 
+func errorDetailFor(err error) errorDetail {
+	var appErr *apperror.Error
+	if errors.As(err, &appErr) {
+		switch appErr.Code {
+		case apperror.CodeNotFound:
+			return errorDetail{Code: "not_found", Message: appErr.Message}
+		case apperror.CodeValidation:
+			return errorDetail{Code: "validation", Message: appErr.Message}
+		case apperror.CodeConflict:
+			return errorDetail{Code: "conflict", Message: appErr.Message}
+		case apperror.CodeUnauthorized:
+			return errorDetail{Code: "unauthorized", Message: appErr.Message}
+		case apperror.CodeGitPush:
+			return errorDetail{Code: "git_push_failed", Message: appErr.Message}
+		}
+	}
+	return errorDetail{Code: "internal", Message: "internal server error"}
+}
+
 func respondError(w http.ResponseWriter, err error) {
+	// Context cancellations / deadline expirations may arrive raw or wrapped
+	// inside apperror.CodeInternal (e.g. from secret.VolumeReader.Refresh).
+	// Map them away from 500 before any other classification so they don't
+	// drown real server errors in noise.
+	if errors.Is(err, context.Canceled) {
+		respondErrorCode(w, 499, "client_closed_request", "client cancelled request")
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		respondErrorCode(w, http.StatusGatewayTimeout, "deadline_exceeded", "request deadline exceeded")
+		return
+	}
 	var appErr *apperror.Error
 	if errors.As(err, &appErr) {
 		switch appErr.Code {
@@ -513,4 +1773,48 @@ func nullToEmpty(m map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	return m
+}
+
+func secretRefAuditIDs(refs map[string]string) []string {
+	seen := make(map[string]struct{}, len(refs))
+	for _, id := range refs {
+		if id == "" {
+			continue
+		}
+		seen[id] = struct{}{}
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func destroySecretWrites(writes map[string]store.SecretWrite) {
+	for _, write := range writes {
+		for key, value := range write.Data {
+			value.Destroy()
+			write.Data[key] = value
+		}
+	}
+}
+
+func (h *Handler) recordSecretAudit(ctx context.Context, event secret.AuditEvent) {
+	if event.At.IsZero() {
+		event.At = time.Now().UTC()
+	}
+	if h.secretDeps.Auditor == nil {
+		return
+	}
+	if err := h.secretDeps.Auditor.Record(ctx, event); err != nil {
+		slog.Warn("record secret audit event failed",
+			"err", err,
+			"action", event.Action,
+			"result", event.Result,
+			"org", event.Org,
+			"project", event.Project,
+			"service", event.Service,
+			"secret_ids", event.SecretIDs)
+	}
 }

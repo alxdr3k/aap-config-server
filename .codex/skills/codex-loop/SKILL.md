@@ -4,9 +4,9 @@ description: 현재 PR의 codex 리뷰를 기다리고 코멘트 수정 후 push
 ---
 <!-- my-skill:generated
 skill: codex-loop
-base-sha256: 1ac03cfb986c00ef8111e04c8c92dbd1581d37e259dc3a31498fd486e0469f3e
+base-sha256: 563aebb1712d9ded59613d50b0c604c16cb5f85e231ae20fd5e1217a27c19ef7
 overlay-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-output-sha256: 1ac03cfb986c00ef8111e04c8c92dbd1581d37e259dc3a31498fd486e0469f3e
+output-sha256: 563aebb1712d9ded59613d50b0c604c16cb5f85e231ae20fd5e1217a27c19ef7
 do-not-edit: edit .codex/skill-overrides/codex-loop.md instead
 -->
 
@@ -28,6 +28,11 @@ CODEX_REVIEW_HELPER=".agents/scripts/wait-codex-review.sh"
 bash "$CODEX_REVIEW_HELPER"
 ```
 
+기본 stdout은 기존처럼 사람이 읽는 feedback 출력이다. 구조화된 관찰이 필요하면 동일한
+foreground 호출에 `--json`을 붙이거나 `CODEX_REVIEW_OUTPUT=json`을 설정한다. 이 모드는
+exit code를 바꾸지 않고 stdout에 compact `schema_version:1`,
+`kind:"codex_review_observation"` JSON 1개를 출력한다.
+
 다음 패턴은 금지한다.
 
 - `bash ... &` 로 background polling
@@ -46,23 +51,48 @@ bash "$CODEX_REVIEW_HELPER"
 | ---- | ---- | --------- |
 | 0 | Codex pass reaction 감지 | checks 확인 후 PR merge |
 | 1 | 새 comment/review가 stdout에 출력됨 | 분석 -> 수정 -> commit -> push -> 스크립트 재실행 |
-| 2 | timeout | 사용자에게 타임아웃 보고 |
+| 2 | 두 번째 timeout 또는 review 요청 미확인 | loop 종료, 사용자에게 타임아웃 보고 |
 | 3 | PR 감지 실패 | PR 번호 또는 URL 요청 후 스크립트 인자로 재실행 |
-| 4 | 영구 API 오류 | 인증/권한 문제 보고 |
+| 4 | 진행을 막는 API 오류 | 인증/권한/네트워크 문제 보고 |
 
 첫 successful 조회에서 PR의 comment/review/reaction이 모두 비어 있으면 helper는 한 번만
 `CODEX_INITIAL_EMPTY_DELAY`초, 기본 300초를 쉰 뒤 기존 `CODEX_POLL_INTERVAL`로
 계속 조회한다. PR 생성 직후 Codex/GitHub 쪽 초기 처리 지연 때문에 빈 PR을 너무 촘촘하게
 polling하지 않기 위한 동작이다.
 
+각 polling iter에서 helper는 PR 본문 reaction과 인증 사용자 comment의 reaction을
+확인한다.
+
+- `eyes` reaction이 PR 본문 또는 내 comment에 있으면 계속 대기한다.
+- `eyes` reaction이 없고 아직 review 요청을 남기지 않았으면 PR에 `@codex review`
+  comment를 1회 남긴다.
+- review 요청 comment 자체는 새 feedback으로 처리하지 않는다.
+- comment를 남긴 뒤 다음 3번의 polling iter 안에 PR 본문 또는 내 comment에 `eyes`
+  reaction이 생기지 않으면 exit 2로 종료한다.
+- 일반 polling timeout은 한 번 더 대기하고, 두 번째 timeout에서 exit 2로 종료한다.
+
 인자 형식:
 
 - 인자 없음: 현재 브랜치 PR 자동 감지
 - PR 번호: `bash "$CODEX_REVIEW_HELPER" 42`
 - PR URL: `bash "$CODEX_REVIEW_HELPER" https://github.com/owner/repo/pull/42`
+- structured observation: `bash "$CODEX_REVIEW_HELPER" --json 42`
+
+## Structured Observation
+
+`--json` 출력은 DevDeck 같은 projection layer가 나중에 읽을 수 있는 작은 상태 스냅샷이다.
+한 줄 compact JSON이므로 필요하면 호출자가 그대로 JSONL log에 append할 수 있다.
+필드는 versioned envelope, repo/PR/baseline, pass reaction 관찰 상태, feedback items,
+timeout 상태, review request/eyes acknowledgement 상태, API error classification,
+`next_allowed_actions`를 포함한다. 이 JSON은 machine state이고, Markdown/stdout human
+feedback을 대체하지 않는다. codex-loop 자체는 기존 exit code 기반 분기를 유지한다.
 
 ## Feedback 처리
 
+- codex review 결과를 그대로 작업 목록으로 받아들이지 말고 적대적/비판적으로 재평가한다. 각 comment/review item마다 주장, 근거, 재현 가능성, 실제 영향, severity, 범위 적합성을 먼저 판정한다.
+- `.agents/scripts/dev-cycle-helper.sh` 또는 `$HOME/.agents/scripts/dev-cycle-helper.sh`가 있으면 `review-dossier`로 diff size, 파일 확산, 계약/중요 경로를 reviewer 입력 정보로 확인한다. high-capability/high-effort reviewer 사용 여부는 feedback의 semantic risk를 보고 본인이 판단한다.
+- reviewer를 사용할 경우 raw PR 전체를 넘기지 말고 새 feedback, 관련 diff, helper-generated review dossier 또는 수동 risk summary, 재현/검증 출력, 이전 finding 요약만 전달한다.
+- 유효한 item은 가장 합리적인 해결 방식을 선택한다: root-cause code fix, test 보강, 문서/계약 정정, 요구사항 clarification, 또는 사용자 결정 요청. 리뷰를 만족시키려고 보안/검증/계약을 약화하거나 symptom-only patch를 만들지 않는다.
 - 코멘트가 모호하거나 우선순위 판단이 필요하면 코드 수정 전 사용자에게 확인한다.
 - 이미 처리된 이슈, 재현 불가 항목, 범위 밖 요구는 근거를 남기고 제외할 수 있다.
 - 수정은 최소 diff로 하고, 관련 테스트와 repo가 정의한 검증 명령을 다시 실행한다.

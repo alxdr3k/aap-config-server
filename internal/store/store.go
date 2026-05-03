@@ -1,10 +1,14 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -17,15 +21,40 @@ import (
 
 	"github.com/aap/config-server/internal/apperror"
 	"github.com/aap/config-server/internal/gitops"
+	"github.com/aap/config-server/internal/metrics"
 	"github.com/aap/config-server/internal/parser"
+	"github.com/aap/config-server/internal/secret"
 )
 
 var validNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+var validK8sDNSLabelRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+var errStopHistory = errors.New("stop history iteration")
 
 func validateName(field, value string) error {
 	if !validNameRe.MatchString(value) {
 		return apperror.New(apperror.CodeValidation,
 			fmt.Sprintf("%s %q contains invalid characters", field, value))
+	}
+	return nil
+}
+
+func validateK8sDNSLabel(field, value string) error {
+	if value == "" || len(value) > 63 || !validK8sDNSLabelRe.MatchString(value) {
+		return apperror.New(apperror.CodeValidation,
+			fmt.Sprintf("%s %q must be a Kubernetes DNS label", field, value))
+	}
+	return nil
+}
+
+func validateK8sDNSSubdomain(field, value string) error {
+	if value == "" || len(value) > 253 {
+		return apperror.New(apperror.CodeValidation,
+			fmt.Sprintf("%s %q must be a Kubernetes DNS subdomain", field, value))
+	}
+	for _, part := range strings.Split(value, ".") {
+		if err := validateK8sDNSLabel(field, part); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -46,10 +75,27 @@ type Store struct {
 	// lastReload records the outcome of the most recent reload attempt.
 	lastReload atomic.Pointer[reloadState]
 
+	// versionChanged is closed after a successful snapshot version change.
+	versionWatchMu sync.Mutex
+	versionChanged chan struct{}
+
 	// mu serialises writes (ApplyChanges / DeleteChanges / background refresh).
 	mu sync.Mutex
 
 	repo gitops.GitRepo
+
+	secretDeps secret.Dependencies
+}
+
+// Option customizes Store dependencies.
+type Option func(*Store)
+
+// WithSecretDependencies wires secret sealing and apply adapters into admin
+// secret writes. Config/env-only writes keep working without these adapters.
+func WithSecretDependencies(deps secret.Dependencies) Option {
+	return func(s *Store) {
+		s.secretDeps = deps.WithDefaults()
+	}
 }
 
 // snapshot is an immutable view of all service data at a given git version.
@@ -62,9 +108,31 @@ func newSnapshot(data map[string]*ServiceData, version string) *snapshot {
 	return &snapshot{data: data, version: version}
 }
 
+type defaultsEntry struct {
+	source DefaultsSource
+	config *parser.DefaultsConfig
+}
+
+type defaultsIndex struct {
+	global  *defaultsEntry
+	org     map[string]*defaultsEntry
+	project map[string]*defaultsEntry // key: "org/project"
+}
+
+func newDefaultsIndex() defaultsIndex {
+	return defaultsIndex{
+		org:     map[string]*defaultsEntry{},
+		project: map[string]*defaultsEntry{},
+	}
+}
+
 // New creates a Store backed by the given GitRepo.
-func New(repo gitops.GitRepo) *Store {
-	s := &Store{repo: repo}
+func New(repo gitops.GitRepo, opts ...Option) *Store {
+	s := &Store{repo: repo, versionChanged: make(chan struct{})}
+	for _, opt := range opts {
+		opt(s)
+	}
+	s.secretDeps = s.secretDeps.WithDefaults()
 	s.snapshot.Store(newSnapshot(make(map[string]*ServiceData), ""))
 	return s
 }
@@ -83,7 +151,16 @@ func (s *Store) current() *snapshot {
 // background polls catch up when the remote becomes reachable.
 // Context cancellation/deadline errors are propagated so callers can
 // actually abort startup when they ask to.
-func (s *Store) LoadFromRepo(ctx context.Context) error {
+func (s *Store) LoadFromRepo(ctx context.Context) (err error) {
+	start := time.Now()
+	outcome := "loaded"
+	defer func() {
+		if err != nil {
+			outcome = "error"
+		}
+		metrics.RecordReload("initial", outcome, time.Since(start))
+	}()
+
 	if err := s.repo.CloneOrOpen(ctx); err != nil {
 		return fmt.Errorf("clone/open repo: %w", err)
 	}
@@ -107,7 +184,12 @@ func (s *Store) LoadFromRepo(ctx context.Context) error {
 // use ReloadFromRepo instead: a degraded store whose HEAD has not moved needs
 // to re-parse the current checkout to recover, which RefreshFromRepo would
 // silently skip.
-func (s *Store) RefreshFromRepo(ctx context.Context) (bool, error) {
+func (s *Store) RefreshFromRepo(ctx context.Context) (updated bool, err error) {
+	start := time.Now()
+	defer func() {
+		metrics.RecordReload("background", reloadOutcome(updated, err), time.Since(start))
+	}()
+
 	hash, updated, err := s.repo.Pull(ctx)
 	if err != nil {
 		return false, err
@@ -132,7 +214,12 @@ func (s *Store) RefreshFromRepo(ctx context.Context) (bool, error) {
 //
 // Returns updated=true when the serving snapshot was swapped (i.e. the reload
 // produced a new HEAD or the last reload had failed and now succeeds).
-func (s *Store) ReloadFromRepo(ctx context.Context) (bool, error) {
+func (s *Store) ReloadFromRepo(ctx context.Context) (updated bool, err error) {
+	start := time.Now()
+	defer func() {
+		metrics.RecordReload("force", reloadOutcome(updated, err), time.Since(start))
+	}()
+
 	hash, pullUpdated, err := s.repo.Pull(ctx)
 	if err != nil {
 		return false, err
@@ -156,9 +243,62 @@ func (s *Store) ReloadFromRepo(ctx context.Context) (bool, error) {
 	return swapped, nil
 }
 
+func reloadOutcome(updated bool, err error) string {
+	if err != nil {
+		return "error"
+	}
+	if updated {
+		return "updated"
+	}
+	return "unchanged"
+}
+
 // HeadVersion returns the git commit hash of the currently loaded snapshot.
 func (s *Store) HeadVersion() string {
 	return s.current().version
+}
+
+// ResourceVersion returns a resource-scoped version token and the loaded git
+// HEAD from the same snapshot. The resource token only changes when that
+// service resource's payload changes, which lets watch handlers avoid waking
+// config clients for env-only commits and vice versa.
+func (s *Store) ResourceVersion(ctx context.Context, org, project, service, resource string) (string, string, error) {
+	snap := s.current()
+	key := ServiceKey{Org: org, Project: project, Service: service}.String()
+	d, ok := snap.data[key]
+	if !ok {
+		return "", snap.version, apperror.New(apperror.CodeNotFound,
+			fmt.Sprintf("service not found: %s/%s/%s", org, project, service))
+	}
+	version := resourceVersion(d, resource, snap.version)
+	if version == "" {
+		version = snap.version
+	}
+	return version, snap.version, nil
+}
+
+// WaitForVersionChange blocks until the store's loaded git version differs
+// from version or ctx is cancelled. It returns immediately when the caller's
+// version is already stale.
+func (s *Store) WaitForVersionChange(ctx context.Context, version string) (string, bool, error) {
+	if ctx == nil {
+		return "", false, errors.New("context is required")
+	}
+	for {
+		current, changed := s.versionChangeState(version)
+		if current != version {
+			return current, true, nil
+		}
+		select {
+		case <-ctx.Done():
+			current, _ := s.versionChangeState(version)
+			if current != version {
+				return current, true, nil
+			}
+			return current, false, ctx.Err()
+		case <-changed:
+		}
+	}
 }
 
 // IsDegraded reports whether the most recent reload attempt failed. When true
@@ -195,6 +335,220 @@ func (s *Store) GetConfig(ctx context.Context, org, project, service string) (*S
 			fmt.Sprintf("service not found: %s/%s/%s", org, project, service))
 	}
 	return d, nil
+}
+
+// GetConfigAtVersion returns config.yaml for a service as it existed at a Git
+// commit. The service must exist in the current snapshot so path parameters
+// cannot be used to read arbitrary repository files.
+func (s *Store) GetConfigAtVersion(ctx context.Context, org, project, service, version string) (*ServiceData, error) {
+	if version == "" {
+		return nil, apperror.New(apperror.CodeValidation, "version is required")
+	}
+	if _, err := s.GetConfig(ctx, org, project, service); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	path := ServicePath(org, project, service) + "/config.yaml"
+	raw, err := s.repo.ReadFileAtCommit(version, path)
+	if err != nil {
+		if errors.Is(err, gitops.ErrFileNotFoundAtCommit) {
+			return &ServiceData{ConfigResourceVersion: version}, nil
+		}
+		if errors.Is(err, gitops.ErrCommitNotFound) {
+			return nil, apperror.Wrap(apperror.CodeNotFound, "historical version not found", err)
+		}
+		return nil, apperror.Wrap(apperror.CodeInternal, "read historical config.yaml", err)
+	}
+	cfg, err := parser.ParseConfig(raw)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "parse historical config.yaml", err)
+	}
+	d := &ServiceData{
+		Config:                cfg,
+		ConfigResourceVersion: version,
+		configDigest:          digestBytes(raw),
+	}
+	applyMetadataUpdatedAt(d, cfg.Metadata.UpdatedAt)
+	return d, nil
+}
+
+// GetInheritedConfigAtVersion returns config.yaml overlaid with defaults as
+// they existed at a Git commit. The service must exist in the current snapshot,
+// matching GetConfigAtVersion's path-safety boundary.
+func (s *Store) GetInheritedConfigAtVersion(
+	ctx context.Context,
+	org, project, service, version string,
+) (*ServiceData, error) {
+	d, err := s.GetConfigAtVersion(ctx, org, project, service, version)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	key := ServiceKey{Org: org, Project: project, Service: service}
+	defaults, err := s.defaultsAtVersion(version, key)
+	if err != nil {
+		return nil, err
+	}
+	applyInheritedFields(key, d, defaults)
+	return d, nil
+}
+
+// GetEnvVarsAtVersion returns env_vars.yaml for a service as it existed at a
+// Git commit. Secret value resolution is intentionally handled only for the
+// current snapshot by the HTTP layer.
+func (s *Store) GetEnvVarsAtVersion(ctx context.Context, org, project, service, version string) (*ServiceData, error) {
+	if version == "" {
+		return nil, apperror.New(apperror.CodeValidation, "version is required")
+	}
+	if _, err := s.GetConfig(ctx, org, project, service); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	path := ServicePath(org, project, service) + "/env_vars.yaml"
+	raw, err := s.repo.ReadFileAtCommit(version, path)
+	if err != nil {
+		if errors.Is(err, gitops.ErrFileNotFoundAtCommit) {
+			return &ServiceData{EnvVarsResourceVersion: version}, nil
+		}
+		if errors.Is(err, gitops.ErrCommitNotFound) {
+			return nil, apperror.Wrap(apperror.CodeNotFound, "historical version not found", err)
+		}
+		return nil, apperror.Wrap(apperror.CodeInternal, "read historical env_vars.yaml", err)
+	}
+	envVars, err := parser.ParseEnvVars(raw)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "parse historical env_vars.yaml", err)
+	}
+	d := &ServiceData{
+		EnvVars:                envVars,
+		EnvVarsResourceVersion: version,
+		envVarsDigest:          digestBytes(raw),
+	}
+	applyMetadataUpdatedAt(d, envVars.Metadata.UpdatedAt)
+	return d, nil
+}
+
+// GetInheritedEnvVarsAtVersion returns env_vars.yaml overlaid with defaults as
+// they existed at a Git commit. Secret values are still resolved only for the
+// current snapshot by the HTTP layer.
+func (s *Store) GetInheritedEnvVarsAtVersion(
+	ctx context.Context,
+	org, project, service, version string,
+) (*ServiceData, error) {
+	d, err := s.GetEnvVarsAtVersion(ctx, org, project, service, version)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	key := ServiceKey{Org: org, Project: project, Service: service}
+	defaults, err := s.defaultsAtVersion(version, key)
+	if err != nil {
+		return nil, err
+	}
+	applyInheritedFields(key, d, defaults)
+	return d, nil
+}
+
+// History returns service-scoped Git history entries with optional file,
+// limit, and before-cursor filtering.
+func (s *Store) History(ctx context.Context, opts HistoryOptions) ([]HistoryEntry, error) {
+	if opts.Org == "" || opts.Project == "" || opts.Service == "" {
+		return nil, apperror.New(apperror.CodeValidation, "org, project and service are required")
+	}
+	if opts.Limit <= 0 {
+		return nil, apperror.New(apperror.CodeValidation, "limit must be greater than 0")
+	}
+	if opts.File != "" && !validHistoryFile(opts.File) {
+		return nil, apperror.New(apperror.CodeValidation, "file must be one of config, env_vars, or secrets")
+	}
+	if _, err := s.GetConfig(ctx, opts.Org, opts.Project, opts.Service); err != nil {
+		return nil, err
+	}
+
+	var entries []HistoryEntry
+	beforeSeen := opts.Before == ""
+	err := s.repo.IterateServiceHistory(ctx, opts.Org, opts.Project, opts.Service, func(entry gitops.ServiceHistoryEntry) error {
+		if !beforeSeen {
+			if entry.Version == opts.Before {
+				beforeSeen = true
+			}
+			return nil
+		}
+		if !historyEntryMatchesFile(entry, opts.File) {
+			return nil
+		}
+
+		entries = append(entries, HistoryEntry{
+			Version:      entry.Version,
+			Message:      entry.Message,
+			Author:       entry.Author,
+			Timestamp:    entry.Timestamp,
+			FilesChanged: historyChangedPaths(entry.FilesChanged),
+		})
+		if len(entries) >= opts.Limit {
+			return errStopHistory
+		}
+		return nil
+	})
+	if errors.Is(err, errStopHistory) {
+		return entries, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func historyEntryMatchesFile(entry gitops.ServiceHistoryEntry, file string) bool {
+	if file == "" {
+		return true
+	}
+	for _, change := range entry.FilesChanged {
+		if historyChangeMatchesFile(change, file) {
+			return true
+		}
+	}
+	return false
+}
+
+func validHistoryFile(file string) bool {
+	switch file {
+	case "config", "env_vars", "secrets":
+		return true
+	default:
+		return false
+	}
+}
+
+func historyChangeMatchesFile(change gitops.ServiceFileChange, file string) bool {
+	switch file {
+	case "config":
+		return change.Kind == gitops.ServiceFileConfig
+	case "env_vars":
+		return change.Kind == gitops.ServiceFileEnvVars
+	case "secrets":
+		return change.Kind == gitops.ServiceFileSecrets || change.Kind == gitops.ServiceFileSealedSecret
+	default:
+		return false
+	}
+}
+
+func historyChangedPaths(changes []gitops.ServiceFileChange) []string {
+	paths := make([]string, len(changes))
+	for i, change := range changes {
+		paths[i] = change.Path
+	}
+	return paths
 }
 
 // ListOrgs returns all known org names.
@@ -250,6 +604,326 @@ func (s *Store) ListServices(org, project string) []ServiceInfo {
 	return result
 }
 
+// PrepareRevert validates a target commit and builds the service-file restore
+// plan without mutating Git or the in-memory snapshot.
+func (s *Store) PrepareRevert(ctx context.Context, req *RevertRequest) (*RevertPlan, error) {
+	if req == nil {
+		return nil, apperror.New(apperror.CodeValidation, "revert request is required")
+	}
+	if req.Org == "" || req.Project == "" || req.Service == "" {
+		return nil, apperror.New(apperror.CodeValidation, "org, project and service are required")
+	}
+	if req.TargetVersion == "" {
+		return nil, apperror.New(apperror.CodeValidation, "target_version is required")
+	}
+	if err := validateName("org", req.Org); err != nil {
+		return nil, err
+	}
+	if err := validateName("project", req.Project); err != nil {
+		return nil, err
+	}
+	if err := validateName("service", req.Service); err != nil {
+		return nil, err
+	}
+	if _, err := s.GetConfig(ctx, req.Org, req.Project, req.Service); err != nil {
+		return nil, err
+	}
+
+	targetFiles, err := s.repo.ReadServiceFilesAtCommit(ctx, req.TargetVersion, req.Org, req.Project, req.Service)
+	if err != nil {
+		if errors.Is(err, gitops.ErrCommitNotFound) {
+			return nil, apperror.Wrap(apperror.CodeNotFound, "target version not found", err)
+		}
+		return nil, apperror.Wrap(apperror.CodeInternal, "read target service files", err)
+	}
+	changedService, err := s.targetVersionChangedService(ctx, req)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "validate target service history", err)
+	}
+	if !changedService {
+		return nil, apperror.New(apperror.CodeNotFound, "target version did not change service files")
+	}
+	if len(targetFiles) == 0 {
+		return nil, apperror.New(apperror.CodeNotFound, "target version has no service files")
+	}
+
+	currentFiles, err := s.repo.ReadServiceFilesAtCommit(ctx, s.HeadVersion(), req.Org, req.Project, req.Service)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "read current service files", err)
+	}
+
+	targetByPath := serviceFileContentsByPath(targetFiles)
+	currentByPath := serviceFileContentsByPath(currentFiles)
+	restoredFiles := sortedMapKeys(targetByPath)
+	deletedFiles := serviceFilesMissingFromTarget(currentByPath, targetByPath)
+	svcPath := ServicePath(req.Org, req.Project, req.Service)
+	files := make(map[string][]byte, len(targetByPath))
+	for _, rel := range restoredFiles {
+		files[filepath.ToSlash(filepath.Join(svcPath, rel))] = append([]byte(nil), targetByPath[rel]...)
+	}
+
+	msg := strings.TrimSpace(req.Message)
+	if msg == "" {
+		msg = "Rollback to " + req.TargetVersion
+	}
+
+	return &RevertPlan{
+		Org:           req.Org,
+		Project:       req.Project,
+		Service:       req.Service,
+		TargetVersion: req.TargetVersion,
+		Message:       msg,
+		Files:         files,
+		RestoredFiles: restoredFiles,
+		DeletedFiles:  deletedFiles,
+		Noop:          serviceFilesEqual(currentByPath, targetByPath),
+	}, nil
+}
+
+// ApplyRevert applies a validated restore plan as a new forward-only commit,
+// then applies restored SealedSecret manifests and refreshes the serving
+// snapshot.
+func (s *Store) ApplyRevert(ctx context.Context, req *RevertRequest) (*RevertResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	plan, err := s.PrepareRevert(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if plan.Noop {
+		hash, updated, err := s.repo.Pull(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if updated {
+			slog.Info("git pull before revert no-op decision: detected changes", "hash", hash)
+		} else {
+			slog.Debug("git pull before revert no-op decision: already up to date; force reloading", "hash", hash)
+		}
+		if err := s.reloadUnlocked(ctx); err != nil {
+			currentFiles, readErr := s.repo.ReadServiceFilesAtCommit(ctx, hash, req.Org, req.Project, req.Service)
+			if readErr != nil {
+				return nil, err
+			}
+			if serviceFilesEqual(serviceFileContentsByPath(currentFiles), revertPlanFilesByPath(plan)) {
+				return nil, err
+			}
+			slog.Warn("reload before revert no-op decision failed; proceeding with revert because git HEAD differs from target",
+				"hash", hash,
+				"err", err)
+			plan.Noop = false
+		} else {
+			plan, err = s.PrepareRevert(ctx, req)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	result := &RevertResult{
+		TargetVersion: plan.TargetVersion,
+		UpdatedAt:     time.Now().UTC(),
+		RestoredFiles: append([]string(nil), plan.RestoredFiles...),
+		DeletedFiles:  append([]string(nil), plan.DeletedFiles...),
+		Noop:          plan.Noop,
+	}
+	if plan.Noop {
+		result.Version = s.HeadVersion()
+		return result, nil
+	}
+
+	sealedManifests, err := sealedManifestsFromRevertPlan(plan)
+	if err != nil {
+		return nil, err
+	}
+	if len(sealedManifests) > 0 && s.secretDeps.Applier == nil {
+		return nil, apperror.New(apperror.CodeValidation, "secret applier is not configured")
+	}
+
+	hash, deletedFiles, err := s.repo.RestoreServiceFilesAndPush(
+		ctx,
+		plan.Message,
+		plan.Org,
+		plan.Project,
+		plan.Service,
+		plan.Files,
+	)
+	if err != nil {
+		return nil, err
+	}
+	result.Version = hash
+	result.DeletedFiles = deletedFiles
+
+	if len(sealedManifests) > 0 {
+		if err := applySealedManifests(context.WithoutCancel(ctx), s.secretDeps.Applier, sealedManifests); err != nil {
+			slog.Error("apply sealed secrets after revert failed", "err", err)
+			result.ApplyFailed = true
+			result.ApplyError = err.Error()
+		}
+	}
+
+	if err := s.reloadUnlocked(ctx); err != nil {
+		slog.Error("reload after revert failed; serving stale snapshot until next successful reload", "err", err)
+		result.ReloadFailed = true
+		result.ReloadError = err.Error()
+	}
+	return result, nil
+}
+
+func sealedManifestsFromRevertPlan(plan *RevertPlan) ([]secret.SealedManifest, error) {
+	svcPath := ServicePath(plan.Org, plan.Project, plan.Service)
+	var manifests []secret.SealedManifest
+	for _, rel := range plan.RestoredFiles {
+		if !strings.HasPrefix(rel, "sealed-secrets/") {
+			continue
+		}
+		repoPath := filepath.ToSlash(filepath.Join(svcPath, rel))
+		data, ok := plan.Files[repoPath]
+		if !ok {
+			return nil, apperror.New(apperror.CodeInternal,
+				fmt.Sprintf("restored sealed-secret file %q missing payload", rel))
+		}
+		manifest, err := sealedManifestFromRevertFile(rel, repoPath, data)
+		if err != nil {
+			return nil, err
+		}
+		manifests = append(manifests, manifest)
+	}
+	return manifests, nil
+}
+
+func sealedManifestFromRevertFile(rel, repoPath string, data []byte) (secret.SealedManifest, error) {
+	if !strings.HasPrefix(rel, "sealed-secrets/") {
+		return secret.SealedManifest{}, apperror.New(apperror.CodeInternal,
+			fmt.Sprintf("sealed-secret path %q is not supported for apply", rel))
+	}
+
+	namespace, name, err := sealedManifestIdentityFromYAML(data)
+	pathNamespace, pathName, pathOK := sealedManifestIdentityFromPath(rel)
+	if err != nil {
+		if !pathOK {
+			return secret.SealedManifest{}, apperror.Wrap(apperror.CodeInternal,
+				fmt.Sprintf("read sealed-secret metadata from %q", rel), err)
+		}
+		namespace, name = pathNamespace, pathName
+	} else {
+		if namespace == "" && pathOK {
+			namespace = pathNamespace
+		}
+		if name == "" && pathOK {
+			name = pathName
+		}
+	}
+	if namespace == "" || name == "" {
+		return secret.SealedManifest{}, apperror.New(apperror.CodeInternal,
+			fmt.Sprintf("sealed-secret path %q requires metadata.name and metadata.namespace for apply", rel))
+	}
+	return secret.SealedManifest{
+		Namespace: namespace,
+		Name:      name,
+		Path:      repoPath,
+		YAML:      append([]byte(nil), data...),
+	}, nil
+}
+
+func sealedManifestIdentityFromYAML(data []byte) (namespace, name string, err error) {
+	var doc struct {
+		Metadata struct {
+			Name      string `yaml:"name"`
+			Namespace string `yaml:"namespace"`
+		} `yaml:"metadata"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return "", "", err
+	}
+	namespace = strings.TrimSpace(doc.Metadata.Namespace)
+	name = strings.TrimSpace(doc.Metadata.Name)
+	return namespace, name, nil
+}
+
+func sealedManifestIdentityFromPath(rel string) (namespace, name string, ok bool) {
+	parts := strings.Split(rel, "/")
+	if len(parts) != 3 || parts[0] != "sealed-secrets" || !strings.HasSuffix(parts[2], ".yaml") {
+		return "", "", false
+	}
+	name = strings.TrimSuffix(parts[2], ".yaml")
+	if parts[1] == "" || name == "" {
+		return "", "", false
+	}
+	return parts[1], name, true
+}
+
+func (s *Store) targetVersionChangedService(ctx context.Context, req *RevertRequest) (bool, error) {
+	found := false
+	err := s.repo.IterateServiceHistory(ctx, req.Org, req.Project, req.Service, func(entry gitops.ServiceHistoryEntry) error {
+		if entry.Version == req.TargetVersion {
+			found = true
+			return errStopHistory
+		}
+		return nil
+	})
+	if errors.Is(err, errStopHistory) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return found, nil
+}
+
+func serviceFileContentsByPath(files []gitops.ServiceFileContent) map[string][]byte {
+	out := make(map[string][]byte, len(files))
+	for _, file := range files {
+		out[file.Path] = append([]byte(nil), file.Data...)
+	}
+	return out
+}
+
+func revertPlanFilesByPath(plan *RevertPlan) map[string][]byte {
+	out := make(map[string][]byte, len(plan.Files))
+	svcPath := ServicePath(plan.Org, plan.Project, plan.Service)
+	for repoPath, data := range plan.Files {
+		if rel, ok := serviceRelativePath(svcPath, repoPath); ok {
+			out[rel] = append([]byte(nil), data...)
+		}
+	}
+	return out
+}
+
+func sortedMapKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func serviceFilesMissingFromTarget(current, target map[string][]byte) []string {
+	var deleted []string
+	for path := range current {
+		if _, ok := target[path]; !ok {
+			deleted = append(deleted, path)
+		}
+	}
+	sort.Strings(deleted)
+	return deleted
+}
+
+func serviceFilesEqual(current, target map[string][]byte) bool {
+	if len(current) != len(target) {
+		return false
+	}
+	for path, targetData := range target {
+		currentData, ok := current[path]
+		if !ok || !bytes.Equal(currentData, targetData) {
+			return false
+		}
+	}
+	return true
+}
+
 // ApplyChanges writes config/env_vars updates, commits, pushes, and refreshes memory.
 func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeResult, error) {
 	if req.Org == "" || req.Project == "" || req.Service == "" {
@@ -264,8 +938,39 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 	if err := validateName("service", req.Service); err != nil {
 		return nil, err
 	}
-	if req.Config == nil && req.EnvVars == nil {
-		return nil, apperror.New(apperror.CodeValidation, "at least one of config or env_vars must be provided")
+	if len(req.Secrets) > 0 {
+		defer destroySecretWrites(req.Secrets)
+	}
+	hasSecrets, err := validateSecretWrites(req.Secrets)
+	if err != nil {
+		return nil, err
+	}
+	if req.Config == nil && req.EnvVars == nil && !hasSecrets {
+		return nil, apperror.New(apperror.CodeValidation, "at least one of config, env_vars, or secrets must be provided")
+	}
+	auditResult := ""
+	auditSecretIDs := []string(nil)
+	if hasSecrets {
+		auditResult = "failure"
+		auditSecretIDs = secretWriteAuditIDs(req.Secrets)
+		defer func() {
+			s.recordSecretAudit(context.WithoutCancel(ctx), secret.AuditEvent{
+				Action:    "secret_admin_write",
+				Result:    auditResult,
+				Org:       req.Org,
+				Project:   req.Project,
+				Service:   req.Service,
+				SecretIDs: auditSecretIDs,
+			})
+		}()
+		if s.secretDeps.Sealer == nil {
+			auditResult = "configuration_error"
+			return nil, apperror.New(apperror.CodeValidation, "secret sealer is not configured")
+		}
+		if s.secretDeps.Applier == nil {
+			auditResult = "configuration_error"
+			return nil, apperror.New(apperror.CodeValidation, "secret applier is not configured")
+		}
 	}
 
 	s.mu.Lock()
@@ -274,8 +979,9 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 	svcPath := ServicePath(req.Org, req.Project, req.Service)
 	now := time.Now().UTC()
 
-	files := map[string][]byte{}
-	var writtenFiles []string
+	baseFiles := map[string][]byte{}
+	var baseWrittenFiles []string
+	var sealedManifests []secret.SealedManifest
 
 	if req.Config != nil {
 		cfg := &parser.ServiceConfig{
@@ -293,8 +999,8 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 			return nil, apperror.Wrap(apperror.CodeInternal, "marshal config.yaml", err)
 		}
 		path := filepath.Join(svcPath, "config.yaml")
-		files[path] = data
-		writtenFiles = append(writtenFiles, "config.yaml")
+		baseFiles[path] = data
+		baseWrittenFiles = append(baseWrittenFiles, "config.yaml")
 	}
 
 	if req.EnvVars != nil {
@@ -313,8 +1019,8 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 			return nil, apperror.Wrap(apperror.CodeInternal, "marshal env_vars.yaml", err)
 		}
 		path := filepath.Join(svcPath, "env_vars.yaml")
-		files[path] = data
-		writtenFiles = append(writtenFiles, "env_vars.yaml")
+		baseFiles[path] = data
+		baseWrittenFiles = append(baseWrittenFiles, "env_vars.yaml")
 	}
 
 	msg := req.Message
@@ -322,15 +1028,74 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 		msg = fmt.Sprintf("update config for %s/%s/%s", req.Org, req.Project, req.Service)
 	}
 
-	hash, err := s.repo.CommitAndPush(ctx, msg, files)
-	if err != nil {
-		return nil, err
+	var writtenFiles []string
+	hash := ""
+	var commitErr error
+	if hasSecrets {
+		sealedManifests, err = s.buildSealedManifests(ctx, req)
+		if err != nil {
+			auditResult = "seal_failed"
+			return nil, err
+		}
+		hash, commitErr = s.repo.CommitAndPushFunc(ctx, msg, func(reader gitops.FileReader) (map[string][]byte, error) {
+			files := make(map[string][]byte, len(baseFiles)+1+len(sealedManifests))
+			for path, data := range baseFiles {
+				files[path] = data
+			}
+			nextWrittenFiles := append([]string(nil), baseWrittenFiles...)
+
+			existingSecrets, err := readExistingSecrets(reader, filepath.Join(svcPath, "secrets.yaml"))
+			if err != nil {
+				return nil, err
+			}
+			sec := &parser.SecretsConfig{
+				Version: "1",
+				Secrets: mergeSecretEntries(existingSecrets, req.Secrets),
+			}
+			data, err := yaml.Marshal(sec)
+			if err != nil {
+				return nil, apperror.Wrap(apperror.CodeInternal, "marshal secrets.yaml", err)
+			}
+			path := filepath.Join(svcPath, "secrets.yaml")
+			files[path] = data
+			nextWrittenFiles = append(nextWrittenFiles, "secrets.yaml")
+
+			for _, manifest := range sealedManifests {
+				manifestPath := filepath.ToSlash(manifest.Path)
+				rel, ok := serviceRelativePath(svcPath, manifestPath)
+				if !ok {
+					return nil, apperror.New(apperror.CodeInternal,
+						fmt.Sprintf("sealed manifest path %q is outside service path", manifest.Path))
+				}
+				files[filepath.FromSlash(manifestPath)] = manifest.YAML
+				nextWrittenFiles = append(nextWrittenFiles, rel)
+			}
+			writtenFiles = nextWrittenFiles
+			return files, nil
+		})
+	} else {
+		writtenFiles = append([]string(nil), baseWrittenFiles...)
+		hash, commitErr = s.repo.CommitAndPush(ctx, msg, baseFiles)
+	}
+	if commitErr != nil {
+		if hasSecrets {
+			auditResult = "commit_failed"
+		}
+		return nil, commitErr
 	}
 
 	result := &ChangeResult{
 		Version:   hash,
 		UpdatedAt: now,
 		Files:     writtenFiles,
+	}
+
+	if len(sealedManifests) > 0 {
+		if err := applySealedManifests(context.WithoutCancel(ctx), s.secretDeps.Applier, sealedManifests); err != nil {
+			slog.Error("apply sealed secrets after commit failed", "err", err)
+			result.ApplyFailed = true
+			result.ApplyError = err.Error()
+		}
 	}
 
 	// Reload in-memory snapshot using COW. If this fails the git write has
@@ -341,8 +1106,247 @@ func (s *Store) ApplyChanges(ctx context.Context, req *ChangeRequest) (*ChangeRe
 		result.ReloadFailed = true
 		result.ReloadError = err.Error()
 	}
+	if hasSecrets {
+		auditResult = secretWriteAuditResult(result)
+	}
 
 	return result, nil
+}
+
+func readExistingSecrets(reader gitops.FileReader, path string) (*parser.SecretsConfig, error) {
+	raw, err := reader.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, apperror.Wrap(apperror.CodeInternal, "read existing secrets.yaml", err)
+	}
+	sec, err := parser.ParseSecrets(raw)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeValidation, "parse existing secrets.yaml", err)
+	}
+	return sec, nil
+}
+
+func (s *Store) buildSealedManifests(ctx context.Context, req *ChangeRequest) ([]secret.SealedManifest, error) {
+	manifests := make([]secret.SealedManifest, 0, len(req.Secrets))
+	for _, name := range sortedSecretNames(req.Secrets) {
+		write := req.Secrets[name]
+		data := make(map[string]secret.Value, len(write.Data))
+		for _, key := range sortedSecretDataKeys(write.Data) {
+			data[key] = write.Data[key]
+		}
+		manifest, err := s.secretDeps.Sealer.Seal(ctx, secret.SealRequest{
+			Org:       req.Org,
+			Project:   req.Project,
+			Service:   req.Service,
+			Namespace: write.Namespace,
+			Name:      name,
+			Data:      data,
+		})
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal,
+				fmt.Sprintf("seal secret %s/%s", write.Namespace, name), err)
+		}
+		manifests = append(manifests, manifest)
+	}
+	return manifests, nil
+}
+
+type secretPointer struct {
+	namespace string
+	name      string
+	key       string
+}
+
+func mergeSecretEntries(existing *parser.SecretsConfig, writes map[string]SecretWrite) []parser.SecretEntry {
+	byPointer := map[secretPointer]parser.SecretEntry{}
+	idInUse := map[string]secretPointer{}
+	if existing != nil {
+		for _, entry := range existing.Secrets {
+			ptr := secretPointer{
+				namespace: entry.K8sSecret.Namespace,
+				name:      entry.K8sSecret.Name,
+				key:       entry.K8sSecret.Key,
+			}
+			byPointer[ptr] = entry
+			if entry.ID != "" {
+				idInUse[entry.ID] = ptr
+			}
+		}
+	}
+
+	for _, name := range sortedSecretNames(writes) {
+		write := writes[name]
+		for _, key := range sortedSecretDataKeys(write.Data) {
+			ptr := secretPointer{namespace: write.Namespace, name: name, key: key}
+			if _, ok := byPointer[ptr]; ok {
+				continue
+			}
+			id := uniqueSecretID(write.Namespace, name, key, idInUse)
+			entry := parser.SecretEntry{
+				ID: id,
+				K8sSecret: parser.K8sSecret{
+					Name:      name,
+					Namespace: write.Namespace,
+					Key:       key,
+				},
+			}
+			byPointer[ptr] = entry
+			idInUse[id] = ptr
+		}
+	}
+
+	entries := make([]parser.SecretEntry, 0, len(byPointer))
+	for _, entry := range byPointer {
+		entries = append(entries, entry)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].ID != entries[j].ID {
+			return entries[i].ID < entries[j].ID
+		}
+		if entries[i].K8sSecret.Namespace != entries[j].K8sSecret.Namespace {
+			return entries[i].K8sSecret.Namespace < entries[j].K8sSecret.Namespace
+		}
+		if entries[i].K8sSecret.Name != entries[j].K8sSecret.Name {
+			return entries[i].K8sSecret.Name < entries[j].K8sSecret.Name
+		}
+		return entries[i].K8sSecret.Key < entries[j].K8sSecret.Key
+	})
+	return entries
+}
+
+func uniqueSecretID(namespace, name, key string, idInUse map[string]secretPointer) string {
+	candidates := []string{
+		key,
+		name + "-" + key,
+		namespace + "-" + name + "-" + key,
+	}
+	for _, id := range candidates {
+		if _, ok := idInUse[id]; !ok {
+			return id
+		}
+	}
+	base := candidates[len(candidates)-1]
+	for i := 2; ; i++ {
+		id := fmt.Sprintf("%s-%d", base, i)
+		if _, ok := idInUse[id]; !ok {
+			return id
+		}
+	}
+}
+
+func validateSecretWrites(writes map[string]SecretWrite) (bool, error) {
+	if len(writes) == 0 {
+		return false, nil
+	}
+	for name, write := range writes {
+		if err := validateK8sDNSSubdomain("secret name", name); err != nil {
+			return false, err
+		}
+		if err := validateK8sDNSLabel("secret namespace", write.Namespace); err != nil {
+			return false, err
+		}
+		if len(write.Data) == 0 {
+			return false, apperror.New(apperror.CodeValidation,
+				fmt.Sprintf("secret %s/%s data is required", write.Namespace, name))
+		}
+		for key := range write.Data {
+			if err := validateName("secret key", key); err != nil {
+				return false, err
+			}
+		}
+	}
+	return true, nil
+}
+
+func destroySecretWrites(writes map[string]SecretWrite) {
+	for _, write := range writes {
+		for key, value := range write.Data {
+			value.Destroy()
+			write.Data[key] = value
+		}
+	}
+}
+
+func secretWriteAuditIDs(writes map[string]SecretWrite) []string {
+	ids := make([]string, 0, len(writes))
+	for _, name := range sortedSecretNames(writes) {
+		write := writes[name]
+		ids = append(ids, write.Namespace+"/"+name)
+	}
+	return ids
+}
+
+func secretWriteAuditResult(result *ChangeResult) string {
+	switch {
+	case result.ApplyFailed && result.ReloadFailed:
+		return "apply_and_reload_failed"
+	case result.ApplyFailed:
+		return "apply_failed"
+	case result.ReloadFailed:
+		return "reload_failed"
+	default:
+		return "success"
+	}
+}
+
+func (s *Store) recordSecretAudit(ctx context.Context, event secret.AuditEvent) {
+	if event.At.IsZero() {
+		event.At = time.Now().UTC()
+	}
+	if s.secretDeps.Auditor == nil {
+		return
+	}
+	if err := s.secretDeps.Auditor.Record(ctx, event); err != nil {
+		slog.Warn("record secret audit event failed",
+			"err", err,
+			"action", event.Action,
+			"result", event.Result,
+			"org", event.Org,
+			"project", event.Project,
+			"service", event.Service,
+			"secret_ids", event.SecretIDs)
+	}
+}
+
+func applySealedManifests(ctx context.Context, applier secret.Applier, manifests []secret.SealedManifest) error {
+	var errs []string
+	for _, manifest := range manifests {
+		if err := applier.ApplySealedSecret(ctx, manifest); err != nil {
+			errs = append(errs, fmt.Sprintf("apply sealed secret %s/%s: %v", manifest.Namespace, manifest.Name, err))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func serviceRelativePath(svcPath, manifestPath string) (string, bool) {
+	prefix := filepath.ToSlash(svcPath) + "/"
+	if !strings.HasPrefix(manifestPath, prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(manifestPath, prefix), true
+}
+
+func sortedSecretNames(writes map[string]SecretWrite) []string {
+	names := make([]string, 0, len(writes))
+	for name := range writes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func sortedSecretDataKeys(data map[string]secret.Value) []string {
+	keys := make([]string, 0, len(data))
+	for key := range data {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // DeleteChanges removes a service's config files, commits, pushes, and refreshes memory.
@@ -368,18 +1372,26 @@ func (s *Store) DeleteChanges(ctx context.Context, req *DeleteRequest) (*DeleteR
 		filepath.Join(svcPath, "config.yaml"),
 		filepath.Join(svcPath, "env_vars.yaml"),
 		filepath.Join(svcPath, "secrets.yaml"),
+		filepath.Join(svcPath, "sealed-secrets"),
 	}
 
 	msg := fmt.Sprintf("delete config for %s/%s/%s", req.Org, req.Project, req.Service)
-	hash, err := s.repo.DeleteAndPush(ctx, msg, paths)
+	hash, deletedPaths, err := s.repo.DeleteAndPush(ctx, msg, paths)
 	if err != nil {
 		return nil, err
 	}
 
+	// Convert repo-relative paths to service-relative paths for the response.
+	svcRoot := ServicePath(req.Org, req.Project, req.Service) + "/"
+	var deletedFiles []string
+	for _, p := range deletedPaths {
+		rel := strings.TrimPrefix(filepath.ToSlash(p), filepath.ToSlash(svcRoot))
+		deletedFiles = append(deletedFiles, rel)
+	}
 	result := &DeleteResult{
 		Version:      hash,
 		UpdatedAt:    time.Now().UTC(),
-		DeletedFiles: []string{"config.yaml", "env_vars.yaml", "secrets.yaml"},
+		DeletedFiles: deletedFiles,
 	}
 
 	// Reload in-memory snapshot from the new HEAD so any concurrent remote
@@ -407,9 +1419,16 @@ func (s *Store) reload(ctx context.Context) error {
 // NOT swapped and the previous last-known-good view keeps serving.
 func (s *Store) reloadUnlocked(_ context.Context) error {
 	data := make(map[string]*ServiceData)
+	defaults := newDefaultsIndex()
 	var parseErrors []string
 
 	hash, err := s.repo.Snapshot(func(path string, raw []byte) error {
+		if handled, perr := parseAndStoreDefaults(path, raw, &defaults); handled {
+			if perr != nil {
+				parseErrors = append(parseErrors, fmt.Sprintf("%s: %v", path, perr))
+			}
+			return nil
+		}
 		if perr := parseAndStore(path, raw, data); perr != nil {
 			parseErrors = append(parseErrors, fmt.Sprintf("%s: %v", path, perr))
 		}
@@ -435,11 +1454,100 @@ func (s *Store) reloadUnlocked(_ context.Context) error {
 			sd.UpdatedAt = now
 		}
 	}
+	applyDefaultsInheritance(data, defaults)
+	s.applyResourceVersions(data, hash)
 
+	prevVersion := s.HeadVersion()
 	s.snapshot.Store(newSnapshot(data, hash))
 	s.lastReload.Store(&reloadState{at: time.Now(), err: nil})
+	if hash != prevVersion {
+		s.notifyVersionChange()
+	}
 	slog.Info("config store reloaded", "services", len(data), "version", hash[:min(8, len(hash))])
 	return nil
+}
+
+func (s *Store) versionChangeState(version string) (string, <-chan struct{}) {
+	s.versionWatchMu.Lock()
+	defer s.versionWatchMu.Unlock()
+	current := s.HeadVersion()
+	if current != version {
+		return current, nil
+	}
+	return current, s.versionChanged
+}
+
+func (s *Store) notifyVersionChange() {
+	s.versionWatchMu.Lock()
+	defer s.versionWatchMu.Unlock()
+	close(s.versionChanged)
+	s.versionChanged = make(chan struct{})
+}
+
+func (s *Store) applyResourceVersions(data map[string]*ServiceData, version string) {
+	prev := s.current()
+	for key, sd := range data {
+		var prevData *ServiceData
+		if prev != nil {
+			prevData = prev.data[key]
+		}
+		sd.ConfigResourceVersion = nextResourceVersion(
+			sd.Config != nil,
+			sd.configDigest,
+			version,
+			prevData,
+			func(d *ServiceData) bool { return d.Config != nil },
+			func(d *ServiceData) string { return d.configDigest },
+			func(d *ServiceData) string { return d.ConfigResourceVersion },
+		)
+		sd.EnvVarsResourceVersion = nextResourceVersion(
+			sd.EnvVars != nil,
+			sd.envVarsDigest,
+			version,
+			prevData,
+			func(d *ServiceData) bool { return d.EnvVars != nil },
+			func(d *ServiceData) string { return d.envVarsDigest },
+			func(d *ServiceData) string { return d.EnvVarsResourceVersion },
+		)
+	}
+}
+
+func nextResourceVersion(
+	present bool,
+	digest string,
+	version string,
+	prev *ServiceData,
+	prevPresent func(*ServiceData) bool,
+	prevDigest func(*ServiceData) string,
+	prevVersion func(*ServiceData) string,
+) string {
+	if prev == nil {
+		return version
+	}
+	if present {
+		if prevPresent(prev) && digest != "" && digest == prevDigest(prev) && prevVersion(prev) != "" {
+			return prevVersion(prev)
+		}
+		return version
+	}
+	if !prevPresent(prev) && prevVersion(prev) != "" {
+		return prevVersion(prev)
+	}
+	return version
+}
+
+func resourceVersion(d *ServiceData, resource, fallback string) string {
+	switch resource {
+	case "config":
+		if d.ConfigResourceVersion != "" {
+			return d.ConfigResourceVersion
+		}
+	case "env_vars":
+		if d.EnvVarsResourceVersion != "" {
+			return d.EnvVarsResourceVersion
+		}
+	}
+	return fallback
 }
 
 // parseAndStore determines the file type and updates the data map accordingly.
@@ -467,6 +1575,7 @@ func parseAndStore(path string, raw []byte, data map[string]*ServiceData) error 
 			return fmt.Errorf("parse config.yaml: %w", err)
 		}
 		sd.Config = cfg
+		sd.configDigest = digestBytes(raw)
 		applyMetadataUpdatedAt(sd, cfg.Metadata.UpdatedAt)
 	case "env_vars":
 		ev, err := parser.ParseEnvVars(raw)
@@ -474,6 +1583,7 @@ func parseAndStore(path string, raw []byte, data map[string]*ServiceData) error 
 			return fmt.Errorf("parse env_vars.yaml: %w", err)
 		}
 		sd.EnvVars = ev
+		sd.envVarsDigest = digestBytes(raw)
 		applyMetadataUpdatedAt(sd, ev.Metadata.UpdatedAt)
 	case "secrets":
 		sec, err := parser.ParseSecrets(raw)
@@ -484,6 +1594,232 @@ func parseAndStore(path string, raw []byte, data map[string]*ServiceData) error 
 	}
 
 	return nil
+}
+
+func parseAndStoreDefaults(path string, raw []byte, defaults *defaultsIndex) (bool, error) {
+	source, ok := classifyDefaultsPath(path)
+	if !ok {
+		return false, nil
+	}
+	cfg, err := parser.ParseDefaults(raw)
+	if err != nil {
+		return true, err
+	}
+	source.HasConfig = len(cfg.Config) > 0
+	source.HasEnvVars = hasEnvVars(cfg.EnvVars)
+	entry := &defaultsEntry{source: source, config: cfg}
+	switch source.Scope {
+	case DefaultsScopeGlobal:
+		defaults.global = entry
+	case DefaultsScopeOrg:
+		defaults.org[source.Org] = entry
+	case DefaultsScopeProject:
+		defaults.project[source.Org+"/"+source.Project] = entry
+	}
+	return true, nil
+}
+
+func applyDefaultsInheritance(data map[string]*ServiceData, defaults defaultsIndex) {
+	for key, sd := range data {
+		parts := strings.Split(key, "/")
+		if len(parts) != 3 {
+			continue
+		}
+		serviceKey := ServiceKey{Org: parts[0], Project: parts[1], Service: parts[2]}
+		applyInheritedFields(serviceKey, sd, defaults)
+	}
+}
+
+func (s *Store) defaultsAtVersion(version string, key ServiceKey) (defaultsIndex, error) {
+	defaults := newDefaultsIndex()
+	paths := []string{
+		"configs/_defaults/common.yaml",
+		"configs/orgs/" + key.Org + "/_defaults/common.yaml",
+		"configs/orgs/" + key.Org + "/projects/" + key.Project + "/_defaults/common.yaml",
+	}
+	for _, path := range paths {
+		raw, err := s.repo.ReadFileAtCommit(version, path)
+		if err != nil {
+			if errors.Is(err, gitops.ErrFileNotFoundAtCommit) {
+				continue
+			}
+			if errors.Is(err, gitops.ErrCommitNotFound) {
+				return defaults, apperror.Wrap(apperror.CodeNotFound, "historical version not found", err)
+			}
+			return defaults, apperror.Wrap(apperror.CodeInternal, "read historical defaults", err)
+		}
+		if _, perr := parseAndStoreDefaults(path, raw, &defaults); perr != nil {
+			return defaults, apperror.Wrap(apperror.CodeInternal, "parse historical "+path, perr)
+		}
+	}
+	return defaults, nil
+}
+
+func applyInheritedFields(key ServiceKey, sd *ServiceData, defaults defaultsIndex) {
+	entries := defaultsEntriesFor(key, defaults)
+	sources := make([]DefaultsSource, 0, len(entries))
+	for _, entry := range entries {
+		sources = append(sources, entry.source)
+	}
+	sd.InheritedSources = sources
+	sd.InheritedConfig = inheritedConfigFor(key, sd, entries)
+	sd.InheritedEnvVars = inheritedEnvVarsFor(key, sd, entries)
+}
+
+func defaultsEntriesFor(key ServiceKey, defaults defaultsIndex) []*defaultsEntry {
+	entries := make([]*defaultsEntry, 0, 3)
+	if defaults.global != nil {
+		entries = append(entries, defaults.global)
+	}
+	if entry := defaults.org[key.Org]; entry != nil {
+		entries = append(entries, entry)
+	}
+	if entry := defaults.project[key.Org+"/"+key.Project]; entry != nil {
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func inheritedConfigFor(key ServiceKey, sd *ServiceData, defaults []*defaultsEntry) *parser.ServiceConfig {
+	hasConfig := sd.Config != nil
+	merged := map[string]any{}
+	for _, entry := range defaults {
+		if len(entry.config.Config) == 0 {
+			continue
+		}
+		hasConfig = true
+		merged = deepMergeMap(merged, entry.config.Config)
+	}
+	if sd.Config != nil {
+		merged = deepMergeMap(merged, sd.Config.Config)
+	}
+	if !hasConfig {
+		return nil
+	}
+	cfg := &parser.ServiceConfig{Config: merged}
+	if sd.Config != nil {
+		cfg.Version = sd.Config.Version
+		cfg.Metadata = sd.Config.Metadata
+		return cfg
+	}
+	cfg.Metadata = parser.ServiceMetadata{
+		Service: key.Service,
+		Org:     key.Org,
+		Project: key.Project,
+	}
+	return cfg
+}
+
+func inheritedEnvVarsFor(key ServiceKey, sd *ServiceData, defaults []*defaultsEntry) *parser.EnvVarsConfig {
+	hasEnvVars := sd.EnvVars != nil
+	merged := parser.EnvVars{
+		Plain:      map[string]string{},
+		SecretRefs: map[string]string{},
+	}
+	for _, entry := range defaults {
+		if !hasEnvVarsConfig(entry.config.EnvVars) {
+			continue
+		}
+		hasEnvVars = true
+		merged = mergeEnvVars(merged, entry.config.EnvVars)
+	}
+	if sd.EnvVars != nil {
+		merged = mergeEnvVars(merged, sd.EnvVars.EnvVars)
+	}
+	if !hasEnvVars {
+		return nil
+	}
+	env := &parser.EnvVarsConfig{EnvVars: merged}
+	if sd.EnvVars != nil {
+		env.Version = sd.EnvVars.Version
+		env.Metadata = sd.EnvVars.Metadata
+		return env
+	}
+	env.Metadata = parser.ServiceMetadata{
+		Service: key.Service,
+		Org:     key.Org,
+		Project: key.Project,
+	}
+	return env
+}
+
+func deepMergeMap(base, override map[string]any) map[string]any {
+	result := copyConfigMap(base)
+	for key, overrideValue := range override {
+		if overrideValue == nil {
+			delete(result, key)
+			continue
+		}
+		baseMap, baseIsMap := result[key].(map[string]any)
+		overrideMap, overrideIsMap := overrideValue.(map[string]any)
+		if baseIsMap && overrideIsMap {
+			result[key] = deepMergeMap(baseMap, overrideMap)
+			continue
+		}
+		result[key] = deepCopyConfigValue(overrideValue)
+	}
+	return result
+}
+
+func copyConfigMap(src map[string]any) map[string]any {
+	dst := make(map[string]any, len(src))
+	for key, value := range src {
+		dst[key] = deepCopyConfigValue(value)
+	}
+	return dst
+}
+
+func deepCopyConfigValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		return copyConfigMap(v)
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = deepCopyConfigValue(item)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func mergeEnvVars(base, override parser.EnvVars) parser.EnvVars {
+	merged := copyEnvVars(base)
+	for key, value := range override.Plain {
+		merged.Plain[key] = value
+	}
+	for key, value := range override.SecretRefs {
+		merged.SecretRefs[key] = value
+	}
+	return merged
+}
+
+func copyEnvVars(src parser.EnvVars) parser.EnvVars {
+	dst := parser.EnvVars{
+		Plain:      map[string]string{},
+		SecretRefs: map[string]string{},
+	}
+	for key, value := range src.Plain {
+		dst.Plain[key] = value
+	}
+	for key, value := range src.SecretRefs {
+		dst.SecretRefs[key] = value
+	}
+	return dst
+}
+
+func hasEnvVarsConfig(env parser.EnvVars) bool {
+	return len(env.Plain) > 0 || len(env.SecretRefs) > 0
+}
+
+func hasEnvVars(env parser.EnvVars) bool {
+	return hasEnvVarsConfig(env)
+}
+
+func digestBytes(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // applyMetadataUpdatedAt adopts iso as sd.UpdatedAt if it parses and is more
@@ -539,6 +1875,45 @@ func classifyPath(path string) (key string, fileType string, ok bool) {
 	}
 
 	return ServiceKey{Org: org, Project: proj, Service: svc}.String(), fileType, true
+}
+
+func classifyDefaultsPath(path string) (DefaultsSource, bool) {
+	path = filepath.ToSlash(path)
+	parts := strings.Split(path, "/")
+	if len(parts) == 3 && parts[0] == configsPrefix && parts[1] == "_defaults" && parts[2] == "common.yaml" {
+		return DefaultsSource{
+			Scope: DefaultsScopeGlobal,
+			Path:  path,
+		}, true
+	}
+	if len(parts) == 5 &&
+		parts[0] == configsPrefix &&
+		parts[1] == "orgs" &&
+		parts[3] == "_defaults" &&
+		parts[4] == "common.yaml" &&
+		parts[2] != "" {
+		return DefaultsSource{
+			Scope: DefaultsScopeOrg,
+			Org:   parts[2],
+			Path:  path,
+		}, true
+	}
+	if len(parts) == 7 &&
+		parts[0] == configsPrefix &&
+		parts[1] == "orgs" &&
+		parts[3] == "projects" &&
+		parts[5] == "_defaults" &&
+		parts[6] == "common.yaml" &&
+		parts[2] != "" &&
+		parts[4] != "" {
+		return DefaultsSource{
+			Scope:   DefaultsScopeProject,
+			Org:     parts[2],
+			Project: parts[4],
+			Path:    path,
+		}, true
+	}
+	return DefaultsSource{}, false
 }
 
 func keys(m map[string]struct{}) []string {

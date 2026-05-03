@@ -17,5 +17,7 @@ Files:
 | `CODE_MAP.md` | where code lives |
 | `DATA_MODEL.md` | current schema/model map |
 | `RUNTIME.md` | actual request/event flow |
-| `TESTING.md` | validation commands |
-| `OPERATIONS.md` | local run/env/debug/deploy notes |
+| `TESTING.md` | validation commands and CI check mapping |
+| `OPERATIONS.md` | local run/env/debug/deploy/CD notes |
+
+CI/CD design guidance lives in `../11_CI_CD.md`.

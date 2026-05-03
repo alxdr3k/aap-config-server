@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/aap/config-server/internal/apperror"
+	"github.com/aap/config-server/internal/metrics"
 )
 
 // isNonFastForwardPush reports whether a go-git push error signals the remote
@@ -37,6 +40,16 @@ func isNonFastForwardPush(err error) bool {
 	return strings.Contains(err.Error(), "non-fast-forward update")
 }
 
+func gitOutcome(updated bool, err error) string {
+	if err != nil {
+		return "error"
+	}
+	if updated {
+		return "updated"
+	}
+	return "success"
+}
+
 const (
 	maxPushRetries = 3
 	committerName  = "aap-config-server"
@@ -49,6 +62,57 @@ const (
 // push is rejected non-fast-forward, exercising the retry path.
 // It is nil in production.
 var afterPullHook func(attempt int)
+
+// FileReader reads files relative to the repository root.
+type FileReader interface {
+	ReadFile(path string) ([]byte, error)
+}
+
+// CommitFileBuilder builds commit files after the repository has pulled the
+// latest remote state. It is retried after non-fast-forward push rejections.
+type CommitFileBuilder func(reader FileReader) (map[string][]byte, error)
+
+// ServiceFileKind is the logical type of a config-repo file under a service.
+type ServiceFileKind string
+
+const (
+	ServiceFileConfig       ServiceFileKind = "config"
+	ServiceFileEnvVars      ServiceFileKind = "env_vars"
+	ServiceFileSecrets      ServiceFileKind = "secrets"
+	ServiceFileSealedSecret ServiceFileKind = "sealed_secret"
+)
+
+var (
+	// ErrCommitNotFound marks a historical read whose requested commit cannot
+	// be found in the local clone.
+	ErrCommitNotFound = errors.New("commit not found")
+	// ErrFileNotFoundAtCommit marks a historical read whose commit exists but
+	// the requested path did not exist in that commit.
+	ErrFileNotFoundAtCommit = errors.New("file not found at commit")
+)
+
+// ServiceFileChange is a classified file touched by a commit under a service.
+type ServiceFileChange struct {
+	// Path is relative to configs/orgs/{org}/projects/{project}/services/{service}.
+	Path string
+	Kind ServiceFileKind
+}
+
+// ServiceHistoryEntry is one git commit that changed files for a service.
+type ServiceHistoryEntry struct {
+	Version      string
+	Message      string
+	Author       string
+	Timestamp    time.Time
+	FilesChanged []ServiceFileChange
+}
+
+// ServiceFileContent is one recognized service file as it existed at a commit.
+type ServiceFileContent struct {
+	Path string
+	Kind ServiceFileKind
+	Data []byte
+}
 
 // GitRepo is the interface the store uses to interact with the git repository.
 // All path arguments are relative to the repository root.
@@ -65,9 +129,18 @@ type GitRepo interface {
 	// Returns the new HEAD commit hash.
 	CommitAndPush(ctx context.Context, msg string, files map[string][]byte) (string, error)
 
+	// CommitAndPushFunc builds files from the current working tree after each
+	// pre-commit pull, then commits and pushes them.
+	CommitAndPushFunc(ctx context.Context, msg string, build CommitFileBuilder) (string, error)
+
 	// DeleteAndPush removes the listed paths, commits, and pushes.
-	// Returns the new HEAD commit hash.
-	DeleteAndPush(ctx context.Context, msg string, paths []string) (string, error)
+	// Returns the new HEAD commit hash and the service-relative paths that were
+	// actually removed (i.e., existed before the commit).
+	DeleteAndPush(ctx context.Context, msg string, paths []string) (string, []string, error)
+
+	// RestoreServiceFilesAndPush replaces recognized files under one service
+	// path with files, commits, and pushes.
+	RestoreServiceFilesAndPush(ctx context.Context, msg, org, project, service string, files map[string][]byte) (hash string, deletedFiles []string, err error)
 
 	// ReadFile reads a file from the current working tree.
 	ReadFile(path string) ([]byte, error)
@@ -87,6 +160,14 @@ type GitRepo interface {
 
 	// ReadFileAtCommit reads a file as it existed at commitHash.
 	ReadFileAtCommit(commitHash, path string) ([]byte, error)
+
+	// ReadServiceFilesAtCommit reads recognized files under a service path as
+	// they existed at commitHash.
+	ReadServiceFilesAtCommit(ctx context.Context, commitHash, org, project, service string) ([]ServiceFileContent, error)
+
+	// IterateServiceHistory walks commits from HEAD newest-first and calls fn
+	// for commits that changed files under the service's config repo path.
+	IterateServiceHistory(ctx context.Context, org, project, service string, fn func(ServiceHistoryEntry) error) error
 
 	// LocalPath returns the absolute path of the local clone.
 	LocalPath() string
@@ -158,7 +239,12 @@ func buildAuth(opts Options) (transport.AuthMethod, error) {
 }
 
 // CloneOrOpen clones the repository if the local path is empty, or opens it.
-func (r *Repo) CloneOrOpen(ctx context.Context) error {
+func (r *Repo) CloneOrOpen(ctx context.Context) (err error) {
+	start := time.Now()
+	defer func() {
+		metrics.RecordGitOperation("clone_or_open", gitOutcome(false, err), time.Since(start))
+	}()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -191,7 +277,12 @@ func (r *Repo) CloneOrOpen(ctx context.Context) error {
 }
 
 // Pull fetches and merges remote changes.
-func (r *Repo) Pull(ctx context.Context) (string, bool, error) {
+func (r *Repo) Pull(ctx context.Context) (hash string, updated bool, err error) {
+	start := time.Now()
+	defer func() {
+		metrics.RecordGitOperation("pull", gitOutcome(updated, err), time.Since(start))
+	}()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -225,6 +316,23 @@ func (r *Repo) pull(ctx context.Context) error {
 
 // CommitAndPush writes files, commits, and pushes with retry on rejection.
 func (r *Repo) CommitAndPush(ctx context.Context, msg string, files map[string][]byte) (string, error) {
+	return r.CommitAndPushFunc(ctx, msg, func(FileReader) (map[string][]byte, error) {
+		return files, nil
+	})
+}
+
+// CommitAndPushFunc writes files built from the post-pull working tree,
+// commits, and pushes with retry on rejection.
+func (r *Repo) CommitAndPushFunc(ctx context.Context, msg string, build CommitFileBuilder) (hash string, err error) {
+	start := time.Now()
+	outcome := "success"
+	defer func() {
+		if err != nil {
+			outcome = "error"
+		}
+		metrics.RecordGitOperation("commit_and_push", outcome, time.Since(start))
+	}()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -235,6 +343,11 @@ func (r *Repo) CommitAndPush(ctx context.Context, msg string, files map[string][
 		}
 		if afterPullHook != nil {
 			afterPullHook(attempt)
+		}
+
+		files, err := build(localFileReader{root: r.localPath})
+		if err != nil {
+			return "", err
 		}
 
 		w, err := r.repo.Worktree()
@@ -261,6 +374,7 @@ func (r *Repo) CommitAndPush(ctx context.Context, msg string, files map[string][
 		})
 		if err != nil {
 			if errors.Is(err, gogit.ErrEmptyCommit) {
+				outcome = "noop"
 				h, _ := r.headHash()
 				return h, nil
 			}
@@ -275,11 +389,18 @@ func (r *Repo) CommitAndPush(ctx context.Context, msg string, files map[string][
 			return hash.String(), nil
 		}
 		if !isNonFastForwardPush(pushErr) {
+			// Terminal push error (auth, transport, etc.): reset the local commit
+			// so the local clone stays in sync with the remote. Without this the
+			// local HEAD would sit ahead of origin, causing Snapshot() to serve a
+			// commit that was never accepted by the remote.
+			if rerr := resetToParent(r.repo, w); rerr != nil {
+				slog.Error("failed to reset after terminal push error", "resetErr", rerr, "pushErr", pushErr)
+			}
 			return "", apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
 		}
 
-		// Push rejected by remote: undo the local commit so the next loop
-		// iteration starts clean from a pull.
+		// Push rejected by remote (non-fast-forward): undo the local commit so
+		// the next loop iteration starts clean from a pull.
 		slog.Warn("git push rejected, will retry after pull", "attempt", attempt+1)
 		if err := resetToParent(r.repo, w); err != nil {
 			return "", fmt.Errorf("reset after push rejection: %w", err)
@@ -289,14 +410,31 @@ func (r *Repo) CommitAndPush(ctx context.Context, msg string, files map[string][
 	return "", apperror.New(apperror.CodeGitPush, fmt.Sprintf("push failed after %d retries", maxPushRetries))
 }
 
+type localFileReader struct {
+	root string
+}
+
+func (r localFileReader) ReadFile(path string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(r.root, path))
+}
+
 // DeleteAndPush removes the listed paths, commits, and pushes.
-func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (string, error) {
+func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (hash string, deleted []string, err error) {
+	start := time.Now()
+	outcome := "success"
+	defer func() {
+		if err != nil {
+			outcome = "error"
+		}
+		metrics.RecordGitOperation("delete_and_push", outcome, time.Since(start))
+	}()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	for attempt := 0; attempt < maxPushRetries; attempt++ {
 		if err := r.pull(ctx); err != nil && !errors.Is(err, gogit.NoErrAlreadyUpToDate) {
-			return "", fmt.Errorf("pre-delete pull: %w", err)
+			return "", nil, fmt.Errorf("pre-delete pull: %w", err)
 		}
 		if afterPullHook != nil {
 			afterPullHook(attempt)
@@ -304,18 +442,141 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (s
 
 		w, err := r.repo.Worktree()
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 
+		var actuallyDeleted []string
 		for _, path := range paths {
-			fullPath := filepath.Join(r.localPath, path)
-			if err := os.RemoveAll(fullPath); err != nil && !os.IsNotExist(err) {
-				return "", fmt.Errorf("remove %s: %w", path, err)
+			targets, err := removalTargets(r.localPath, path)
+			if err != nil {
+				return "", nil, err
 			}
-			// go-git: Remove stages the deletion regardless of whether the file
-			// existed on disk.
+			fullPath := filepath.Join(r.localPath, path)
+			if len(targets) == 0 {
+				targets = []string{path}
+			}
+			for _, t := range targets {
+				if _, statErr := os.Stat(filepath.Join(r.localPath, t)); statErr == nil {
+					actuallyDeleted = append(actuallyDeleted, filepath.ToSlash(t))
+				}
+			}
+			if err := os.RemoveAll(fullPath); err != nil && !os.IsNotExist(err) {
+				return "", nil, fmt.Errorf("remove %s: %w", path, err)
+			}
+			for _, target := range targets {
+				// go-git: Remove stages the deletion regardless of whether the
+				// file existed on disk.
+				if _, err := w.Remove(target); err != nil && !errors.Is(err, object.ErrEntryNotFound) {
+					slog.Debug("git remove warning (non-fatal)", "path", target, "err", err)
+				}
+			}
+		}
+
+		commitHash, err := w.Commit(msg, &gogit.CommitOptions{
+			Author:            signature(),
+			AllowEmptyCommits: false,
+		})
+		if err != nil {
+			if errors.Is(err, gogit.ErrEmptyCommit) {
+				// Nothing was actually deleted — treat as no-op success.
+				outcome = "noop"
+				h, _ := r.headHash()
+				return h, nil, nil
+			}
+			return "", nil, fmt.Errorf("git commit delete: %w", err)
+		}
+
+		pushErr := r.repo.PushContext(ctx, &gogit.PushOptions{
+			RemoteName: "origin",
+			Auth:       r.auth,
+		})
+		if pushErr == nil {
+			return commitHash.String(), actuallyDeleted, nil
+		}
+		if !isNonFastForwardPush(pushErr) {
+			if rerr := resetToParent(r.repo, w); rerr != nil {
+				slog.Error("failed to reset after terminal push (delete) error", "resetErr", rerr, "pushErr", pushErr)
+			}
+			return "", nil, apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
+		}
+
+		slog.Warn("git push (delete) rejected, will retry", "attempt", attempt+1)
+		if err := resetToParent(r.repo, w); err != nil {
+			return "", nil, fmt.Errorf("reset after push rejection: %w", err)
+		}
+	}
+
+	return "", nil, apperror.New(apperror.CodeGitPush, fmt.Sprintf("push (delete) failed after %d retries", maxPushRetries))
+}
+
+// RestoreServiceFilesAndPush replaces recognized files under one service path,
+// commits, and pushes. It recalculates current files after every pull retry so
+// the resulting tree matches the target file set even if the remote moved.
+func (r *Repo) RestoreServiceFilesAndPush(
+	ctx context.Context,
+	msg, org, project, service string,
+	files map[string][]byte,
+) (hash string, deletedFiles []string, err error) {
+	start := time.Now()
+	outcome := "success"
+	defer func() {
+		if err != nil {
+			outcome = "error"
+		}
+		metrics.RecordGitOperation("restore_and_push", outcome, time.Since(start))
+	}()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	targetFiles := normalizeRepoFiles(files)
+	for attempt := 0; attempt < maxPushRetries; attempt++ {
+		if err := r.pull(ctx); err != nil && !errors.Is(err, gogit.NoErrAlreadyUpToDate) {
+			return "", nil, fmt.Errorf("pre-restore pull: %w", err)
+		}
+		if afterPullHook != nil {
+			afterPullHook(attempt)
+		}
+
+		w, err := r.repo.Worktree()
+		if err != nil {
+			return "", nil, err
+		}
+
+		currentFiles, err := serviceFilesInWorktree(r.localPath, org, project, service)
+		if err != nil {
+			return "", nil, err
+		}
+		var deleted []string
+		for _, path := range currentFiles {
+			if _, ok := targetFiles[path]; ok {
+				continue
+			}
+			rel, ok := serviceRelativeRepoPath(path, org, project, service)
+			if !ok {
+				continue
+			}
+			deleted = append(deleted, rel)
+			fullPath := filepath.Join(r.localPath, filepath.FromSlash(path))
+			if err := os.RemoveAll(fullPath); err != nil && !os.IsNotExist(err) {
+				return "", nil, fmt.Errorf("remove %s: %w", path, err)
+			}
 			if _, err := w.Remove(path); err != nil && !errors.Is(err, object.ErrEntryNotFound) {
 				slog.Debug("git remove warning (non-fatal)", "path", path, "err", err)
+			}
+		}
+		sort.Strings(deleted)
+
+		for path, data := range targetFiles {
+			fullPath := filepath.Join(r.localPath, filepath.FromSlash(path))
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+				return "", nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(fullPath), err)
+			}
+			if err := os.WriteFile(fullPath, data, 0o644); err != nil {
+				return "", nil, fmt.Errorf("write %s: %w", path, err)
+			}
+			if _, err := w.Add(path); err != nil {
+				return "", nil, fmt.Errorf("git add %s: %w", path, err)
 			}
 		}
 
@@ -325,11 +586,11 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (s
 		})
 		if err != nil {
 			if errors.Is(err, gogit.ErrEmptyCommit) {
-				// Nothing was actually deleted — treat as no-op success.
+				outcome = "noop"
 				h, _ := r.headHash()
-				return h, nil
+				return h, deleted, nil
 			}
-			return "", fmt.Errorf("git commit delete: %w", err)
+			return "", nil, fmt.Errorf("git commit restore: %w", err)
 		}
 
 		pushErr := r.repo.PushContext(ctx, &gogit.PushOptions{
@@ -337,23 +598,109 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (s
 			Auth:       r.auth,
 		})
 		if pushErr == nil {
-			return hash.String(), nil
+			return hash.String(), deleted, nil
 		}
 		if !isNonFastForwardPush(pushErr) {
-			return "", apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
+			if rerr := resetToParent(r.repo, w); rerr != nil {
+				slog.Error("failed to reset after terminal push (restore) error", "resetErr", rerr, "pushErr", pushErr)
+			}
+			return "", nil, apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
 		}
 
-		slog.Warn("git push (delete) rejected, will retry", "attempt", attempt+1)
+		slog.Warn("git push (restore) rejected, will retry", "attempt", attempt+1)
 		if err := resetToParent(r.repo, w); err != nil {
-			return "", fmt.Errorf("reset after push rejection: %w", err)
+			return "", nil, fmt.Errorf("reset after push rejection: %w", err)
 		}
 	}
 
-	return "", apperror.New(apperror.CodeGitPush, fmt.Sprintf("push (delete) failed after %d retries", maxPushRetries))
+	return "", nil, apperror.New(apperror.CodeGitPush, fmt.Sprintf("push (restore) failed after %d retries", maxPushRetries))
 }
 
-// ReadFile reads a file from the current working tree.
+func normalizeRepoFiles(files map[string][]byte) map[string][]byte {
+	out := make(map[string][]byte, len(files))
+	for path, data := range files {
+		clean := strings.Trim(filepath.ToSlash(filepath.Clean(path)), "/")
+		out[clean] = append([]byte(nil), data...)
+	}
+	return out
+}
+
+func serviceFilesInWorktree(root, org, project, service string) ([]string, error) {
+	serviceRoot := serviceConfigRoot(org, project, service)
+	fullRoot := filepath.Join(root, filepath.FromSlash(serviceRoot))
+	var files []string
+	err := filepath.WalkDir(fullRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		repoPath := filepath.ToSlash(rel)
+		if _, ok := ClassifyServiceFileChange(repoPath, org, project, service); ok {
+			files = append(files, repoPath)
+		}
+		return nil
+	})
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func serviceRelativeRepoPath(repoPath, org, project, service string) (string, bool) {
+	repoPath = strings.Trim(filepath.ToSlash(filepath.Clean(repoPath)), "/")
+	root := serviceConfigRoot(org, project, service)
+	rel, ok := strings.CutPrefix(repoPath, root+"/")
+	return rel, ok && rel != ""
+}
+
+func removalTargets(root, path string) ([]string, error) {
+	fullPath := filepath.Join(root, path)
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return []string{path}, nil
+	}
+
+	var targets []string
+	if err := filepath.WalkDir(fullPath, func(full string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, full)
+		if err != nil {
+			return err
+		}
+		targets = append(targets, filepath.ToSlash(rel))
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("walk %s: %w", path, err)
+	}
+	return targets, nil
+}
+
+// ReadFile reads a file from the current working tree, holding the repo lock
+// so concurrent Pull / CommitAndPush cannot mutate the worktree mid-read.
 func (r *Repo) ReadFile(path string) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return os.ReadFile(filepath.Join(r.localPath, path))
 }
 
@@ -473,7 +820,7 @@ func (r *Repo) ReadFileAtCommit(commitHash, path string) ([]byte, error) {
 	h := plumbing.NewHash(commitHash)
 	commit, err := r.repo.CommitObject(h)
 	if err != nil {
-		return nil, fmt.Errorf("commit %s not found: %w", commitHash, err)
+		return nil, fmt.Errorf("%w: commit %s: %w", ErrCommitNotFound, commitHash, err)
 	}
 	tree, err := commit.Tree()
 	if err != nil {
@@ -481,6 +828,9 @@ func (r *Repo) ReadFileAtCommit(commitHash, path string) ([]byte, error) {
 	}
 	file, err := tree.File(path)
 	if err != nil {
+		if errors.Is(err, object.ErrFileNotFound) {
+			return nil, fmt.Errorf("%w: file %s at %s: %w", ErrFileNotFoundAtCommit, path, commitHash, err)
+		}
 		return nil, fmt.Errorf("file %s at %s: %w", path, commitHash, err)
 	}
 	content, err := file.Contents()
@@ -488,6 +838,173 @@ func (r *Repo) ReadFileAtCommit(commitHash, path string) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(content), nil
+}
+
+// ReadServiceFilesAtCommit reads all recognized files under a service path as
+// they existed at the given commit.
+func (r *Repo) ReadServiceFilesAtCommit(
+	ctx context.Context,
+	commitHash, org, project, service string,
+) ([]ServiceFileContent, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	h := plumbing.NewHash(commitHash)
+	commit, err := r.repo.CommitObject(h)
+	if err != nil {
+		return nil, fmt.Errorf("%w: commit %s: %w", ErrCommitNotFound, commitHash, err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, err
+	}
+
+	serviceRoot := serviceConfigRoot(org, project, service)
+	subtree, err := tree.Tree(serviceRoot)
+	if err != nil {
+		// Service did not exist at this commit.
+		return nil, nil
+	}
+	var files []ServiceFileContent
+	err = subtree.Files().ForEach(func(file *object.File) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		repoPath := serviceRoot + "/" + file.Name
+		change, ok := ClassifyServiceFileChange(repoPath, org, project, service)
+		if !ok {
+			return nil
+		}
+		content, err := file.Contents()
+		if err != nil {
+			return err
+		}
+		files = append(files, ServiceFileContent{
+			Path: change.Path,
+			Kind: change.Kind,
+			Data: []byte(content),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files, nil
+}
+
+// IterateServiceHistory walks commits from HEAD newest-first and emits only
+// commits that changed recognized files under the requested service path.
+// fn is called outside the repo lock so fn may safely call other Repo
+// methods (e.g. ReadFileAtCommit). Return an error from fn to stop early.
+func (r *Repo) IterateServiceHistory(ctx context.Context, org, project, service string, fn func(ServiceHistoryEntry) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Capture HEAD hash under the lock (brief; just a ref read).
+	// Commit object reads (Stats, tree walks) are pure CAS lookups on
+	// immutable objects and do not need the repo mutex.
+	r.mu.Lock()
+	head, err := r.repo.Head()
+	r.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("git head: %w", err)
+	}
+
+	iter, err := r.repo.Log(&gogit.LogOptions{
+		From:  head.Hash(),
+		Order: gogit.LogOrderCommitterTime,
+	})
+	if err != nil {
+		return fmt.Errorf("git log: %w", err)
+	}
+	defer iter.Close()
+
+	return iter.ForEach(func(commit *object.Commit) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		files, err := serviceFilesChangedInCommit(commit, org, project, service)
+		if err != nil {
+			return err
+		}
+		if len(files) == 0 {
+			return nil
+		}
+		author := commit.Author.Email
+		if author == "" {
+			author = commit.Author.Name
+		}
+		return fn(ServiceHistoryEntry{
+			Version:      commit.Hash.String(),
+			Message:      strings.TrimSpace(commit.Message),
+			Author:       author,
+			Timestamp:    commit.Author.When.UTC(),
+			FilesChanged: files,
+		})
+	})
+}
+
+func serviceFilesChangedInCommit(commit *object.Commit, org, project, service string) ([]ServiceFileChange, error) {
+	stats, err := commit.Stats()
+	if err != nil {
+		return nil, fmt.Errorf("commit stats %s: %w", commit.Hash.String(), err)
+	}
+
+	seen := make(map[string]ServiceFileChange)
+	for _, stat := range stats {
+		change, ok := ClassifyServiceFileChange(stat.Name, org, project, service)
+		if !ok {
+			continue
+		}
+		seen[change.Path] = change
+	}
+
+	changes := make([]ServiceFileChange, 0, len(seen))
+	for _, change := range seen {
+		changes = append(changes, change)
+	}
+	sort.Slice(changes, func(i, j int) bool {
+		return changes[i].Path < changes[j].Path
+	})
+	return changes, nil
+}
+
+// ClassifyServiceFileChange maps a repository path to the logical service
+// file kind it changes. Paths outside the service root, including sibling
+// services with a shared prefix, return ok=false.
+func ClassifyServiceFileChange(repoPath, org, project, service string) (change ServiceFileChange, ok bool) {
+	repoPath = strings.Trim(filepath.ToSlash(filepath.Clean(repoPath)), "/")
+	root := serviceConfigRoot(org, project, service)
+	rel, ok := strings.CutPrefix(repoPath, root+"/")
+	if !ok || rel == "" {
+		return ServiceFileChange{}, false
+	}
+
+	switch rel {
+	case "config.yaml":
+		return ServiceFileChange{Path: rel, Kind: ServiceFileConfig}, true
+	case "env_vars.yaml":
+		return ServiceFileChange{Path: rel, Kind: ServiceFileEnvVars}, true
+	case "secrets.yaml":
+		return ServiceFileChange{Path: rel, Kind: ServiceFileSecrets}, true
+	default:
+		if strings.HasPrefix(rel, "sealed-secrets/") {
+			return ServiceFileChange{Path: rel, Kind: ServiceFileSealedSecret}, true
+		}
+		return ServiceFileChange{}, false
+	}
+}
+
+func serviceConfigRoot(org, project, service string) string {
+	return strings.Join([]string{
+		"configs", "orgs", org, "projects", project, "services", service,
+	}, "/")
 }
 
 // LocalPath returns the absolute filesystem path of the local clone.

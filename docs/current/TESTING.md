@@ -2,11 +2,22 @@
 
 Status: active.
 
+## Testing policy
+
+- Behavior changes need verification evidence.
+- Prefer test-first for bug fixes and clear behavior changes when a concise
+  failing test can express the target behavior.
+- Otherwise add or update tests in the same slice as the implementation.
+- Bug fixes should leave regression coverage unless impractical.
+- If automated coverage is not practical, record the manual check, eval, or
+  reason.
+
+
 ## Install
 
 Prerequisites:
 
-- Go 1.24+; `go.mod` pins `toolchain go1.24.7`.
+- Go 1.26+; `go.mod` pins `toolchain go1.26.2`.
 - `golangci-lint` only if running `make lint` locally.
 
 For a repo-local Go toolchain and caches, source the local dev environment:
@@ -15,9 +26,9 @@ For a repo-local Go toolchain and caches, source the local dev environment:
 . scripts/dev-env.sh
 ```
 
-This expects Go at `.tools/go` and keeps `GOCACHE`, `GOMODCACHE`, and `GOPATH`
-under `.cache/`. It also sets `GOTOOLCHAIN=local` so Go does not auto-install a
-different toolchain outside the repo.
+This expects Go at `.tools/go` and keeps `GOCACHE`, `GOMODCACHE`, `GOPATH`, and
+`GOLANGCI_LINT_CACHE` under `.cache/`. It also sets `GOTOOLCHAIN=local` so Go
+does not auto-install a different toolchain outside the repo.
 
 ## Build
 
@@ -29,6 +40,7 @@ Equivalent:
 
 ```bash
 go build -o bin/config-server ./cmd/config-server
+go build -o bin/config-agent ./cmd/config-agent
 ```
 
 ## Typecheck
@@ -80,7 +92,39 @@ Equivalent:
 go test -tags=integration ./... -timeout 120s
 ```
 
+Integration tests live in `internal/integration/` under the `//go:build integration`
+build tag. The harness uses only local-filesystem Git repos (via `go-git`), an
+`httptest.Server` as a fake Console, and in-memory fake Sealer/Applier adapters —
+no live Kubernetes cluster or network access is required. Covered scenarios:
+
+**Harness scenarios** (`harness_integration_test.go`):
+
+- Startup/load from a fake local Git repo with seeded config/env files.
+- Console App Registry bootstrap through a fake HTTP server (verifies `apps_loaded` and `status: ok` in `/api/v1/status`).
+- Admin config write through the full HTTP handler → store → Git commit → reload chain.
+- Admin env_vars write through the same pipeline.
+- Admin secret write with fake Sealer/Applier adapters (verifies namespace, name, and sealed key).
+- Snapshot visibility after an out-of-band Git push (bypasses Store, asserts `ReloadFromRepo` returns `updated=true`).
+
+**Load/concurrency profiles** (`load_concurrency_integration_test.go`):
+
+- Concurrent admin config writes (8 goroutines) — exercises ADR-005 global store mutex under load.
+- Concurrent admin env-var writes (8 goroutines) — same serialization boundary for env-var path.
+- Concurrent watch unblock-on-write (6 watchers) — all long-poll watchers receive HTTP 200 when a single write advances the version.
+- Concurrent Config Agent polling (16 agents × 5 polls) — read-path concurrency floor with snapshot serving.
+- Concurrent mixed reads/writes (4 writers + 12 readers) — interleaved read/write concurrency under the global mutex.
+
+All integration scenarios are fully hermetic and pass under `make test-integration`. Note: `make test-race` does not include the `-tags=integration` build tag, so integration tests (including load/concurrency profiles) are not executed by that target.
+
 ## E2E tests
+
+`internal/agent/e2e_smoke_test.go` covers the Config Agent
+fetch/render/apply/rollout smoke path with fake Config Server and Kubernetes
+clients (no live cluster required). The smoke test is fully hermetic and runs
+unconditionally under `make test` / `make test-race` / `go test ./...`.
+
+The `make test-e2e` target (and the `e2e` build tag) is reserved for future
+cluster-dependent E2E suites:
 
 ```bash
 make test-e2e
@@ -91,8 +135,6 @@ Equivalent:
 ```bash
 go test -tags=e2e ./... -timeout 300s
 ```
-
-No dedicated e2e test package is currently present.
 
 ## Coverage
 
@@ -110,14 +152,32 @@ No database or schema migration command is currently defined.
 
 `.github/workflows/ci.yml` runs:
 
-- `golangci/golangci-lint-action`
+- `golangci-lint run ./...` using `golangci-lint v2.11.4` built by the
+  workflow Go toolchain
 - `go vet ./...`
 - `go test -race ./... -timeout 60s`
 - `govulncheck`
 
+## CI / required checks
+
+| Check | Local command | CI workflow / job | Required? | Notes |
+|---|---|---|---|---|
+| lint | `make lint` | `.github/workflows/ci.yml` | yes | Uses `golangci-lint`. |
+| vet | `go vet ./...` | `.github/workflows/ci.yml` | yes | No separate Make target currently defined. |
+| race tests | `make test-race` | `.github/workflows/ci.yml` | yes | Main automated behavior gate. |
+| vuln scan | `govulncheck ./...` | `.github/workflows/ci.yml` | yes | Run via CI. |
+| docs freshness | n/a | `.github/workflows/doc-freshness.yml` | no | Soft warning only. |
+
+The active CI workflow runs on pull requests and direct pushes to `main` or
+`dev`.
+
+CI/CD design guidance lives in `docs/11_CI_CD.md`.
+
 ## Before opening a PR
 
 - Run `make test`.
+- Run `make test-e2e` when changing Config Agent image/deployment/e2e smoke
+  behavior.
 - Run `make test-race` for behavior/concurrency changes.
 - Run `make lint` if `golangci-lint` is installed.
 - Update relevant docs if behavior/schema/runtime changed.

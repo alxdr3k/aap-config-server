@@ -1,0 +1,92 @@
+# Generic CD skeleton.
+#
+# Copy to `.github/workflows/cd.yml`, then adapt it to the deployment platform.
+# Keep production deployments protected with GitHub environments or the
+# equivalent control in the external CD system.
+
+name: CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: "Deployment target"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      release_ref:
+        description: "Commit SHA, tag, package version, image digest, or release ID"
+        required: true
+        type: string
+  # Optional staging deploy on main. Enable only after CI and rollback are ready.
+  # push:
+  #   branches: [main]
+
+permissions:
+  contents: read
+  # Uncomment only when the project uses OIDC for cloud credentials.
+  # id-token: write
+
+concurrency:
+  group: cd-${{ inputs.target_environment || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.target_environment || 'staging' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        # This checks out deployment scripts from the workflow ref. Select the
+        # release artifact explicitly in the next step.
+
+      - name: Select release artifact
+        run: |
+          set -euo pipefail
+          echo "Replace with artifact lookup or build selection."
+          echo "Examples: container image digest, package version, static bundle, mobile build, infra plan, model version."
+          exit 1
+
+      - name: Authenticate to deployment platform
+        run: |
+          set -euo pipefail
+          echo "Replace with OIDC or platform-native authentication."
+          echo "Do not print secrets."
+          exit 1
+
+      - name: Pre-deploy checks
+        run: |
+          set -euo pipefail
+          echo "Replace with environment health, quota, lock, migration readiness, or maintenance-window checks."
+          exit 1
+
+      - name: Run migrations
+        run: |
+          set -euo pipefail
+          echo "Replace with migration command, or delete if migrations are not owned by this workflow."
+          exit 1
+
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          echo "Replace with the project's deploy command."
+          exit 1
+
+      - name: Smoke tests
+        run: |
+          set -euo pipefail
+          echo "Replace with smoke or acceptance checks for the target environment."
+          exit 1
+
+      - name: Record release
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "Replace with release annotation, deployment record, changelog update, or dashboard marker."
+          echo "Target: ${{ inputs.target_environment || 'staging' }}"
+          echo "Release ref: ${{ inputs.release_ref || github.sha }}"

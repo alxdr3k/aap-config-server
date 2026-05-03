@@ -4,19 +4,25 @@
 
 ## How to Deploy
 
-This repo currently defines the binary and Docker image build, not the full
-Helm/Kubernetes deployment.
+This repo currently defines the binaries and Docker images for the Config Server
+and Config Agent. The full Helm / Kubernetes deployment lives outside this repo.
 
 ```bash
-make build
-make docker-build
+# Build both binaries (config-server, config-agent)
+make build               # → bin/config-server, bin/config-agent
+
+# Or build images
+make docker-build        # → aap/config-server image (server only)
+make docker-build-agent  # → aap/config-agent image (dry-run only today, see README caveat)
 ```
 
-- Prerequisites: Go 1.24+, access to the config Git repository, and required runtime env vars.
+- Prerequisites: Go 1.26+, access to the config Git repository, and required runtime env vars.
 - Rollback method: roll back the deployed image or Git config repo commit
   through the owning deployment system.
 - Deployment manifests: Helm/Kubernetes manifests remain outside this repo by
-  `DEC-003`.
+  `DEC-003`. Config Server and Config Agent runtime contracts (env vars, RBAC,
+  NetworkPolicy expectations, image build targets, external manifest ownership)
+  are captured in `docs/current/OPERATIONS.md`.
 
 ## How to Run Locally
 
@@ -40,9 +46,18 @@ export ALLOW_UNAUTHENTICATED_DEV=true
 
 - Liveness: `GET /healthz`
 - Readiness: `GET /readyz`
-- Operational status: `GET /api/v1/status`
+- Operational status: `GET /api/v1/status`, including `app_registry` cache/load state.
 - Logs: JSON `slog` output on stdout.
-- Metrics: no Prometheus endpoint currently implemented.
+- Metrics: `GET /metrics` in Prometheus text format. Key families include
+  `aap_config_server_http_requests_total`,
+  `aap_config_server_http_request_duration_seconds`,
+  `aap_config_server_reload_attempts_total`,
+  `aap_config_server_git_operations_total`,
+  `aap_config_server_watch_waits_total`, and
+  `aap_config_server_degraded_state`.
+- External Git push refresh: configure the Git provider to call
+  `POST /api/v1/admin/git/webhook` with the Config Server API key. Duplicate
+  deliveries are safe; failures return `503 refresh_failed`.
 
 ## Common Incidents
 
@@ -62,6 +77,22 @@ export ALLOW_UNAUTHENTICATED_DEV=true
 - Root-cause investigation: inspect newly committed YAML and any pre-existing malformed files on the branch.
 - Related: `AC-005`, `AC-007`.
 
+### Incident: Admin secret write committed but did not apply
+
+- Symptom: `POST /api/v1/admin/changes` returns `503 committed_but_apply_failed`.
+- Detection: response includes `version`, written SealedSecret file paths, and `apply_error`.
+- Mitigation: treat Git commit as already written; fix K8s access/controller issues, then re-apply the committed SealedSecret manifest or retry the admin write. Client disconnects after commit do not cancel the server-managed apply attempt.
+- Root-cause investigation: inspect Config Server service account RBAC, SealedSecret controller availability, and the committed encrypted manifest.
+- Related: `AC-020`, `TEST-020`.
+
+### Incident: App Registry load degraded
+
+- Symptom: `/readyz` returns 200 but `/api/v1/status` reports `degraded_components: ["app_registry"]`.
+- Detection: `app_registry.status` is `degraded` and `app_registry.last_load_error` explains the Console load failure.
+- Mitigation: restore AAP Console API reachability; Console webhook retries can update changed records, and a Config Server restart reloads the full registry.
+- Root-cause investigation: inspect `CONSOLE_API_URL`, network policy, API auth, and Config Server logs for `app registry bootstrap failed`.
+- Related: `AC-021`, `TEST-021`.
+
 ### Incident: Dirty config checkout blocks snapshot
 
 - Symptom: reload fails with `configs/ worktree is dirty`.
@@ -69,6 +100,16 @@ export ALLOW_UNAUTHENTICATED_DEV=true
 - Mitigation: remove or commit out-of-band changes under `configs/`; do not serve from mutated checkout state.
 - Root-cause investigation: identify non-server processes writing into `GIT_LOCAL_PATH`.
 - Related: `AC-008`, `TEST-008`.
+
+### Incident: Git webhook refresh fails
+
+- Symptom: `POST /api/v1/admin/git/webhook` returns `503 refresh_failed`.
+- Detection: response includes `refresh_error`; metrics show the HTTP 503 and
+  reload/Git operation failure labels.
+- Mitigation: inspect Git remote reachability and config repo parse errors,
+  fix the underlying cause, then retry the webhook or call
+  `POST /api/v1/admin/reload` if an operator needs a force reparse.
+- Related: `AC-041`, `TEST-041`.
 
 ### Incident: Protected endpoint returns unauthorized
 

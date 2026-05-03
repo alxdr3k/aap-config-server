@@ -2,36 +2,93 @@ package handler_test
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aap/config-server/internal/apperror"
 	"github.com/aap/config-server/internal/handler"
+	"github.com/aap/config-server/internal/metrics"
 	"github.com/aap/config-server/internal/parser"
+	"github.com/aap/config-server/internal/registry"
+	"github.com/aap/config-server/internal/secret"
 	"github.com/aap/config-server/internal/store"
 )
 
 // --- fakes ---
 
 type fakeStore struct {
-	services               map[string]*store.ServiceData
-	version                string
-	failNextWrite          error
-	nextReloadFailed       bool
-	nextReloadErr          string
-	nextDeleteReloadFailed bool
-	nextDeleteReloadErr    string
-	degraded               bool
-	refreshErr             error
-	reloadErr              error
-	reloadUpdated          bool
-	reloadCalls            int
-	refreshCalls           int
+	services                   map[string]*store.ServiceData
+	version                    string
+	failNextWrite              error
+	nextReloadFailed           bool
+	nextReloadErr              string
+	nextApplyFailed            bool
+	nextApplyErr               string
+	nextDeleteReloadFailed     bool
+	nextDeleteReloadErr        string
+	degraded                   bool
+	refreshErr                 error
+	refreshUpdated             bool
+	reloadErr                  error
+	reloadUpdated              bool
+	reloadCalls                int
+	refreshCalls               int
+	resourceVersions           map[string]string
+	history                    []store.HistoryEntry
+	historyOpts                store.HistoryOptions
+	configAtVersion            map[string]*store.ServiceData
+	configVersionArg           string
+	inheritedConfigVersionArg  string
+	inheritedConfigAtVersion   map[string]*store.ServiceData
+	envVarsAtVersion           map[string]*store.ServiceData
+	envVarsVersionArg          string
+	inheritedEnvVarsVersionArg string
+	inheritedEnvVarsAtVersion  map[string]*store.ServiceData
+	waitVersionCalls           int
+	waitVersionArg             string
+	waitForVersionChange       func(context.Context, string) (string, bool, error)
+	lastChange                 *store.ChangeRequest
+	lastRevert                 *store.RevertRequest
+	revertResult               *store.RevertResult
+	revertErr                  error
+	sawSecretPlaintext         bool
+}
+
+type fakeVolumeReader struct {
+	values          map[secret.Reference]string
+	requests        []secret.Reference
+	refreshRequests []secret.Reference
+	err             error
+}
+
+func (f *fakeVolumeReader) Read(_ context.Context, ref secret.Reference) (secret.Value, error) {
+	f.requests = append(f.requests, ref)
+	return f.value(ref)
+}
+
+func (f *fakeVolumeReader) Refresh(_ context.Context, ref secret.Reference) (secret.Value, error) {
+	f.refreshRequests = append(f.refreshRequests, ref)
+	return f.value(ref)
+}
+
+func (f *fakeVolumeReader) value(ref secret.Reference) (secret.Value, error) {
+	if f.err != nil {
+		return secret.Value{}, f.err
+	}
+	value, ok := f.values[ref]
+	if !ok {
+		return secret.Value{}, errors.New("secret value not found")
+	}
+	return secret.NewValue([]byte(value)), nil
 }
 
 func newFakeStore() *fakeStore {
@@ -48,6 +105,80 @@ func (f *fakeStore) GetConfig(_ context.Context, org, project, service string) (
 		return nil, apperror.New(apperror.CodeNotFound, "service not found: "+key)
 	}
 	return d, nil
+}
+
+func (f *fakeStore) GetConfigAtVersion(_ context.Context, org, project, service, version string) (*store.ServiceData, error) {
+	f.configVersionArg = version
+	if _, err := f.GetConfig(context.Background(), org, project, service); err != nil {
+		return nil, err
+	}
+	if d, ok := f.configAtVersion[version]; ok {
+		return d, nil
+	}
+	return nil, apperror.New(apperror.CodeNotFound, "historical config not found")
+}
+
+func (f *fakeStore) GetInheritedConfigAtVersion(
+	_ context.Context,
+	org, project, service, version string,
+) (*store.ServiceData, error) {
+	f.inheritedConfigVersionArg = version
+	if _, err := f.GetConfig(context.Background(), org, project, service); err != nil {
+		return nil, err
+	}
+	if d, ok := f.inheritedConfigAtVersion[version]; ok {
+		return d, nil
+	}
+	return nil, apperror.New(apperror.CodeNotFound, "historical inherited config not found")
+}
+
+func (f *fakeStore) GetEnvVarsAtVersion(_ context.Context, org, project, service, version string) (*store.ServiceData, error) {
+	f.envVarsVersionArg = version
+	if _, err := f.GetConfig(context.Background(), org, project, service); err != nil {
+		return nil, err
+	}
+	if d, ok := f.envVarsAtVersion[version]; ok {
+		return d, nil
+	}
+	return nil, apperror.New(apperror.CodeNotFound, "historical env_vars not found")
+}
+
+func (f *fakeStore) GetInheritedEnvVarsAtVersion(
+	_ context.Context,
+	org, project, service, version string,
+) (*store.ServiceData, error) {
+	f.inheritedEnvVarsVersionArg = version
+	if _, err := f.GetConfig(context.Background(), org, project, service); err != nil {
+		return nil, err
+	}
+	if d, ok := f.inheritedEnvVarsAtVersion[version]; ok {
+		return d, nil
+	}
+	return nil, apperror.New(apperror.CodeNotFound, "historical inherited env_vars not found")
+}
+
+func (f *fakeStore) History(_ context.Context, opts store.HistoryOptions) ([]store.HistoryEntry, error) {
+	f.historyOpts = opts
+	if _, err := f.GetConfig(context.Background(), opts.Org, opts.Project, opts.Service); err != nil {
+		return nil, err
+	}
+	return f.history, nil
+}
+
+func (f *fakeStore) ApplyRevert(_ context.Context, req *store.RevertRequest) (*store.RevertResult, error) {
+	f.lastRevert = req
+	if f.revertErr != nil {
+		return nil, f.revertErr
+	}
+	if f.revertResult != nil {
+		return f.revertResult, nil
+	}
+	return &store.RevertResult{
+		Version:       "revertcommit",
+		TargetVersion: req.TargetVersion,
+		UpdatedAt:     time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
+		RestoredFiles: []string{"config.yaml"},
+	}, nil
 }
 
 func (f *fakeStore) ListOrgs() []string {
@@ -95,6 +226,8 @@ func (f *fakeStore) ListServices(org, project string) []store.ServiceInfo {
 }
 
 func (f *fakeStore) ApplyChanges(_ context.Context, req *store.ChangeRequest) (*store.ChangeResult, error) {
+	f.lastChange = req
+	f.sawSecretPlaintext = changeRequestContainsSecretPlaintext(req, "top-secret")
 	if f.failNextWrite != nil {
 		err := f.failNextWrite
 		f.failNextWrite = nil
@@ -109,6 +242,8 @@ func (f *fakeStore) ApplyChanges(_ context.Context, req *store.ChangeRequest) (*
 	return &store.ChangeResult{
 		Version:      f.version,
 		Files:        []string{"config.yaml"},
+		ApplyFailed:  f.nextApplyFailed,
+		ApplyError:   f.nextApplyErr,
 		ReloadFailed: f.nextReloadFailed,
 		ReloadError:  f.nextReloadErr,
 	}, nil
@@ -128,12 +263,51 @@ func (f *fakeStore) DeleteChanges(_ context.Context, req *store.DeleteRequest) (
 
 func (f *fakeStore) HeadVersion() string { return f.version }
 
+func (f *fakeStore) ResourceVersion(ctx context.Context, org, project, service, resource string) (string, string, error) {
+	d, err := f.GetConfig(ctx, org, project, service)
+	if err != nil {
+		return "", f.version, err
+	}
+	switch resource {
+	case "config":
+		if d.ConfigResourceVersion != "" {
+			return d.ConfigResourceVersion, f.version, nil
+		}
+	case "env_vars":
+		if d.EnvVarsResourceVersion != "" {
+			return d.EnvVarsResourceVersion, f.version, nil
+		}
+	}
+	if f.resourceVersions != nil {
+		if version := f.resourceVersions[resource]; version != "" {
+			return version, f.version, nil
+		}
+	}
+	return f.version, f.version, nil
+}
+
+func (f *fakeStore) WaitForVersionChange(ctx context.Context, version string) (string, bool, error) {
+	f.waitVersionCalls++
+	f.waitVersionArg = version
+	if f.waitForVersionChange != nil {
+		return f.waitForVersionChange(ctx, version)
+	}
+	if f.version != version {
+		return f.version, true, nil
+	}
+	<-ctx.Done()
+	return f.version, false, ctx.Err()
+}
+
 func (f *fakeStore) RefreshFromRepo(_ context.Context) (bool, error) {
 	f.refreshCalls++
 	if f.refreshErr != nil {
 		return false, f.refreshErr
 	}
-	return false, nil
+	if f.refreshUpdated {
+		f.version = "refreshedcommit"
+	}
+	return f.refreshUpdated, nil
 }
 
 func (f *fakeStore) ReloadFromRepo(_ context.Context) (bool, error) {
@@ -156,6 +330,17 @@ func (f *fakeStore) StatusInfo() store.StoreStatus {
 	}
 }
 
+func changeRequestContainsSecretPlaintext(req *store.ChangeRequest, plaintext string) bool {
+	for _, write := range req.Secrets {
+		for _, value := range write.Data {
+			if string(value.Bytes()) == plaintext {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 type alwaysReady struct{}
 
 func (alwaysReady) IsReady() bool { return true }
@@ -167,9 +352,13 @@ func (neverReady) IsReady() bool { return false }
 // --- test helpers ---
 
 func newServer(t *testing.T, st handler.ConfigStore) *httptest.Server {
+	return newServerWithAPIKey(t, st, "")
+}
+
+func newServerWithAPIKey(t *testing.T, st handler.ConfigStore, apiKey string, opts ...handler.Option) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	h := handler.New(st, alwaysReady{}, "")
+	h := handler.New(st, alwaysReady{}, apiKey, opts...)
 	h.Routes(mux)
 	return httptest.NewServer(mux)
 }
@@ -183,6 +372,53 @@ func get(t *testing.T, srv *httptest.Server, path string) *http.Response {
 	return resp
 }
 
+func getWithHeader(t *testing.T, srv *httptest.Server, path, name, value string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+	if err != nil {
+		t.Fatalf("new GET %s: %v", path, err)
+	}
+	req.Header.Set(name, value)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	return resp
+}
+
+func getRawWithHeaders(t *testing.T, srv *httptest.Server, path string, headers map[string]string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+	if err != nil {
+		t.Fatalf("new GET %s: %v", path, err)
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableCompression = true
+	client := &http.Client{Transport: transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	return resp
+}
+
+func getWithBearer(t *testing.T, srv *httptest.Server, path, token string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+	if err != nil {
+		t.Fatalf("new GET %s: %v", path, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	return resp
+}
+
 func postJSON(t *testing.T, srv *httptest.Server, path string, body any) *http.Response {
 	t.Helper()
 	b, err := json.Marshal(body)
@@ -190,6 +426,49 @@ func postJSON(t *testing.T, srv *httptest.Server, path string, body any) *http.R
 		t.Fatalf("marshal body: %v", err)
 	}
 	resp, err := http.Post(srv.URL+path, "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	return resp
+}
+
+func postJSONWithBearer(t *testing.T, srv *httptest.Server, path string, body any, token string) *http.Response {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+path, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("new POST %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	return resp
+}
+
+func postJSONWithHeaders(t *testing.T, srv *httptest.Server, path string, body any, headers map[string]string) *http.Response {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+path, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("new POST %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableCompression = true
+	client := &http.Client{Transport: transport}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
 	}
@@ -216,6 +495,38 @@ func decodeJSON(t *testing.T, resp *http.Response, v any) {
 	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
+}
+
+func assertRateLimited(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("want 429, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After: want 1, got %q", got)
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &body)
+	if body.Error.Code != "rate_limited" {
+		t.Fatalf("error code: want rate_limited, got %q", body.Error.Code)
+	}
+}
+
+func jsonArrayContains(values any, want string) bool {
+	list, ok := values.([]any)
+	if !ok {
+		return false
+	}
+	for _, value := range list {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // --- tests ---
@@ -253,6 +564,54 @@ func TestReadyz_NotReady(t *testing.T) {
 	resp := get(t, srv, "/readyz")
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("readyz (not ready): want 503, got %d", resp.StatusCode)
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	metrics.ResetForTest()
+	st := newFakeStore()
+	st.degraded = true
+	st.services["org/proj/svc"] = &store.ServiceData{
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{"enabled": true},
+		},
+		ConfigResourceVersion: "cfg-v2",
+		UpdatedAt:             time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC),
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/healthz")
+	_ = resp.Body.Close()
+	resp = get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config/watch?version=stale")
+	_ = resp.Body.Close()
+	resp = get(t, srv, "/metrics")
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics: want 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/plain; version=0.0.4") {
+		t.Fatalf("metrics content type = %q", got)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read metrics body: %v", err)
+	}
+	body := string(bodyBytes)
+	checks := []string{
+		`aap_config_server_http_requests_total{code="200",method="GET",route="/healthz"} 1`,
+		`aap_config_server_http_requests_total{code="200",method="GET",route="/api/v1/orgs/{org}/projects/{project}/services/{service}/config/watch"} 1`,
+		`aap_config_server_watch_waits_total{outcome="changed",resource="config"} 1`,
+		`aap_config_server_degraded_state{component="store"} 1`,
+		`aap_config_server_degraded_state{component="app_registry"} 0`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Fatalf("metrics body missing %q:\n%s", check, body)
+		}
 	}
 }
 
@@ -300,9 +659,790 @@ func TestGetConfig_Found(t *testing.T) {
 	}
 }
 
+func TestGetConfig_ETagAndIfNoneMatch(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "config-v1",
+		UpdatedAt:             time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC),
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{"router_settings": map[string]any{"num_retries": 3}},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("expected ETag")
+	}
+
+	resp = getWithHeader(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config", "If-None-Match", etag)
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("ETag"); got != etag {
+		t.Fatalf("304 ETag: got %q, want %q", got, etag)
+	}
+
+	st.services["org/proj/svc"].UpdatedAt = time.Date(2026, 4, 30, 10, 1, 0, 0, time.UTC)
+	resp = getWithHeader(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config", "If-None-Match", etag)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("updated metadata should return 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("ETag"); got == "" || got == etag {
+		t.Fatalf("updated metadata ETag should change, got %q old %q", got, etag)
+	}
+}
+
+func TestGetConfig_GzipWhenAccepted(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "config-v1",
+		UpdatedAt:             time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC),
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{"router_settings": map[string]any{"num_retries": 3}},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+	path := "/api/v1/orgs/org/projects/proj/services/svc/config"
+
+	resp := getRawWithHeaders(t, srv, path, map[string]string{"Accept-Encoding": "gzip"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding: got %q, want gzip", got)
+	}
+	if vary := strings.ToLower(resp.Header.Get("Vary")); !strings.Contains(vary, "accept-encoding") {
+		t.Fatalf("Vary should include Accept-Encoding, got %q", resp.Header.Get("Vary"))
+	}
+	gzipETag := resp.Header.Get("ETag")
+	if gzipETag == "" {
+		t.Fatal("expected gzip ETag")
+	}
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatalf("new gzip reader: %v", err)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(gz).Decode(&body); err != nil {
+		t.Fatalf("decode gzip response: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip reader: %v", err)
+	}
+	config := body["config"].(map[string]any)
+	settings := config["router_settings"].(map[string]any)
+	if settings["num_retries"] != float64(3) {
+		t.Fatalf("num_retries: got %#v", settings["num_retries"])
+	}
+
+	conditionalResp := getRawWithHeaders(t, srv, path, map[string]string{
+		"Accept-Encoding": "gzip",
+		"If-None-Match":   gzipETag,
+	})
+	if conditionalResp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", conditionalResp.StatusCode)
+	}
+	if got := conditionalResp.Header.Get("Content-Encoding"); got != "" {
+		t.Fatalf("304 should not include Content-Encoding, got %q", got)
+	}
+
+	identityResp := getRawWithHeaders(t, srv, path, nil)
+	if identityResp.StatusCode != http.StatusOK {
+		t.Fatalf("identity: want 200, got %d", identityResp.StatusCode)
+	}
+	if got := identityResp.Header.Get("Content-Encoding"); got != "" {
+		t.Fatalf("identity Content-Encoding: got %q", got)
+	}
+	if identityETag := identityResp.Header.Get("ETag"); identityETag == "" || identityETag == gzipETag {
+		t.Fatalf("identity and gzip ETags should differ, identity=%q gzip=%q", identityETag, gzipETag)
+	}
+
+	disabledResp := getRawWithHeaders(t, srv, path, map[string]string{"Accept-Encoding": "gzip;q=0, *;q=1"})
+	if disabledResp.StatusCode != http.StatusOK {
+		t.Fatalf("gzip disabled: want 200, got %d", disabledResp.StatusCode)
+	}
+	if got := disabledResp.Header.Get("Content-Encoding"); got != "" {
+		t.Fatalf("gzip q=0 should disable compression, got %q", got)
+	}
+}
+
+func TestGetConfig_ETagVariesByInheritView(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head-inherit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "raw-v1",
+		Config:                &parser.ServiceConfig{Config: map[string]any{"raw": true}},
+		InheritedSources:      []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasConfig: true}},
+		InheritedConfig:       &parser.ServiceConfig{Config: map[string]any{"raw": true, "global": true}},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	inheritedResp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config")
+	rawResp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?inherit=false")
+	inheritedETag := inheritedResp.Header.Get("ETag")
+	rawETag := rawResp.Header.Get("ETag")
+	if inheritedETag == "" || rawETag == "" {
+		t.Fatalf("expected both ETags, inherited=%q raw=%q", inheritedETag, rawETag)
+	}
+	if inheritedETag == rawETag {
+		t.Fatalf("inherit views should have distinct ETags, both %q", inheritedETag)
+	}
+}
+
+func TestPostConfigsBatch_ReturnsConfigEnvVarsAndItemErrors(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion:  "config-v1",
+		EnvVarsResourceVersion: "env-v1",
+		UpdatedAt:              time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC),
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{"router_settings": map[string]any{"num_retries": 3}},
+		},
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"LOG_LEVEL": "INFO"},
+				SecretRefs: map[string]string{"API_KEY": "litellm-api-key"},
+			},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	body := map[string]any{
+		"queries": []map[string]string{
+			{"org": "org", "project": "proj", "service": "svc"},
+			{"org": "org", "project": "proj", "service": "missing"},
+		},
+	}
+	resp := postJSONWithHeaders(t, srv, "/api/v1/configs/batch", body, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("expected ETag")
+	}
+
+	var got map[string]any
+	decodeJSON(t, resp, &got)
+	results := got["results"].([]any)
+	if len(results) != 2 {
+		t.Fatalf("results length: got %d", len(results))
+	}
+	first := results[0].(map[string]any)
+	config := first["config"].(map[string]any)["config"].(map[string]any)
+	settings := config["router_settings"].(map[string]any)
+	if settings["num_retries"] != float64(3) {
+		t.Fatalf("batch config num_retries: got %#v", settings["num_retries"])
+	}
+	envVars := first["env_vars"].(map[string]any)["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	secretRefs := envVars["secret_refs"].(map[string]any)
+	if plain["LOG_LEVEL"] != "INFO" || secretRefs["API_KEY"] != "litellm-api-key" {
+		t.Fatalf("batch env_vars: got %#v", envVars)
+	}
+	second := results[1].(map[string]any)
+	errBody := second["error"].(map[string]any)
+	if errBody["code"] != "not_found" {
+		t.Fatalf("missing service error: got %#v", errBody)
+	}
+
+	conditionalResp := postJSONWithHeaders(t, srv, "/api/v1/configs/batch", body, map[string]string{
+		"If-None-Match": etag,
+	})
+	if conditionalResp.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("want 412, got %d", conditionalResp.StatusCode)
+	}
+}
+
+func TestPostConfigsBatch_GzipAndInheritFalse(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head-inherit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion:  "raw-config-v1",
+		EnvVarsResourceVersion: "raw-env-v1",
+		UpdatedAt:              time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC),
+		Config:                 &parser.ServiceConfig{Config: map[string]any{"raw_only": true}},
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain:      map[string]string{"RAW_ONLY": "1"},
+			SecretRefs: map[string]string{"RAW_SECRET": "raw-secret"},
+		}},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasConfig: true, HasEnvVars: true}},
+		InheritedConfig: &parser.ServiceConfig{Config: map[string]any{
+			"raw_only":    true,
+			"global_only": true,
+		}},
+		InheritedEnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain:      map[string]string{"RAW_ONLY": "1", "GLOBAL_ONLY": "1"},
+			SecretRefs: map[string]string{"RAW_SECRET": "raw-secret", "GLOBAL_SECRET": "global-secret"},
+		}},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := postJSONWithHeaders(t, srv, "/api/v1/configs/batch", map[string]any{
+		"inherit": false,
+		"queries": []map[string]string{
+			{"org": "org", "project": "proj", "service": "svc"},
+		},
+	}, map[string]string{"Accept-Encoding": "gzip"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding: got %q, want gzip", got)
+	}
+	if vary := strings.ToLower(resp.Header.Get("Vary")); !strings.Contains(vary, "accept-encoding") {
+		t.Fatalf("Vary should include Accept-Encoding, got %q", resp.Header.Get("Vary"))
+	}
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatalf("new gzip reader: %v", err)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(gz).Decode(&got); err != nil {
+		t.Fatalf("decode gzip batch response: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip reader: %v", err)
+	}
+
+	result := got["results"].([]any)[0].(map[string]any)
+	config := result["config"].(map[string]any)["config"].(map[string]any)
+	if config["raw_only"] != true {
+		t.Fatalf("inherit=false should keep raw config, got %#v", config)
+	}
+	if _, ok := config["global_only"]; ok {
+		t.Fatalf("inherit=false should omit inherited config, got %#v", config)
+	}
+	envVars := result["env_vars"].(map[string]any)["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	secretRefs := envVars["secret_refs"].(map[string]any)
+	if plain["RAW_ONLY"] != "1" || secretRefs["RAW_SECRET"] != "raw-secret" {
+		t.Fatalf("inherit=false should keep raw env vars, got %#v", envVars)
+	}
+	if _, ok := plain["GLOBAL_ONLY"]; ok {
+		t.Fatalf("inherit=false should omit inherited env vars, got %#v", plain)
+	}
+}
+
+func TestPostConfigsBatch_ValidatesRequest(t *testing.T) {
+	st := newFakeStore()
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	for name, body := range map[string]any{
+		"empty queries": map[string]any{"queries": []any{}},
+		"missing org": map[string]any{"queries": []map[string]string{
+			{"project": "proj", "service": "svc"},
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := postJSON(t, srv, "/api/v1/configs/batch", body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d", resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestGetConfig_DefaultInheritUsesInheritedConfig(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head-inherit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "raw-v1",
+		Config: &parser.ServiceConfig{Config: map[string]any{
+			"service_only": true,
+		}},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasConfig: true}},
+		InheritedConfig: &parser.ServiceConfig{Config: map[string]any{
+			"service_only": true,
+			"global_only":  true,
+		}},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "head-inherit" {
+		t.Fatalf("inherited metadata.version should use head version, got %v", meta["version"])
+	}
+	config := body["config"].(map[string]any)
+	if config["global_only"] != true || config["service_only"] != true {
+		t.Fatalf("config should use inherited view, got %#v", config)
+	}
+}
+
+func TestGetConfig_InheritFalseUsesRawConfig(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "raw-v1",
+		Config: &parser.ServiceConfig{Config: map[string]any{
+			"service_only": true,
+		}},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasConfig: true}},
+		InheritedConfig: &parser.ServiceConfig{Config: map[string]any{
+			"service_only": true,
+			"global_only":  true,
+		}},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?inherit=false")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "raw-v1" {
+		t.Fatalf("raw metadata.version should use resource version, got %v", meta["version"])
+	}
+	config := body["config"].(map[string]any)
+	if _, ok := config["global_only"]; ok {
+		t.Fatalf("inherit=false should omit inherited keys, got %#v", config)
+	}
+	if config["service_only"] != true {
+		t.Fatalf("inherit=false should keep service config, got %#v", config)
+	}
+}
+
+func TestGetConfig_InvalidInherit(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?inherit=maybe")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetConfig_VersionParam(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	st.configAtVersion = map[string]*store.ServiceData{
+		"old123": {
+			Config: &parser.ServiceConfig{
+				Config: map[string]any{
+					"router_settings": map[string]any{"num_retries": 1},
+				},
+			},
+			UpdatedAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC),
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?version=old123&inherit=false")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("expected versioned config ETag")
+	}
+	conditionalResp := getWithHeader(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?version=old123&inherit=false", "If-None-Match", etag)
+	if conditionalResp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", conditionalResp.StatusCode)
+	}
+	if st.configVersionArg != "old123" {
+		t.Fatalf("version arg: got %q", st.configVersionArg)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "old123" || meta["updated_at"] != "2026-03-01T10:00:00Z" {
+		t.Fatalf("metadata: got %#v", meta)
+	}
+	config := body["config"].(map[string]any)
+	settings := config["router_settings"].(map[string]any)
+	if settings["num_retries"] != float64(1) {
+		t.Fatalf("historical num_retries: got %#v", settings["num_retries"])
+	}
+}
+
+func TestGetConfig_VersionParamDefaultInherit(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	st.inheritedConfigAtVersion = map[string]*store.ServiceData{
+		"old123": {
+			InheritedConfig: &parser.ServiceConfig{
+				Config: map[string]any{
+					"global_only": true,
+				},
+			},
+			UpdatedAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC),
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?version=old123")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.inheritedConfigVersionArg != "old123" {
+		t.Fatalf("inherited version arg: got %q", st.inheritedConfigVersionArg)
+	}
+	if st.configVersionArg != "" {
+		t.Fatalf("raw version path should not be called, got %q", st.configVersionArg)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	config := body["config"].(map[string]any)
+	if config["global_only"] != true {
+		t.Fatalf("historical inherited config: got %#v", config)
+	}
+}
+
+func TestGetHistory_Found(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	st.history = []store.HistoryEntry{
+		{
+			Version:      "v2",
+			Message:      "update config",
+			Author:       "admin@example.com",
+			Timestamp:    time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+			FilesChanged: []string{"config.yaml"},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/history?file=config&limit=1&before=v3")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.historyOpts.File != "config" || st.historyOpts.Limit != 1 || st.historyOpts.Before != "v3" {
+		t.Fatalf("history opts: got %+v", st.historyOpts)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["org"] != "org" || meta["project"] != "proj" || meta["service"] != "svc" {
+		t.Fatalf("metadata: got %#v", meta)
+	}
+	history := body["history"].([]any)
+	if len(history) != 1 {
+		t.Fatalf("history length: want 1, got %d", len(history))
+	}
+	entry := history[0].(map[string]any)
+	if entry["version"] != "v2" || entry["timestamp"] != "2026-03-10T10:00:00Z" {
+		t.Fatalf("history entry: got %#v", entry)
+	}
+	if !jsonArrayContains(entry["files_changed"], "config.yaml") {
+		t.Fatalf("files_changed missing config.yaml: %#v", entry["files_changed"])
+	}
+}
+
+func TestGetHistory_NotFound(t *testing.T) {
+	srv := newServer(t, newFakeStore())
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/missing/history")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("want 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetHistory_RejectsInvalidQuery(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"invalid file", "/api/v1/orgs/org/projects/proj/services/svc/history?file=sealed"},
+		{"non integer limit", "/api/v1/orgs/org/projects/proj/services/svc/history?limit=many"},
+		{"zero limit", "/api/v1/orgs/org/projects/proj/services/svc/history?limit=0"},
+		{"over max limit", "/api/v1/orgs/org/projects/proj/services/svc/history?limit=101"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := get(t, srv, tc.path)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d", resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestGetConfigWatch_VersionMismatchReturnsConfig(t *testing.T) {
+	st := newFakeStore()
+	st.version = "newcommit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{
+				"router_settings": map[string]any{"num_retries": 4},
+			},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config/watch?version=oldcommit")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 0 {
+		t.Fatalf("stale version should return without waiting, got %d calls", st.waitVersionCalls)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "newcommit" {
+		t.Fatalf("metadata.version: got %v", meta["version"])
+	}
+	config := body["config"].(map[string]any)
+	router := config["router_settings"].(map[string]any)
+	if router["num_retries"] != float64(4) {
+		t.Fatalf("num_retries: got %v", router["num_retries"])
+	}
+}
+
+func TestGetConfigWatch_TimeoutReturnsNotModified(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		Config: &parser.ServiceConfig{Config: map[string]any{"x": "y"}},
+	}
+	st.waitForVersionChange = func(ctx context.Context, version string) (string, bool, error) {
+		<-ctx.Done()
+		return version, false, ctx.Err()
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config/watch?version=abc123&timeout=1ms")
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 1 || st.waitVersionArg != "abc123" {
+		t.Fatalf("WaitForVersionChange calls: count=%d arg=%q", st.waitVersionCalls, st.waitVersionArg)
+	}
+}
+
+func TestGetConfigWatch_InheritedVersionUsesHeadVersion(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head-inherit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "raw-v1",
+		Config:                &parser.ServiceConfig{Config: map[string]any{"raw": true}},
+		InheritedSources:      []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasConfig: true}},
+		InheritedConfig:       &parser.ServiceConfig{Config: map[string]any{"raw": true, "global": true}},
+	}
+	st.waitForVersionChange = func(ctx context.Context, version string) (string, bool, error) {
+		<-ctx.Done()
+		return version, false, ctx.Err()
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config/watch?version=head-inherit&timeout=1ms")
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 1 || st.waitVersionArg != "head-inherit" {
+		t.Fatalf("WaitForVersionChange calls: count=%d arg=%q", st.waitVersionCalls, st.waitVersionArg)
+	}
+}
+
+func TestGetConfigWatch_RequiresVersion(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config/watch")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 0 {
+		t.Fatalf("missing version should not wait, got %d calls", st.waitVersionCalls)
+	}
+}
+
+func TestGetConfigWatch_RejectsInvalidTimeout(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config/watch?version=abc123&timeout=31s")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 0 {
+		t.Fatalf("invalid timeout should not wait, got %d calls", st.waitVersionCalls)
+	}
+}
+
+func TestGetEnvVarsWatch_VersionMismatchReturnsEnvVars(t *testing.T) {
+	st := newFakeStore()
+	st.version = "newcommit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"LOG_LEVEL": "INFO"},
+				SecretRefs: map[string]string{"API_KEY": "litellm-api-key"},
+			},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars/watch?version=oldcommit")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 0 {
+		t.Fatalf("stale version should return without waiting, got %d calls", st.waitVersionCalls)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "newcommit" {
+		t.Fatalf("metadata.version: got %v", meta["version"])
+	}
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	if plain["LOG_LEVEL"] != "INFO" {
+		t.Fatalf("LOG_LEVEL: got %v", plain["LOG_LEVEL"])
+	}
+	secretRefs := envVars["secret_refs"].(map[string]any)
+	if secretRefs["API_KEY"] != "litellm-api-key" {
+		t.Fatalf("API_KEY secret_ref: got %v", secretRefs["API_KEY"])
+	}
+	if _, ok := envVars["secrets"]; ok {
+		t.Fatal("env_vars/watch must not resolve secret values")
+	}
+}
+
+func TestGetEnvVarsWatch_TimeoutReturnsNotModified(t *testing.T) {
+	st := newFakeStore()
+	st.resourceVersions = map[string]string{"env_vars": "env-v1"}
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain: map[string]string{"LOG_LEVEL": "INFO"},
+		}},
+	}
+	st.waitForVersionChange = func(ctx context.Context, version string) (string, bool, error) {
+		<-ctx.Done()
+		return version, false, ctx.Err()
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars/watch?version=env-v1&timeout=1ms")
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 1 || st.waitVersionArg != "abc123" {
+		t.Fatalf("WaitForVersionChange calls: count=%d arg=%q", st.waitVersionCalls, st.waitVersionArg)
+	}
+}
+
+func TestGetEnvVarsWatch_IgnoresConfigOnlyVersionChange(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head1"
+	st.resourceVersions = map[string]string{"env_vars": "env-v1"}
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain: map[string]string{"LOG_LEVEL": "INFO"},
+		}},
+	}
+	st.waitForVersionChange = func(ctx context.Context, version string) (string, bool, error) {
+		if st.waitVersionCalls == 1 {
+			st.version = "head2"
+			return st.version, true, nil
+		}
+		<-ctx.Done()
+		return st.version, false, ctx.Err()
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars/watch?version=env-v1&timeout=1ms")
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304 for unchanged env_vars across config-only version bump, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 2 || st.waitVersionArg != "head2" {
+		t.Fatalf("WaitForVersionChange calls: count=%d last arg=%q", st.waitVersionCalls, st.waitVersionArg)
+	}
+}
+
+func TestGetEnvVarsWatch_TimeoutWinsOverHeadOnlyChanges(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head1"
+	st.resourceVersions = map[string]string{"env_vars": "env-v1"}
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain: map[string]string{"LOG_LEVEL": "INFO"},
+		}},
+	}
+	st.waitForVersionChange = func(ctx context.Context, _ string) (string, bool, error) {
+		<-ctx.Done()
+		st.version = "head-after-timeout"
+		return st.version, true, nil
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars/watch?version=env-v1&timeout=1ms")
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304 after timeout despite head-only change, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 1 {
+		t.Fatalf("watch should stop once timeout has expired, got %d waits", st.waitVersionCalls)
+	}
+}
+
+func TestGetEnvVarsWatch_RequiresVersion(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars/watch")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+	if st.waitVersionCalls != 0 {
+		t.Fatalf("missing version should not wait, got %d calls", st.waitVersionCalls)
+	}
+}
+
 func TestGetEnvVars_Found(t *testing.T) {
 	st := newFakeStore()
 	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVarsResourceVersion: "env-v1",
 		EnvVars: &parser.EnvVarsConfig{
 			EnvVars: parser.EnvVars{
 				Plain:      map[string]string{"LOG_LEVEL": "INFO"},
@@ -320,10 +1460,477 @@ func TestGetEnvVars_Found(t *testing.T) {
 
 	var body map[string]any
 	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "env-v1" {
+		t.Fatalf("unresolved env vars metadata.version should use resource version, got %v", meta["version"])
+	}
 	envVars := body["env_vars"].(map[string]any)
 	plain := envVars["plain"].(map[string]any)
 	if plain["LOG_LEVEL"] != "INFO" {
 		t.Errorf("LOG_LEVEL: want INFO, got %v", plain["LOG_LEVEL"])
+	}
+}
+
+func TestGetEnvVars_ETagAndIfNoneMatch(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVarsResourceVersion: "env-v1",
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"LOG_LEVEL": "INFO"},
+				SecretRefs: map[string]string{"API_KEY": "my-secret"},
+			},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("expected ETag")
+	}
+
+	resp = getWithHeader(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars", "If-None-Match", etag)
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("ETag"); got != etag {
+		t.Fatalf("304 ETag: got %q, want %q", got, etag)
+	}
+}
+
+func TestGetEnvVars_DefaultInheritUsesInheritedEnvVars(t *testing.T) {
+	st := newFakeStore()
+	st.version = "head-inherit"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVarsResourceVersion: "raw-env-v1",
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"RAW_ONLY": "1"},
+				SecretRefs: map[string]string{"RAW_SECRET": "raw-secret"},
+			},
+		},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasEnvVars: true}},
+		InheritedEnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"RAW_ONLY": "1", "GLOBAL_ONLY": "1"},
+				SecretRefs: map[string]string{"RAW_SECRET": "raw-secret", "GLOBAL_SECRET": "global-secret"},
+			},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "head-inherit" {
+		t.Fatalf("inherited metadata.version should use head version, got %v", meta["version"])
+	}
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	secretRefs := envVars["secret_refs"].(map[string]any)
+	if plain["GLOBAL_ONLY"] != "1" || plain["RAW_ONLY"] != "1" {
+		t.Fatalf("plain env vars should use inherited view, got %#v", plain)
+	}
+	if secretRefs["GLOBAL_SECRET"] != "global-secret" || secretRefs["RAW_SECRET"] != "raw-secret" {
+		t.Fatalf("secret refs should use inherited view, got %#v", secretRefs)
+	}
+}
+
+func TestGetEnvVars_InheritFalseUsesRawEnvVars(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVarsResourceVersion: "raw-env-v1",
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"RAW_ONLY": "1"},
+				SecretRefs: map[string]string{"RAW_SECRET": "raw-secret"},
+			},
+		},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasEnvVars: true}},
+		InheritedEnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"RAW_ONLY": "1", "GLOBAL_ONLY": "1"},
+				SecretRefs: map[string]string{"RAW_SECRET": "raw-secret", "GLOBAL_SECRET": "global-secret"},
+			},
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?inherit=false")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "raw-env-v1" {
+		t.Fatalf("raw metadata.version should use resource version, got %v", meta["version"])
+	}
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	if _, ok := plain["GLOBAL_ONLY"]; ok {
+		t.Fatalf("inherit=false should omit inherited plain env, got %#v", plain)
+	}
+	if plain["RAW_ONLY"] != "1" {
+		t.Fatalf("inherit=false should keep raw env, got %#v", plain)
+	}
+}
+
+func TestGetEnvVars_VersionParam(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	st.envVarsAtVersion = map[string]*store.ServiceData{
+		"old-env": {
+			EnvVars: &parser.EnvVarsConfig{
+				EnvVars: parser.EnvVars{
+					Plain:      map[string]string{"LOG_LEVEL": "DEBUG"},
+					SecretRefs: map[string]string{"API_KEY": "old-api-key"},
+				},
+			},
+			UpdatedAt: time.Date(2026, 3, 2, 10, 0, 0, 0, time.UTC),
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=old-env&inherit=false")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("expected versioned env_vars ETag")
+	}
+	conditionalResp := getWithHeader(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=old-env&inherit=false", "If-None-Match", etag)
+	if conditionalResp.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", conditionalResp.StatusCode)
+	}
+	if st.envVarsVersionArg != "old-env" {
+		t.Fatalf("version arg: got %q", st.envVarsVersionArg)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "old-env" || meta["updated_at"] != "2026-03-02T10:00:00Z" {
+		t.Fatalf("metadata: got %#v", meta)
+	}
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	secretRefs := envVars["secret_refs"].(map[string]any)
+	if plain["LOG_LEVEL"] != "DEBUG" || secretRefs["API_KEY"] != "old-api-key" {
+		t.Fatalf("historical env_vars: got %#v", envVars)
+	}
+}
+
+func TestGetEnvVars_VersionParamDefaultInherit(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	st.inheritedEnvVarsAtVersion = map[string]*store.ServiceData{
+		"old-env": {
+			InheritedEnvVars: &parser.EnvVarsConfig{
+				EnvVars: parser.EnvVars{
+					Plain:      map[string]string{"GLOBAL_ONLY": "1"},
+					SecretRefs: map[string]string{"GLOBAL_SECRET": "global-secret"},
+				},
+			},
+			UpdatedAt: time.Date(2026, 3, 2, 10, 0, 0, 0, time.UTC),
+		},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=old-env")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.inheritedEnvVarsVersionArg != "old-env" {
+		t.Fatalf("inherited version arg: got %q", st.inheritedEnvVarsVersionArg)
+	}
+	if st.envVarsVersionArg != "" {
+		t.Fatalf("raw env version path should not be called, got %q", st.envVarsVersionArg)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	secretRefs := envVars["secret_refs"].(map[string]any)
+	if plain["GLOBAL_ONLY"] != "1" || secretRefs["GLOBAL_SECRET"] != "global-secret" {
+		t.Fatalf("historical inherited env_vars: got %#v", envVars)
+	}
+}
+
+func TestGetEnvVars_RejectsVersionWithResolveSecrets(t *testing.T) {
+	srv := newServer(t, newFakeStore())
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=old-env&resolve_secrets=true")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetVersionedReads_EmptyResource(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+	st.configAtVersion = map[string]*store.ServiceData{
+		"empty": {ConfigResourceVersion: "empty"},
+	}
+	st.envVarsAtVersion = map[string]*store.ServiceData{
+		"empty": {EnvVarsResourceVersion: "empty"},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	configResp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/config?version=empty&inherit=false")
+	if configResp.StatusCode != http.StatusOK {
+		t.Fatalf("config: want 200, got %d", configResp.StatusCode)
+	}
+	var configBody map[string]any
+	decodeJSON(t, configResp, &configBody)
+	if len(configBody["config"].(map[string]any)) != 0 {
+		t.Fatalf("config should be empty: %#v", configBody["config"])
+	}
+
+	envResp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?version=empty&inherit=false")
+	if envResp.StatusCode != http.StatusOK {
+		t.Fatalf("env_vars: want 200, got %d", envResp.StatusCode)
+	}
+	var envBody map[string]any
+	decodeJSON(t, envResp, &envBody)
+	envVars := envBody["env_vars"].(map[string]any)
+	if len(envVars["plain"].(map[string]any)) != 0 || len(envVars["secret_refs"].(map[string]any)) != 0 {
+		t.Fatalf("env_vars should be empty: %#v", envVars)
+	}
+}
+
+func TestGetEnvVars_ResolveSecrets(t *testing.T) {
+	st := newFakeStore()
+	st.version = "secret-head"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVarsResourceVersion: "env-v1",
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"LOG_LEVEL": "INFO"},
+				SecretRefs: map[string]string{"API_KEY": "litellm-api-key"},
+			},
+		},
+		Secrets: &parser.SecretsConfig{
+			Secrets: []parser.SecretEntry{
+				{
+					ID: "litellm-api-key",
+					K8sSecret: parser.K8sSecret{
+						Namespace: "ai-platform",
+						Name:      "litellm-secrets",
+						Key:       "api-key",
+					},
+				},
+			},
+		},
+	}
+	ref := secret.Reference{
+		ID:        "litellm-api-key",
+		Namespace: "ai-platform",
+		Name:      "litellm-secrets",
+		Key:       "api-key",
+	}
+	reader := &fakeVolumeReader{values: map[secret.Reference]string{ref: "top-secret"}}
+	var auditLogs bytes.Buffer
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithSecretDependencies(secret.Dependencies{
+		VolumeReader: reader,
+		Auditor: secret.NewSlogAuditorWithLogger(true,
+			slog.New(slog.NewJSONHandler(&auditLogs, nil))),
+	}))
+	defer srv.Close()
+
+	resp := getRawWithHeaders(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true", map[string]string{
+		"Accept-Encoding": "gzip",
+		"Authorization":   "Bearer secret-key",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control: got %q", got)
+	}
+	if got := resp.Header.Get("ETag"); got != "" {
+		t.Fatalf("ETag should be omitted for resolved secrets, got %q", got)
+	}
+	if got := resp.Header.Get("Content-Encoding"); got != "" {
+		t.Fatalf("resolved secret response should not be gzip-compressed, got %q", got)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	meta := body["metadata"].(map[string]any)
+	if meta["version"] != "secret-head" {
+		t.Fatalf("resolved env vars metadata.version should use head version, got %v", meta["version"])
+	}
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	if plain["LOG_LEVEL"] != "INFO" {
+		t.Errorf("LOG_LEVEL: want INFO, got %v", plain["LOG_LEVEL"])
+	}
+	secrets := envVars["secrets"].(map[string]any)
+	if secrets["API_KEY"] != "top-secret" {
+		t.Fatalf("resolved API_KEY: got %v", secrets["API_KEY"])
+	}
+	if _, ok := envVars["secret_refs"]; ok {
+		t.Fatal("resolve_secrets=true response must not include secret_refs")
+	}
+	if len(reader.refreshRequests) != 1 || reader.refreshRequests[0] != ref {
+		t.Fatalf("reader refresh requests: got %+v", reader.refreshRequests)
+	}
+	if len(reader.requests) != 0 {
+		t.Fatalf("resolve should force refresh instead of cached read, got reads %+v", reader.requests)
+	}
+	logText := auditLogs.String()
+	for _, want := range []string{"secret_env_resolve", "success", "org", "proj", "svc", "litellm-api-key"} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("audit log missing %q: %s", want, logText)
+		}
+	}
+	if strings.Contains(logText, "top-secret") {
+		t.Fatalf("audit log leaked plaintext: %s", logText)
+	}
+}
+
+func TestGetEnvVars_ResolveSecretsUsesInheritedEnvVars(t *testing.T) {
+	st := newFakeStore()
+	st.version = "secret-head"
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVarsResourceVersion: "raw-env-v1",
+		EnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain: map[string]string{"RAW_ONLY": "1"},
+			},
+		},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasEnvVars: true}},
+		InheritedEnvVars: &parser.EnvVarsConfig{
+			EnvVars: parser.EnvVars{
+				Plain:      map[string]string{"RAW_ONLY": "1", "GLOBAL_ONLY": "1"},
+				SecretRefs: map[string]string{"GLOBAL_SECRET": "global-secret-id"},
+			},
+		},
+		Secrets: &parser.SecretsConfig{
+			Secrets: []parser.SecretEntry{
+				{
+					ID: "global-secret-id",
+					K8sSecret: parser.K8sSecret{
+						Namespace: "ai-platform",
+						Name:      "global-secrets",
+						Key:       "token",
+					},
+				},
+			},
+		},
+	}
+	ref := secret.Reference{
+		ID:        "global-secret-id",
+		Namespace: "ai-platform",
+		Name:      "global-secrets",
+		Key:       "token",
+	}
+	reader := &fakeVolumeReader{values: map[secret.Reference]string{ref: "global-secret"}}
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithSecretDependencies(secret.Dependencies{
+		VolumeReader: reader,
+	}))
+	defer srv.Close()
+
+	resp := getWithBearer(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true", "secret-key")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	envVars := body["env_vars"].(map[string]any)
+	plain := envVars["plain"].(map[string]any)
+	if plain["GLOBAL_ONLY"] != "1" || plain["RAW_ONLY"] != "1" {
+		t.Fatalf("plain env vars should use inherited view, got %#v", plain)
+	}
+	secrets := envVars["secrets"].(map[string]any)
+	if secrets["GLOBAL_SECRET"] != "global-secret" {
+		t.Fatalf("resolved inherited secret: got %#v", secrets)
+	}
+	if len(reader.refreshRequests) != 1 || reader.refreshRequests[0] != ref {
+		t.Fatalf("reader refresh requests: got %+v", reader.refreshRequests)
+	}
+}
+
+func TestGetEnvVars_ResolveSecretsRequiresAuth(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			SecretRefs: map[string]string{"API_KEY": "litellm-api-key"},
+		}},
+	}
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithSecretDependencies(secret.Dependencies{
+		VolumeReader: &fakeVolumeReader{values: map[secret.Reference]string{}},
+	}))
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetEnvVars_ResolveSecretsRejectsDuplicateSecretIDs(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			SecretRefs: map[string]string{"API_KEY": "dup-id"},
+		}},
+		Secrets: &parser.SecretsConfig{
+			Secrets: []parser.SecretEntry{
+				{
+					ID:        "dup-id",
+					K8sSecret: parser.K8sSecret{Namespace: "ns-a", Name: "secret-a", Key: "api-key"},
+				},
+				{
+					ID:        "dup-id",
+					K8sSecret: parser.K8sSecret{Namespace: "ns-b", Name: "secret-b", Key: "api-key"},
+				},
+			},
+		},
+	}
+	reader := &fakeVolumeReader{values: map[secret.Reference]string{}}
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithSecretDependencies(secret.Dependencies{
+		VolumeReader: reader,
+	}))
+	defer srv.Close()
+
+	resp := getWithBearer(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true", "secret-key")
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d", resp.StatusCode)
+	}
+	if len(reader.refreshRequests) != 0 {
+		t.Fatalf("duplicate secret IDs should fail before reading mounted values, got %+v", reader.refreshRequests)
+	}
+}
+
+func TestGetEnvVars_ResolveSecretsRejectsInvalidQuery(t *testing.T) {
+	srv := newServer(t, newFakeStore())
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=maybe")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
 	}
 }
 
@@ -371,6 +1978,60 @@ func TestPostChanges(t *testing.T) {
 	}
 	if result["version"] == "" {
 		t.Error("expected non-empty version")
+	}
+}
+
+func TestPostChanges_PassesServiceLevelPayloadWhenInheritedReadsExist(t *testing.T) {
+	st := newFakeStore()
+	st.services["myorg/proj/svc"] = &store.ServiceData{
+		Config: &parser.ServiceConfig{Config: map[string]any{
+			"raw": true,
+		}},
+		InheritedSources: []store.DefaultsSource{{Scope: store.DefaultsScopeGlobal, HasConfig: true, HasEnvVars: true}},
+		InheritedConfig: &parser.ServiceConfig{Config: map[string]any{
+			"raw":     true,
+			"default": true,
+		}},
+		InheritedEnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain: map[string]string{"GLOBAL_ENV": "1"},
+		}},
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	body := map[string]any{
+		"org":     "myorg",
+		"project": "proj",
+		"service": "svc",
+		"config": map[string]any{
+			"raw": "updated",
+		},
+		"env_vars": map[string]any{
+			"plain": map[string]any{"SERVICE_ENV": "updated"},
+		},
+		"message": "service-level update",
+	}
+	resp := postJSON(t, srv, "/api/v1/admin/changes", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.lastChange == nil {
+		t.Fatal("expected ApplyChanges request")
+	}
+	if _, ok := st.lastChange.Config["default"]; ok {
+		t.Fatalf("admin request should not merge inherited config into write payload: %#v", st.lastChange.Config)
+	}
+	if st.lastChange.Config["raw"] != "updated" {
+		t.Fatalf("admin request should pass service config unchanged, got %#v", st.lastChange.Config)
+	}
+	if st.lastChange.EnvVars == nil {
+		t.Fatal("expected env vars payload")
+	}
+	if _, ok := st.lastChange.EnvVars.Plain["GLOBAL_ENV"]; ok {
+		t.Fatalf("admin request should not merge inherited env into write payload: %#v", st.lastChange.EnvVars.Plain)
+	}
+	if st.lastChange.EnvVars.Plain["SERVICE_ENV"] != "updated" {
+		t.Fatalf("admin request should pass service env unchanged, got %#v", st.lastChange.EnvVars.Plain)
 	}
 }
 
@@ -484,9 +2145,9 @@ func TestAPIKeyAuth_BearerHeader(t *testing.T) {
 	})
 
 	cases := []struct {
-		name    string
-		header  string
-		value   string
+		name     string
+		header   string
+		value    string
 		wantCode int
 	}{
 		{"bearer correct", "Authorization", "Bearer secret-key", http.StatusOK},
@@ -510,30 +2171,140 @@ func TestAPIKeyAuth_BearerHeader(t *testing.T) {
 	}
 }
 
-func TestPostChanges_RejectsSecretsField(t *testing.T) {
-	// PRD v2.1 describes a `secrets` field that is not implemented in Phase-1.
-	// Silently ignoring it would lose data; we require a loud 400 instead.
-	srv := newServer(t, newFakeStore())
+func TestAppRegistryWebhook_UpsertAndDelete(t *testing.T) {
+	cache := registry.NewCache()
+	srv := newServerWithAPIKey(t, newFakeStore(), "secret-key", handler.WithAppRegistry(cache))
+	defer srv.Close()
+
+	upsertBody := map[string]any{
+		"action": "upsert",
+		"app": map[string]any{
+			"org":        "myorg",
+			"project":    "ai",
+			"name":       "litellm",
+			"updated_at": "2026-04-29T10:00:00Z",
+		},
+	}
+	resp := postJSONWithBearer(t, srv, "/api/v1/admin/app-registry/webhook", upsertBody, "secret-key")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upsert: want 200, got %d", resp.StatusCode)
+	}
+	apps := cache.List()
+	if len(apps) != 1 || apps[0].Org != "myorg" || apps[0].Project != "ai" || apps[0].Service != "litellm" {
+		t.Fatalf("cached apps after upsert: %+v", apps)
+	}
+
+	deleteBody := map[string]any{
+		"action":     "delete",
+		"org":        "myorg",
+		"project":    "ai",
+		"service":    "litellm",
+		"updated_at": "2026-04-29T10:01:00Z",
+	}
+	resp = postJSONWithBearer(t, srv, "/api/v1/admin/app-registry/webhook", deleteBody, "secret-key")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete: want 200, got %d", resp.StatusCode)
+	}
+	if apps := cache.List(); len(apps) != 0 {
+		t.Fatalf("cached apps after delete: %+v", apps)
+	}
+}
+
+func TestAppRegistryWebhook_RequiresAuth(t *testing.T) {
+	cache := registry.NewCache()
+	srv := newServerWithAPIKey(t, newFakeStore(), "secret-key", handler.WithAppRegistry(cache))
+	defer srv.Close()
+
+	resp := postJSON(t, srv, "/api/v1/admin/app-registry/webhook", map[string]any{
+		"action": "upsert",
+		"app": map[string]any{
+			"org":        "myorg",
+			"project":    "ai",
+			"name":       "litellm",
+			"updated_at": "2026-04-29T10:00:00Z",
+		},
+	})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", resp.StatusCode)
+	}
+	if apps := cache.List(); len(apps) != 0 {
+		t.Fatalf("unauthorized request should not update cache: %+v", apps)
+	}
+}
+
+func TestAppRegistryWebhook_RejectsInvalidAction(t *testing.T) {
+	cache := registry.NewCache()
+	srv := newServerWithAPIKey(t, newFakeStore(), "secret-key", handler.WithAppRegistry(cache))
+	defer srv.Close()
+
+	resp := postJSONWithBearer(t, srv, "/api/v1/admin/app-registry/webhook", map[string]any{
+		"action": "bogus",
+		"app": map[string]any{
+			"org":        "myorg",
+			"project":    "ai",
+			"name":       "litellm",
+			"updated_at": "2026-04-29T10:00:00Z",
+		},
+	}, "secret-key")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestAppRegistryWebhook_RequiresUpdatedAt(t *testing.T) {
+	cache := registry.NewCache()
+	srv := newServerWithAPIKey(t, newFakeStore(), "secret-key", handler.WithAppRegistry(cache))
+	defer srv.Close()
+
+	resp := postJSONWithBearer(t, srv, "/api/v1/admin/app-registry/webhook", map[string]any{
+		"action": "upsert",
+		"app": map[string]any{
+			"org":     "myorg",
+			"project": "ai",
+			"name":    "litellm",
+		},
+	}, "secret-key")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+	if apps := cache.List(); len(apps) != 0 {
+		t.Fatalf("missing updated_at should not update cache: %+v", apps)
+	}
+}
+
+func TestPostChanges_AcceptsSecretsField(t *testing.T) {
+	st := newFakeStore()
+	srv := newServer(t, st)
 	defer srv.Close()
 
 	body := map[string]any{
 		"org": "o", "project": "p", "service": "s",
-		"config":  map[string]any{},
-		"secrets": []any{map[string]any{"id": "foo"}},
+		"config": map[string]any{},
+		"secrets": map[string]any{
+			"litellm-secrets": map[string]any{
+				"namespace": "ai-platform",
+				"data": map[string]any{
+					"master-key": "top-secret",
+				},
+			},
+		},
 	}
 	resp := postJSON(t, srv, "/api/v1/admin/changes", body)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("want 400 for unknown `secrets` field, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200 for accepted `secrets` field, got %d", resp.StatusCode)
 	}
-
-	var env map[string]any
-	decodeJSON(t, resp, &env)
-	errObj, ok := env["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected JSON error envelope, got %v", env)
+	if st.lastChange == nil {
+		t.Fatal("store did not receive change request")
 	}
-	if !strings.Contains(strings.ToLower(errObj["message"].(string)), "secrets") {
-		t.Errorf("error message should mention secrets, got %v", errObj["message"])
+	got := st.lastChange.Secrets["litellm-secrets"]
+	if got.Namespace != "ai-platform" {
+		t.Fatalf("secret namespace: got %q", got.Namespace)
+	}
+	if !st.sawSecretPlaintext {
+		t.Fatal("secret plaintext was not passed to store boundary")
+	}
+	if string(got.Data["master-key"].Bytes()) != "" {
+		t.Fatal("handler should destroy secret plaintext after store boundary returns")
 	}
 }
 
@@ -543,8 +2314,8 @@ func TestPostChanges_RejectsUnknownField(t *testing.T) {
 
 	body := map[string]any{
 		"org": "o", "project": "p", "service": "s",
-		"config":  map[string]any{},
-		"bogus":   "value",
+		"config": map[string]any{},
+		"bogus":  "value",
 	}
 	resp := postJSON(t, srv, "/api/v1/admin/changes", body)
 	if resp.StatusCode != http.StatusBadRequest {
@@ -576,6 +2347,170 @@ func TestPostChanges_ReloadFailedReported(t *testing.T) {
 	}
 	if body2["reload_error"] == nil || body2["reload_error"] == "" {
 		t.Errorf("reload_error missing: %v", body2)
+	}
+}
+
+func TestPostChanges_ApplyFailedReported(t *testing.T) {
+	st := newFakeStore()
+	st.nextApplyFailed = true
+	st.nextApplyErr = "apply sealed secret ai-platform/litellm-secrets: boom"
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	body := map[string]any{
+		"org": "o", "project": "p", "service": "s",
+		"secrets": map[string]any{
+			"litellm-secrets": map[string]any{
+				"namespace": "ai-platform",
+				"data":      map[string]any{"master-key": "top-secret"},
+			},
+		},
+	}
+	resp := postJSON(t, srv, "/api/v1/admin/changes", body)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d", resp.StatusCode)
+	}
+
+	var env map[string]any
+	decodeJSON(t, resp, &env)
+	if env["status"] != "committed_but_apply_failed" {
+		t.Fatalf("status: got %v", env["status"])
+	}
+	if !strings.Contains(env["apply_error"].(string), "apply sealed secret") {
+		t.Fatalf("missing apply_error context: %v", env["apply_error"])
+	}
+}
+
+func TestPostRevert_RolledBack(t *testing.T) {
+	st := newFakeStore()
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	body := map[string]any{
+		"org":            "myorg",
+		"project":        "proj",
+		"service":        "litellm",
+		"target_version": "target",
+		"message":        "restore previous config",
+	}
+	resp := postJSON(t, srv, "/api/v1/admin/changes/revert", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var env map[string]any
+	decodeJSON(t, resp, &env)
+	if env["status"] != "rolled_back" {
+		t.Fatalf("status: got %v", env["status"])
+	}
+	if env["version"] != "revertcommit" || env["target_version"] != "target" {
+		t.Fatalf("versions: %v", env)
+	}
+	if st.lastRevert == nil {
+		t.Fatal("store did not receive revert request")
+	}
+	if st.lastRevert.TargetVersion != "target" || st.lastRevert.Message != "restore previous config" {
+		t.Fatalf("revert request: %+v", st.lastRevert)
+	}
+}
+
+func TestPostRevert_Noop(t *testing.T) {
+	st := newFakeStore()
+	st.revertResult = &store.RevertResult{
+		Version:       "abc123",
+		TargetVersion: "abc123",
+		UpdatedAt:     time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
+		Noop:          true,
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := postJSON(t, srv, "/api/v1/admin/changes/revert", map[string]any{
+		"org":            "myorg",
+		"project":        "proj",
+		"service":        "litellm",
+		"target_version": "abc123",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	var env map[string]any
+	decodeJSON(t, resp, &env)
+	if env["status"] != "noop" {
+		t.Fatalf("status: got %v", env["status"])
+	}
+}
+
+func TestPostRevert_ApplyAndReloadFailedReported(t *testing.T) {
+	st := newFakeStore()
+	st.revertResult = &store.RevertResult{
+		Version:       "revertcommit",
+		TargetVersion: "target",
+		UpdatedAt:     time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
+		ApplyFailed:   true,
+		ApplyError:    "apply sealed secret ai-platform/remote-secrets: boom",
+		ReloadFailed:  true,
+		ReloadError:   "snapshot refused: bad yaml",
+	}
+	srv := newServer(t, st)
+	defer srv.Close()
+
+	resp := postJSON(t, srv, "/api/v1/admin/changes/revert", map[string]any{
+		"org":            "myorg",
+		"project":        "proj",
+		"service":        "litellm",
+		"target_version": "target",
+	})
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d", resp.StatusCode)
+	}
+
+	var env map[string]any
+	decodeJSON(t, resp, &env)
+	if env["status"] != "rolled_back_but_apply_and_reload_failed" {
+		t.Fatalf("status: got %v", env["status"])
+	}
+	if !strings.Contains(env["apply_error"].(string), "apply sealed secret") {
+		t.Fatalf("missing apply_error context: %v", env["apply_error"])
+	}
+	if !strings.Contains(env["reload_error"].(string), "bad yaml") {
+		t.Fatalf("missing reload_error context: %v", env["reload_error"])
+	}
+}
+
+func TestPostRevert_RejectsUnknownField(t *testing.T) {
+	srv := newServer(t, newFakeStore())
+	defer srv.Close()
+
+	resp := postJSON(t, srv, "/api/v1/admin/changes/revert", map[string]any{
+		"org":            "myorg",
+		"project":        "proj",
+		"service":        "litellm",
+		"target_version": "target",
+		"bogus":          "value",
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400 for unknown field, got %d", resp.StatusCode)
+	}
+}
+
+func TestPostRevert_RequiresAuth(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "secret-key")
+	defer srv.Close()
+
+	resp := postJSON(t, srv, "/api/v1/admin/changes/revert", map[string]any{
+		"org":            "myorg",
+		"project":        "proj",
+		"service":        "litellm",
+		"target_version": "target",
+	})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", resp.StatusCode)
+	}
+	if st.lastRevert != nil {
+		t.Fatalf("unauthorized request reached store: %+v", st.lastRevert)
 	}
 }
 
@@ -713,6 +2648,94 @@ func TestStatus_Enriched(t *testing.T) {
 	if body["services_loaded"] == nil {
 		t.Error("services_loaded missing from /api/v1/status response")
 	}
+	appRegistry, ok := body["app_registry"].(map[string]any)
+	if !ok {
+		t.Fatalf("app_registry missing from /api/v1/status response: %#v", body["app_registry"])
+	}
+	if appRegistry["status"] != "not_configured" {
+		t.Errorf("app_registry.status: want not_configured, got %v", appRegistry["status"])
+	}
+}
+
+func TestStatus_IncludesAppRegistryState(t *testing.T) {
+	st := newFakeStore()
+	cache := registry.NewCache()
+	loadedAt := time.Date(2026, 4, 29, 10, 0, 0, 0, time.UTC)
+	cache.Replace([]registry.App{{
+		Org:       "myorg",
+		Project:   "ai",
+		Service:   "litellm",
+		UpdatedAt: "2026-04-29T09:00:00Z",
+	}}, loadedAt)
+	srv := newServerWithAPIKey(t, st, "", handler.WithAppRegistry(cache))
+	defer srv.Close()
+
+	resp := get(t, srv, "/api/v1/status")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	if body["status"] != "ok" {
+		t.Fatalf("status: want ok, got %v", body["status"])
+	}
+	appRegistry, ok := body["app_registry"].(map[string]any)
+	if !ok {
+		t.Fatalf("app_registry missing from /api/v1/status response: %#v", body["app_registry"])
+	}
+	if appRegistry["status"] != "ok" {
+		t.Errorf("app_registry.status: want ok, got %v", appRegistry["status"])
+	}
+	if appRegistry["apps_loaded"] != float64(1) {
+		t.Errorf("app_registry.apps_loaded: want 1, got %v", appRegistry["apps_loaded"])
+	}
+	if appRegistry["last_loaded_at"] != loadedAt.Format(time.RFC3339) {
+		t.Errorf("app_registry.last_loaded_at: want %s, got %v",
+			loadedAt.Format(time.RFC3339), appRegistry["last_loaded_at"])
+	}
+	if appRegistry["last_updated_at"] != loadedAt.Format(time.RFC3339) {
+		t.Errorf("app_registry.last_updated_at: want %s, got %v",
+			loadedAt.Format(time.RFC3339), appRegistry["last_updated_at"])
+	}
+}
+
+func TestStatus_AppRegistryFailureIsDegradedButReady(t *testing.T) {
+	st := newFakeStore()
+	cache := registry.NewCache()
+	cache.MarkLoadFailed(errors.New("console unavailable"))
+	srv := newServerWithAPIKey(t, st, "", handler.WithAppRegistry(cache))
+	defer srv.Close()
+
+	readyResp := get(t, srv, "/readyz")
+	if readyResp.StatusCode != http.StatusOK {
+		t.Fatalf("readyz should stay ready for registry-only degradation, got %d", readyResp.StatusCode)
+	}
+
+	resp := get(t, srv, "/api/v1/status")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	if body["status"] != "degraded" {
+		t.Errorf("status: want degraded, got %v", body["status"])
+	}
+	if body["is_degraded"] != true {
+		t.Errorf("is_degraded: want true, got %v", body["is_degraded"])
+	}
+	if !jsonArrayContains(body["degraded_components"], "app_registry") {
+		t.Errorf("degraded_components missing app_registry: %v", body["degraded_components"])
+	}
+	appRegistry, ok := body["app_registry"].(map[string]any)
+	if !ok {
+		t.Fatalf("app_registry missing from /api/v1/status response: %#v", body["app_registry"])
+	}
+	if appRegistry["status"] != "degraded" {
+		t.Errorf("app_registry.status: want degraded, got %v", appRegistry["status"])
+	}
+	if !strings.Contains(appRegistry["last_load_error"].(string), "console unavailable") {
+		t.Errorf("app_registry.last_load_error: got %v", appRegistry["last_load_error"])
+	}
 }
 
 func TestStatus_Degraded(t *testing.T) {
@@ -732,6 +2755,9 @@ func TestStatus_Degraded(t *testing.T) {
 	}
 	if body["is_degraded"] != true {
 		t.Errorf("is_degraded: want true, got %v", body["is_degraded"])
+	}
+	if !jsonArrayContains(body["degraded_components"], "store") {
+		t.Errorf("degraded_components missing store: %v", body["degraded_components"])
 	}
 }
 
@@ -832,6 +2858,108 @@ func TestAdminReload_ForceReloadsWhenHeadUnchanged(t *testing.T) {
 	}
 }
 
+func TestGitWebhookRefresh_RequiresAuth(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "secret-key")
+	defer srv.Close()
+
+	resp := postJSON(t, srv, "/api/v1/admin/git/webhook", map[string]any{
+		"ref": "refs/heads/main",
+	})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401 without API key, got %d", resp.StatusCode)
+	}
+	if st.refreshCalls != 0 {
+		t.Fatalf("unauthorized webhook must not refresh repo, got %d calls", st.refreshCalls)
+	}
+}
+
+func TestGitWebhookRefresh_RefreshesFromRepo(t *testing.T) {
+	st := newFakeStore()
+	st.refreshUpdated = true
+	srv := newServerWithAPIKey(t, st, "secret-key")
+	defer srv.Close()
+
+	resp := postJSONWithBearer(t, srv, "/api/v1/admin/git/webhook", map[string]any{
+		"ref":        "refs/heads/main",
+		"repository": map[string]any{"full_name": "org/configs"},
+	}, "secret-key")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if st.refreshCalls != 1 {
+		t.Fatalf("expected RefreshFromRepo once, got %d", st.refreshCalls)
+	}
+	if st.reloadCalls != 0 {
+		t.Fatalf("git webhook must not force reload through ReloadFromRepo, got %d calls", st.reloadCalls)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	if body["status"] != "ok" {
+		t.Errorf("status: want ok, got %v", body["status"])
+	}
+	if body["updated"] != true {
+		t.Errorf("updated: want true, got %v", body["updated"])
+	}
+	if body["version"] != "refreshedcommit" {
+		t.Errorf("version: want refreshedcommit, got %v", body["version"])
+	}
+}
+
+func TestGitWebhookRefresh_ReportsRefreshFailure(t *testing.T) {
+	st := newFakeStore()
+	st.refreshErr = errors.New("pull: network unavailable")
+	srv := newServerWithAPIKey(t, st, "secret-key")
+	defer srv.Close()
+
+	resp := postJSONWithBearer(t, srv, "/api/v1/admin/git/webhook", map[string]any{
+		"event": "push",
+	}, "secret-key")
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	if body["status"] != "refresh_failed" {
+		t.Errorf("status: want refresh_failed, got %v", body["status"])
+	}
+	if !strings.Contains(body["refresh_error"].(string), "network unavailable") {
+		t.Errorf("refresh_error: got %v", body["refresh_error"])
+	}
+	if body["version"] != "abc123" {
+		t.Errorf("version: want current head, got %v", body["version"])
+	}
+}
+
+func TestGitWebhookRefresh_RejectsOversizedPayload(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "secret-key")
+	defer srv.Close()
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		srv.URL+"/api/v1/admin/git/webhook",
+		strings.NewReader(strings.Repeat("x", 1<<20+1)),
+	)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer secret-key")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST webhook: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413, got %d", resp.StatusCode)
+	}
+	if st.refreshCalls != 0 {
+		t.Fatalf("oversized webhook must not refresh repo, got %d calls", st.refreshCalls)
+	}
+}
+
 func TestAPIKeyAuth_BearerCaseInsensitive(t *testing.T) {
 	mux := http.NewServeMux()
 	h := handler.New(newFakeStore(), alwaysReady{}, "secret-key")
@@ -868,4 +2996,236 @@ func TestAPIKeyAuth_BearerCaseInsensitive(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRateLimit_AdminEndpoints(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithRateLimits(handler.RateLimitSettings{
+		Admin: handler.RateLimit{RequestsPerSecond: 1, Burst: 1},
+	}))
+	defer srv.Close()
+
+	body := map[string]any{
+		"org":     "org",
+		"project": "proj",
+		"service": "svc",
+		"config":  map[string]any{},
+	}
+	first := postJSONWithBearer(t, srv, "/api/v1/admin/changes", body, "secret-key")
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first admin request: want 200, got %d", first.StatusCode)
+	}
+	second := postJSONWithBearer(t, srv, "/api/v1/admin/changes", body, "secret-key")
+	assertRateLimited(t, second)
+}
+
+func TestRateLimit_SecretResolve(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain: map[string]string{"LOG_LEVEL": "INFO"},
+		}},
+	}
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithRateLimits(handler.RateLimitSettings{
+		SecretResolve: handler.RateLimit{RequestsPerSecond: 1, Burst: 1},
+	}))
+	defer srv.Close()
+
+	path := "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true"
+	first := getWithBearer(t, srv, path, "secret-key")
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first resolve request: want 200, got %d", first.StatusCode)
+	}
+	second := getWithBearer(t, srv, path, "secret-key")
+	assertRateLimited(t, second)
+}
+
+func TestRateLimit_WatchEndpoints(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		ConfigResourceVersion: "current-config",
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{"enabled": true},
+		},
+	}
+	srv := newServerWithAPIKey(t, st, "", handler.WithRateLimits(handler.RateLimitSettings{
+		Watch: handler.RateLimit{RequestsPerSecond: 1, Burst: 1},
+	}))
+	defer srv.Close()
+
+	path := "/api/v1/orgs/org/projects/proj/services/svc/config/watch?version=stale"
+	first := get(t, srv, path)
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first watch request: want 200, got %d", first.StatusCode)
+	}
+	second := get(t, srv, path)
+	assertRateLimited(t, second)
+}
+
+func TestRateLimit_BatchEndpoint(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		Config: &parser.ServiceConfig{
+			Config: map[string]any{"enabled": true},
+		},
+		EnvVars: &parser.EnvVarsConfig{EnvVars: parser.EnvVars{
+			Plain: map[string]string{"LOG_LEVEL": "INFO"},
+		}},
+	}
+	srv := newServerWithAPIKey(t, st, "", handler.WithRateLimits(handler.RateLimitSettings{
+		Batch: handler.RateLimit{RequestsPerSecond: 1, Burst: 1},
+	}))
+	defer srv.Close()
+
+	body := map[string]any{
+		"queries": []map[string]string{
+			{"org": "org", "project": "proj", "service": "svc"},
+		},
+	}
+	first := postJSON(t, srv, "/api/v1/configs/batch", body)
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first batch request: want 200, got %d", first.StatusCode)
+	}
+	second := postJSON(t, srv, "/api/v1/configs/batch", body)
+	assertRateLimited(t, second)
+}
+
+func TestRateLimit_UnauthenticatedAdminDoesNotConsumeToken(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithRateLimits(handler.RateLimitSettings{
+		Admin: handler.RateLimit{RequestsPerSecond: 1, Burst: 1},
+	}))
+	defer srv.Close()
+
+	body := map[string]any{
+		"org":     "org",
+		"project": "proj",
+		"service": "svc",
+		"config":  map[string]any{},
+	}
+	unauthenticated := postJSON(t, srv, "/api/v1/admin/changes", body)
+	if unauthenticated.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated admin request: want 401, got %d", unauthenticated.StatusCode)
+	}
+	authenticated := postJSONWithBearer(t, srv, "/api/v1/admin/changes", body, "secret-key")
+	if authenticated.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated admin request should still have a token, got %d", authenticated.StatusCode)
+	}
+}
+
+func TestRateLimit_RetryAfterReflectsRPS(t *testing.T) {
+	st := newFakeStore()
+	// 0.5 RPS → one token every 2 s → Retry-After should be "2"
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithRateLimits(handler.RateLimitSettings{
+		Admin: handler.RateLimit{RequestsPerSecond: 0.5, Burst: 1},
+	}))
+	defer srv.Close()
+
+	body := map[string]any{"org": "org", "project": "proj", "service": "svc", "config": map[string]any{}}
+	first := postJSONWithBearer(t, srv, "/api/v1/admin/changes", body, "secret-key")
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first request: want 200, got %d", first.StatusCode)
+	}
+	second := postJSONWithBearer(t, srv, "/api/v1/admin/changes", body, "secret-key")
+	if second.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("want 429, got %d", second.StatusCode)
+	}
+	if got := second.Header.Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After: want 2, got %q", got)
+	}
+}
+
+func TestPayloadTooLarge_PostChanges(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "secret-key")
+	defer srv.Close()
+
+	bigBody := `{"org":"o","project":"p","service":"s","config":{"k":"` + strings.Repeat("x", 1<<20+1) + `"}}`
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/admin/changes", strings.NewReader(bigBody))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret-key")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Error struct{ Code string `json:"code"` } `json:"error"`
+	}
+	decodeJSON(t, resp, &body)
+	if body.Error.Code != "payload_too_large" {
+		t.Fatalf("error code: want payload_too_large, got %q", body.Error.Code)
+	}
+}
+
+func TestPayloadTooLarge_PostConfigsBatch(t *testing.T) {
+	st := newFakeStore()
+	srv := newServerWithAPIKey(t, st, "")
+	defer srv.Close()
+
+	bigBody := `{"queries":[{"org":"o","project":"p","service":"s","extra":"` + strings.Repeat("x", 1<<20+1) + `"}]}`
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/configs/batch", strings.NewReader(bigBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413, got %d", resp.StatusCode)
+	}
+}
+
+func TestSecretResolve_AuditWhenNoEnvVars(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{}
+
+	var auditedResults []string
+	auditor := auditFuncAdapter(func(_ context.Context, event secret.AuditEvent) error {
+		if event.Action == "secret_env_resolve" {
+			auditedResults = append(auditedResults, event.Result)
+		}
+		return nil
+	})
+	srv := newServerWithAPIKey(t, st, "secret-key", handler.WithSecretDependencies(secret.Dependencies{
+		Auditor: auditor,
+	}))
+	defer srv.Close()
+
+	resp := getWithBearer(t, srv, "/api/v1/orgs/org/projects/proj/services/svc/env_vars?resolve_secrets=true", "secret-key")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if len(auditedResults) != 1 || auditedResults[0] != "no_env_vars" {
+		t.Fatalf("want audit result [no_env_vars], got %v", auditedResults)
+	}
+}
+
+type auditFuncAdapter func(context.Context, secret.AuditEvent) error
+
+func (f auditFuncAdapter) Record(ctx context.Context, event secret.AuditEvent) error {
+	return f(ctx, event)
+}
+
+func TestRateLimit_HistoryEndpoint(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		Config: &parser.ServiceConfig{Config: map[string]any{"key": "val"}},
+	}
+	srv := newServerWithAPIKey(t, st, "", handler.WithRateLimits(handler.RateLimitSettings{
+		Read: handler.RateLimit{RequestsPerSecond: 1, Burst: 1},
+	}))
+	defer srv.Close()
+
+	path := "/api/v1/orgs/org/projects/proj/services/svc/history"
+	first := get(t, srv, path)
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first history request: want 200, got %d", first.StatusCode)
+	}
+	second := get(t, srv, path)
+	assertRateLimited(t, second)
 }

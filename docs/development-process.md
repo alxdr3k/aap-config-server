@@ -256,6 +256,14 @@ refactor: config-parser - extract common YAML parsing logic
 fix: agent - rolling restart annotation 누락 수정
 ```
 
+### 7.3 브랜치 전략
+
+- 기본 흐름은 `feat/*` -> `dev` -> `main`이다.
+- 기능/수정 작업은 `dev`에서 `feat/<short-description>` 브랜치를 만든 뒤 `dev`로 PR을 연다.
+- `dev`는 통합 브랜치이며, `main` 승격은 `dev`에서 `main`으로 여는 PR로만 수행한다.
+- `main`에 직접 push하지 않는다.
+- force-push하지 않는다.
+
 ---
 
 ## 8. 실행 명령어

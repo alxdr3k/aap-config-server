@@ -13,12 +13,12 @@ from an atomically swapped in-memory snapshot.
 
 ## Current roadmap position
 
-- current milestone: `P0-M3` documentation boilerplate migration accepted
-- active tracks: none
-- active phase: none
-- active slice: none
-- last accepted gate: `AC-014` / `AC-015` via PR #10
-- next gate: none assigned
+- current milestone: `P1-M3` hardening in progress
+- active tracks: `HARDEN`
+- active phase: `HARDEN-1A`
+- active slice: none — all `HARDEN-1A` slices landed; `AC-042` gate review pending
+- last accepted gate: `AC-041`
+- next gate: `P1-M3` / `AC-042` (all `HARDEN-1A` evidence complete)
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
 
 ## Implemented
@@ -29,18 +29,140 @@ from an atomically swapped in-memory snapshot.
 - Phase-1 admin writes, deletes, refreshes, and Git operations are serialized
   globally by `ADR-005`; service-level mutexes remain target design only.
 - In-memory store with atomic snapshot swap and last-known-good behavior.
+- Store version-change notification and `WaitForVersionChange` primitive for
+  long-poll watch endpoints.
 - Parser support for `config.yaml`, `env_vars.yaml`, and `secrets.yaml` metadata.
+- Parser-level schema validation for `config.yaml`, `env_vars.yaml`,
+  `_defaults/common.yaml`, and `secrets.yaml`, including known envelope fields,
+  duplicate validated keys, node shapes, shell-compatible env var names, and
+  required metadata/secret pointer semantics.
 - Read APIs for config, env vars, service discovery, status, health/readiness.
+- Config/env vars watch APIs with resource-scoped `version` mismatch behavior
+  and max 30s long-poll timeout returning `304 Not Modified` when unchanged.
+  Env vars watch returns unresolved `plain` plus `secret_refs` payloads when
+  changed.
+- Git history iterator and service-scoped file-change classifier under
+  `internal/gitops`, ready for the history API endpoint.
+- Public history API with `file`, `limit`, and `before` filtering backed by
+  service-scoped Git history.
+- Versioned `config` and unresolved `env_vars` reads from historical Git
+  commits through the existing read endpoints' `version` query parameter.
+- Revert target validation and non-mutating service-file restore plan builder
+  for selected historical commits.
+- Public revert endpoint that validates service-history targets, restores
+  recognized service files as a new forward-only Git commit, applies restored
+  SealedSecret manifests, reloads the in-memory snapshot, and reports no-op or
+  post-commit apply/reload failures explicitly.
+- Global/org/project `_defaults/common.yaml` parsing in the store snapshot,
+  with per-service inherited source metadata exposed for tests.
+- Internal config/env inheritance merge precomputation in the store snapshot.
+  Config maps merge in global → org → project → service order with scalar
+  override, recursive map merge, array replacement, and null deletion. Env var
+  `plain` and `secret_refs` maps overlay in the same order.
+- Public `inherit=true/false` query behavior for current and versioned
+  config/env read APIs. The default is `inherit=true`; `inherit=false` returns
+  the raw service-level files. `resolve_secrets=true` uses inherited env var
+  secret refs for current reads.
+- Regression coverage that admin writes continue to pass and persist only
+  service-level config/env payloads while inherited reads are enabled; defaults
+  files are not mutated by `POST /api/v1/admin/changes`.
+- ETag and `If-None-Match` handling for non-secret current and versioned
+  config/env read responses. Cache validators vary by resource, service
+  identity, version token, `metadata.updated_at`, `inherit` view, and content
+  encoding. Resolved secret env var responses remain `Cache-Control: no-store`
+  and omit `ETag`.
+- gzip response compression for non-secret config/env JSON responses when
+  `Accept-Encoding` allows gzip. Cacheable responses include
+  `Vary: Accept-Encoding`; resolved secret env var responses are not
+  compressed.
+- Batch config/env read API at `POST /api/v1/configs/batch`, returning current
+  non-secret config and unresolved env vars for multiple services in request
+  order. The endpoint supports request-level `inherit`, cache validators,
+  gzip, and partial per-item errors.
+- Prometheus metrics endpoint at `GET /metrics`, exposing HTTP request
+  counts/latency by route template/status, reload attempts/durations, Git
+  operation counts/durations, watch wait counts/durations, and degraded-state
+  gauges for store and App Registry components.
+- Auth-gated Git webhook refresh endpoint at
+  `POST /api/v1/admin/git/webhook`. It accepts provider payloads only as an
+  authenticated trigger, discards the body after a 1 MiB cap, calls
+  `RefreshFromRepo`, and returns `updated`/`version` or `refresh_failed`.
+- Configurable token-bucket rate limiting for admin endpoints,
+  `resolve_secrets=true` env var reads, config/env watch endpoints, and
+  batch config/env reads. Limits are disabled by default and return
+  `429 rate_limited` with `Retry-After: 1` when enabled and exceeded.
 - Auth-gated admin write/delete/reload endpoints.
-- Auth-gated secret metadata read; secret value write/resolve is not implemented.
+- Auth-gated secret metadata read, admin secret writes, and
+  `resolve_secrets=true` env var reads.
 - Degraded state through `/readyz` and `/api/v1/status`.
+- Secret runtime boundary settings and adapter interfaces for mounted volume
+  reads, SealedSecret sealing, K8s apply, and audit logging.
+- Mounted secret file reader with fsnotify-backed refresh events under
+  `internal/secret`; env var secret resolve is wired to HTTP with no-store
+  responses.
+- Deterministic SealedSecret YAML generator with Bitnami public-key encryption
+  adapter and controller certificate lookup; admin writes now use this path
+  when Kubernetes adapters are configured.
+- K8s dynamic-client SealedSecret apply adapter under `internal/secret`;
+  admin write/runtime wiring now uses configured Kubernetes clients when
+  in-cluster config is available.
+- Non-sensitive secret audit logging for admin secret writes and resolved env
+  var secret reads, plus best-effort plaintext cleanup in secret handling
+  boundaries.
+- AAP Console App Registry startup bootstrap client/cache under
+  `internal/registry`, wired through `CONSOLE_API_URL` with bounded
+  exponential backoff and graceful empty-cache startup on final failure.
+- Auth-gated App Registry webhook endpoint for Console-driven cache upsert and
+  delete updates.
+- App Registry cache/load state in `/api/v1/status`, including degraded
+  component reporting for registry-only Console load failures without failing
+  `/readyz`.
+- Config Agent bootstrap binary under `cmd/config-agent`, with runtime
+  config loading, bounded Config Server API client, and local dry-run summary
+  mode under `internal/agent`.
+- Config Agent K8s Lease leader election module under `internal/agent`, using
+  client-go LeaseLock with standby takeover coverage against the fake K8s
+  client.
+- Config Agent read polling loop under `internal/agent`, with config/env
+  content-hash change detection, same-revision guard, handler-success-based
+  state advancement, and retry backoff for fetch/handler failures.
+- Config Agent native config/env.sh renderer under `internal/agent`, with
+  deterministic YAML output, ConfigMap secret-reference preservation, and
+  resolved-env validation before Secret payload generation.
+- Config Agent ConfigMap/Secret apply adapter under `internal/agent`, using
+  configured namespace/resource names only and preserving unrelated data keys
+  when patching existing resources.
+- Config Agent Deployment rollout patcher under `internal/agent`, updating
+  pod-template annotations with a payload hash and restart timestamp to trigger
+  a Kubernetes rolling restart.
+- Config Agent leading-edge debounce state machine under `internal/agent`, with
+  cooldown, quiet-period, and max-wait behavior covered by deterministic tests.
+- Config Agent image build target, RBAC/deployment handoff examples, and
+  fake-client e2e smoke coverage for fetch/render/apply/rollout flow.
+- Hermetic integration test harness (`internal/integration`) covering 6
+  cross-component scenarios: startup/load from a fake local Git repo; Console
+  App Registry bootstrap through a fake HTTP server (with `apps_loaded`/`status`
+  assertion in `/api/v1/status`); admin config write through the full HTTP
+  handler → store → Git commit → reload chain; admin env_vars write through the
+  same pipeline; admin secret write with fake Sealer/Applier adapters (namespace,
+  name, and sealed key verified); and out-of-band Git push discovered by
+  `ReloadFromRepo` (asserts `updated=true`). No live cluster or network required.
+  Runs under `make test-integration`.
+- Load/concurrency profiles in `internal/integration/load_concurrency_integration_test.go`
+  (`HARDEN-1A.4`): 5 hermetic scenarios covering concurrent admin config writes (8 workers),
+  concurrent admin env-var writes (8 workers), concurrent long-poll watch unblocked by a
+  single write (6 watchers), concurrent Config Agent polling (16 agents × 5 polls), and
+  concurrent mixed reads/writes (4 writers + 12 readers). All scenarios pass under
+  `make test-integration` (`make test-race` excludes the `-tags=integration` build tag).
+
+- Deployment handoff docs (`HARDEN-1A.5`): `RATE_LIMIT_READ_RPS`/`BURST` added to
+  `README.md` and `docs/current/RUNTIME.md`; Config Server NetworkPolicy handoff
+  example, image build/tagging guidance, and external manifest ownership section
+  added to `docs/current/OPERATIONS.md`; `docs/05_RUNBOOK.md` reference updated.
 
 ## Planned
 
-- SealedSecret generation, K8s apply, and secret value resolve.
-- Config Agent and registry webhook.
-- Watch/history/revert endpoints.
-- Config inheritance and additional operational hardening.
+(none — all `HARDEN-1A` slices landed; `AC-042` gate review pending)
 
 ## Explicit non-goals
 
@@ -50,22 +172,95 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-No active follow-up decision remains assigned. Pick the next planned milestone
-or slice before implementation.
+1. Confirm `AC-042` gate — all `HARDEN-1A.1`~`HARDEN-1A.5` evidence is complete; review against acceptance criteria in `docs/06_ACCEPTANCE_TESTS.md`.
+2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
+3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
 ## Current risks / unknowns
 
 - No open migration decision questions in `docs/07_QUESTIONS_REGISTER.md`;
-  audit items below remain.
+  roadmap leaf slices are defined through `P1-M3`.
 
 ## Current validation
 
 - Commands are listed in `docs/current/TESTING.md`.
 - Acceptance gates are listed in `docs/06_ACCEPTANCE_TESTS.md`.
-- PR #10 established `AC-014` / `AC-015`; subsequent dev-cycle PRs use the
-  repo `check`, `lint`, `scan`, and `test` checks before merge.
-- Repo-local Go 1.24.7 is available through `scripts/dev-env.sh`.
-- Local `. scripts/dev-env.sh && make test`, `go vet ./...`, `make test-race`, and `make build` pass in this workspace.
+- `AC-020` is passing for the secret write/resolve path, `AC-021` is passing
+  for App Registry bootstrap/webhook/status integration, and `AGENT-1A.1`~
+  `AGENT-1A.8` have local coverage for Config Agent bootstrap, leader
+  election, read polling, rendering, ConfigMap/Secret apply, rollout patch, and
+  debounce behavior, plus fake-client e2e smoke coverage for the Agent
+  fetch/render/apply/rollout flow. Subsequent dev-cycle PRs use the repo
+  `check`, `lint`, `scan`, and `test` checks before merge.
+- `AC-041` is passing for ETag, gzip, batch read, Prometheus metrics, and Git
+  webhook refresh operational extensions.
+- `HARDEN-1A.1` has parser coverage for schema rejection across service config,
+  env vars, defaults, and secret metadata files.
+- `HARDEN-1A.2` has config/handler coverage for disabled defaults, invalid
+  limiter knob validation, per-endpoint-group `429 rate_limited` behavior, and
+  admin authentication before token consumption.
+- `HARDEN-1A.3` has integration test coverage in `internal/integration` for
+  startup load from a fake local Git repo, Console registry bootstrap from a
+  fake HTTP server (with `apps_loaded`/`status` assertion), admin config write
+  through the full HTTP→store→Git→reload chain, admin env_vars write through the
+  same pipeline, admin secret write through fake Sealer/Applier adapters (with
+  namespace/name/key assertions), and out-of-band Git push detected by
+  `ReloadFromRepo` (asserts `updated=true`). All scenarios run hermetically with
+  no live cluster or network dependency.
+- `EXT-1A.1` has local store coverage for immediate stale-version return,
+  successful refresh notification, failed-refresh non-notification, and context
+  cancellation.
+- `EXT-1A.2` has local handler coverage for version mismatch, missing
+  version, invalid timeout, and `304 Not Modified` timeout behavior.
+- `EXT-1A.3` has local store/handler coverage for env vars version mismatch,
+  resource-scoped config-only non-wakeup behavior, unresolved secret refs,
+  missing version, and `304 Not Modified` timeout behavior.
+- `EXT-1B.1` has local gitops coverage for service-scoped file classification
+  and newest-first commit history iteration.
+- `EXT-1B.2` has local store/handler coverage for history API file filtering,
+  limit validation, before pagination, and missing-service errors.
+- `EXT-1B.3` has local store/handler coverage for versioned config/env reads,
+  historical metadata/version responses, missing historical commits, and
+  rejection of `version` with `resolve_secrets=true`.
+- `EXT-1B.4` has local gitops/store coverage for target commit service-file
+  snapshots, own-service-history validation, missing target/service errors,
+  restore/delete plan construction, and no-op detection without mutating Git
+  history.
+- `EXT-1B.5` has local gitops/store/handler coverage for forward-only revert
+  commits, deleted file calculation, restored SealedSecret apply, reload/no-op
+  behavior, public response status mapping, and unknown-field rejection.
+- `EXT-1C.1` has local store coverage for global/org/project defaults source
+  parsing, source ordering/metadata flags, no merge behavior, and invalid
+  defaults reload failure.
+- `EXT-1C.2` has local store coverage for inherited config deep merge
+  semantics, array replacement, null deletion, raw service config preservation,
+  and env var plain/secret ref overlay behavior.
+- `EXT-1C.3` has handler/store coverage for default inherited reads,
+  `inherit=false` raw reads, invalid inherit query rejection, versioned
+  inherited reads, inherited watch version comparison, and resolved secret reads
+  using inherited env var refs.
+- `EXT-1C.4` has store and handler regression coverage proving admin writes do
+  not merge inherited defaults into service-level persisted config/env payloads
+  and do not mutate `_defaults/common.yaml`.
+- `EXT-1D.1` has handler coverage for ETag emission, `If-None-Match` `304`
+  responses, metadata timestamp invalidation, inherited/raw cache validator
+  separation, and resolved secret env var no-store/no-ETag behavior.
+- `EXT-1D.2` has handler coverage for gzip compression when accepted,
+  `Vary: Accept-Encoding`, content-encoding-specific ETags, gzip `304`
+  behavior, q=0 opt-out, and resolved secret env var no-gzip behavior.
+- `EXT-1D.3` has handler coverage for batch config/env reads, request order,
+  partial per-item not-found errors, request validation, gzip, ETag/412
+  conditional POST behavior, and `inherit=false` raw view behavior.
+- `EXT-1D.4` has metrics/handler/store/gitops coverage for Prometheus text
+  exposition, HTTP route metrics, reload outcomes, Git operation outcomes,
+  watch wait outcomes, and degraded-state gauges without service-identity
+  labels.
+- `EXT-1D.5` has handler coverage for authenticated Git webhook refresh,
+  unauthorized no-op behavior, `RefreshFromRepo` success, and `refresh_failed`
+  error responses.
+- Repo-local Go 1.26.2 is available through `scripts/dev-env.sh`.
+- Local `. scripts/dev-env.sh && make test`, `go vet ./...`,
+  `make test-race`, `make lint`, and `make build` pass in this workspace.
 
 ## Needs audit
 

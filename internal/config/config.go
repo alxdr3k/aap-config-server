@@ -5,27 +5,72 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
+	"net/url"
 	"os"
+	"path/filepath"
+	"strconv"
 	"time"
 )
+
+const (
+	defaultSecretMountPath                        = "/secrets"
+	defaultSealedSecretControllerNamespace        = "kube-system"
+	defaultSealedSecretControllerName             = "sealed-secrets-controller"
+	defaultSealedSecretScope                      = "strict"
+	defaultK8sApplyTimeout                        = 10 * time.Second
+	defaultSecretAuditLogEnabled                  = true
+	defaultConsoleAPITimeout                      = 5 * time.Second
+	defaultConsoleRegistryBootstrapAttempts       = 5
+	defaultConsoleRegistryBootstrapInitialBackoff = time.Second
+	defaultConsoleRegistryBootstrapMaxBackoff     = 30 * time.Second
+	defaultRateLimitRequestsPerSecond             = 0
+	defaultRateLimitBurst                         = 0
+	sealedSecretScopeStrict                       = "strict"
+	sealedSecretScopeNamespaceWide                = "namespace-wide"
+	sealedSecretScopeClusterWide                  = "cluster-wide"
+)
+
+// RateLimitConfig holds token-bucket settings for one endpoint group.
+// A zero value disables the limiter for that group.
+type RateLimitConfig struct {
+	RequestsPerSecond float64
+	Burst             int
+}
 
 // ServerConfig holds all runtime configuration for the Config Server.
 // Values are sourced from environment variables (primary) with flag fallbacks.
 // Helm values → K8s env vars → this struct.
 type ServerConfig struct {
-	Addr                     string
-	GitURL                   string
-	GitBranch                string
-	GitLocalPath             string
-	GitPollInterval          time.Duration
-	GitSSHKeyPath            string
-	GitUsername              string
-	GitPassword              string
-	APIKey                   string
-	AllowUnauthenticatedDev  bool
-	SecretMountPath          string
-	ConsoleAPIURL            string
-	LogLevel                 string
+	Addr                                   string
+	GitURL                                 string
+	GitBranch                              string
+	GitLocalPath                           string
+	GitPollInterval                        time.Duration
+	GitSSHKeyPath                          string
+	GitUsername                            string
+	GitPassword                            string
+	APIKey                                 string
+	AllowUnauthenticatedDev                bool
+	SecretMountPath                        string
+	SealedSecretControllerNamespace        string
+	SealedSecretControllerName             string
+	SealedSecretScope                      string
+	K8sApplyTimeout                        time.Duration
+	SecretAuditLogEnabled                  *bool
+	ConsoleAPIURL                          string
+	ConsoleAPITimeout                      time.Duration
+	ConsoleRegistryBootstrapAttempts       int
+	ConsoleRegistryBootstrapInitialBackoff time.Duration
+	ConsoleRegistryBootstrapMaxBackoff     time.Duration
+	RateLimitAdmin                         RateLimitConfig
+	RateLimitSecretResolve                 RateLimitConfig
+	RateLimitWatch                         RateLimitConfig
+	RateLimitBatch                         RateLimitConfig
+	RateLimitRead                          RateLimitConfig
+	LogLevel                               string
+
+	k8sApplyTimeoutExplicit bool
 }
 
 // Load reads configuration from environment variables and command-line flags,
@@ -42,8 +87,28 @@ func Load() (*ServerConfig, error) {
 	flag.DurationVar(&cfg.GitPollInterval, "git-poll-interval", envDuration("GIT_POLL_INTERVAL", 30*time.Second), "Git poll interval (must be > 0)")
 	flag.StringVar(&cfg.GitSSHKeyPath, "git-ssh-key", env("GIT_SSH_KEY", ""), "Path to SSH private key for git auth")
 	flag.StringVar(&cfg.GitUsername, "git-username", env("GIT_USERNAME", ""), "Username for HTTPS BasicAuth (use with GIT_PASSWORD)")
-	flag.StringVar(&cfg.SecretMountPath, "secret-mount-path", env("SECRET_MOUNT_PATH", "/secrets"), "Volume mount path for K8s secrets")
+	flag.StringVar(&cfg.SecretMountPath, "secret-mount-path", env("SECRET_MOUNT_PATH", defaultSecretMountPath), "Volume mount path for K8s secrets")
+	flag.StringVar(&cfg.SealedSecretControllerNamespace, "sealed-secret-controller-namespace", env("SEALED_SECRET_CONTROLLER_NAMESPACE", defaultSealedSecretControllerNamespace), "Namespace of the SealedSecret controller service")
+	flag.StringVar(&cfg.SealedSecretControllerName, "sealed-secret-controller-name", env("SEALED_SECRET_CONTROLLER_NAME", defaultSealedSecretControllerName), "Name of the SealedSecret controller service")
+	flag.StringVar(&cfg.SealedSecretScope, "sealed-secret-scope", env("SEALED_SECRET_SCOPE", defaultSealedSecretScope), "SealedSecret scope: strict, namespace-wide, or cluster-wide")
+	flag.DurationVar(&cfg.K8sApplyTimeout, "k8s-apply-timeout", envDuration("K8S_APPLY_TIMEOUT", defaultK8sApplyTimeout), "Timeout for Kubernetes SealedSecret apply calls")
+	secretAuditLogEnabled := envBool("SECRET_AUDIT_LOG_ENABLED", defaultSecretAuditLogEnabled)
+	flag.BoolVar(&secretAuditLogEnabled, "secret-audit-log-enabled", secretAuditLogEnabled, "Enable audit logs for secret reads/writes")
 	flag.StringVar(&cfg.ConsoleAPIURL, "console-api-url", env("CONSOLE_API_URL", ""), "AAP Console API URL")
+	flag.DurationVar(&cfg.ConsoleAPITimeout, "console-api-timeout", envDuration("CONSOLE_API_TIMEOUT", defaultConsoleAPITimeout), "Timeout for AAP Console API calls")
+	flag.IntVar(&cfg.ConsoleRegistryBootstrapAttempts, "console-registry-bootstrap-attempts", envInt("CONSOLE_REGISTRY_BOOTSTRAP_ATTEMPTS", defaultConsoleRegistryBootstrapAttempts), "Maximum attempts for startup App Registry bootstrap")
+	flag.DurationVar(&cfg.ConsoleRegistryBootstrapInitialBackoff, "console-registry-bootstrap-initial-backoff", envDuration("CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF", defaultConsoleRegistryBootstrapInitialBackoff), "Initial backoff for startup App Registry bootstrap")
+	flag.DurationVar(&cfg.ConsoleRegistryBootstrapMaxBackoff, "console-registry-bootstrap-max-backoff", envDuration("CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF", defaultConsoleRegistryBootstrapMaxBackoff), "Maximum backoff for startup App Registry bootstrap")
+	flag.Float64Var(&cfg.RateLimitAdmin.RequestsPerSecond, "rate-limit-admin-rps", envFloat("RATE_LIMIT_ADMIN_RPS", defaultRateLimitRequestsPerSecond), "Admin endpoint rate limit in requests per second; 0 disables")
+	flag.IntVar(&cfg.RateLimitAdmin.Burst, "rate-limit-admin-burst", envInt("RATE_LIMIT_ADMIN_BURST", defaultRateLimitBurst), "Admin endpoint rate limit burst; 0 disables")
+	flag.Float64Var(&cfg.RateLimitSecretResolve.RequestsPerSecond, "rate-limit-secret-resolve-rps", envFloat("RATE_LIMIT_SECRET_RESOLVE_RPS", defaultRateLimitRequestsPerSecond), "resolve_secrets=true rate limit in requests per second; 0 disables")
+	flag.IntVar(&cfg.RateLimitSecretResolve.Burst, "rate-limit-secret-resolve-burst", envInt("RATE_LIMIT_SECRET_RESOLVE_BURST", defaultRateLimitBurst), "resolve_secrets=true rate limit burst; 0 disables")
+	flag.Float64Var(&cfg.RateLimitWatch.RequestsPerSecond, "rate-limit-watch-rps", envFloat("RATE_LIMIT_WATCH_RPS", defaultRateLimitRequestsPerSecond), "Config/env watch endpoint rate limit in requests per second; 0 disables")
+	flag.IntVar(&cfg.RateLimitWatch.Burst, "rate-limit-watch-burst", envInt("RATE_LIMIT_WATCH_BURST", defaultRateLimitBurst), "Config/env watch endpoint rate limit burst; 0 disables")
+	flag.Float64Var(&cfg.RateLimitBatch.RequestsPerSecond, "rate-limit-batch-rps", envFloat("RATE_LIMIT_BATCH_RPS", defaultRateLimitRequestsPerSecond), "Batch read endpoint rate limit in requests per second; 0 disables")
+	flag.IntVar(&cfg.RateLimitBatch.Burst, "rate-limit-batch-burst", envInt("RATE_LIMIT_BATCH_BURST", defaultRateLimitBurst), "Batch read endpoint rate limit burst; 0 disables")
+	flag.Float64Var(&cfg.RateLimitRead.RequestsPerSecond, "rate-limit-read-rps", envFloat("RATE_LIMIT_READ_RPS", defaultRateLimitRequestsPerSecond), "History/read endpoint rate limit in requests per second; 0 disables")
+	flag.IntVar(&cfg.RateLimitRead.Burst, "rate-limit-read-burst", envInt("RATE_LIMIT_READ_BURST", defaultRateLimitBurst), "History/read endpoint rate limit burst; 0 disables")
 	flag.StringVar(&cfg.LogLevel, "log-level", env("LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 
 	// API_KEY and GIT_PASSWORD are env-only — never accept via flag (would expose via ps).
@@ -52,6 +117,13 @@ func Load() (*ServerConfig, error) {
 	cfg.AllowUnauthenticatedDev = envBool("ALLOW_UNAUTHENTICATED_DEV", false)
 
 	flag.Parse()
+	cfg.SecretAuditLogEnabled = &secretAuditLogEnabled
+	cfg.k8sApplyTimeoutExplicit = os.Getenv("K8S_APPLY_TIMEOUT") != ""
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "k8s-apply-timeout" {
+			cfg.k8sApplyTimeoutExplicit = true
+		}
+	})
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -63,6 +135,8 @@ func Load() (*ServerConfig, error) {
 // Validate enforces required fields and sane values. Kept on the struct so
 // tests can construct a ServerConfig directly and re-use the same rules.
 func (c *ServerConfig) Validate() error {
+	c.applyDefaults()
+
 	if c.GitURL == "" {
 		return errors.New("GIT_URL is required (set via env or -git-url flag)")
 	}
@@ -77,6 +151,133 @@ func (c *ServerConfig) Validate() error {
 	}
 	if (c.GitUsername != "") != (c.GitPassword != "") {
 		return errors.New("GIT_USERNAME and GIT_PASSWORD must be set together")
+	}
+	if c.SecretMountPath == "" {
+		return errors.New("SECRET_MOUNT_PATH is required")
+	}
+	if !filepath.IsAbs(c.SecretMountPath) {
+		return fmt.Errorf("SECRET_MOUNT_PATH must be absolute, got %q", c.SecretMountPath)
+	}
+	if c.SealedSecretControllerNamespace == "" {
+		return errors.New("SEALED_SECRET_CONTROLLER_NAMESPACE is required")
+	}
+	if c.SealedSecretControllerName == "" {
+		return errors.New("SEALED_SECRET_CONTROLLER_NAME is required")
+	}
+	switch c.SealedSecretScope {
+	case sealedSecretScopeStrict, sealedSecretScopeNamespaceWide, sealedSecretScopeClusterWide:
+	default:
+		return fmt.Errorf("SEALED_SECRET_SCOPE must be one of %q, %q, or %q, got %q",
+			sealedSecretScopeStrict, sealedSecretScopeNamespaceWide, sealedSecretScopeClusterWide, c.SealedSecretScope)
+	}
+	if c.K8sApplyTimeout <= 0 {
+		return fmt.Errorf("K8S_APPLY_TIMEOUT must be > 0, got %s", c.K8sApplyTimeout)
+	}
+	if c.ConsoleAPIURL != "" {
+		parsed, err := url.Parse(c.ConsoleAPIURL)
+		if err != nil {
+			return fmt.Errorf("CONSOLE_API_URL is invalid: %w", err)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("CONSOLE_API_URL must use http or https")
+		}
+		if parsed.Host == "" {
+			return fmt.Errorf("CONSOLE_API_URL must include a host")
+		}
+	}
+	if c.ConsoleAPITimeout <= 0 {
+		return fmt.Errorf("CONSOLE_API_TIMEOUT must be > 0, got %s", c.ConsoleAPITimeout)
+	}
+	if c.ConsoleRegistryBootstrapAttempts <= 0 {
+		return fmt.Errorf("CONSOLE_REGISTRY_BOOTSTRAP_ATTEMPTS must be > 0, got %d",
+			c.ConsoleRegistryBootstrapAttempts)
+	}
+	if c.ConsoleRegistryBootstrapInitialBackoff <= 0 {
+		return fmt.Errorf("CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF must be > 0, got %s",
+			c.ConsoleRegistryBootstrapInitialBackoff)
+	}
+	if c.ConsoleRegistryBootstrapMaxBackoff <= 0 {
+		return fmt.Errorf("CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF must be > 0, got %s",
+			c.ConsoleRegistryBootstrapMaxBackoff)
+	}
+	if c.ConsoleRegistryBootstrapMaxBackoff < c.ConsoleRegistryBootstrapInitialBackoff {
+		return fmt.Errorf("CONSOLE_REGISTRY_BOOTSTRAP_MAX_BACKOFF must be >= CONSOLE_REGISTRY_BOOTSTRAP_INITIAL_BACKOFF")
+	}
+	if err := validateRateLimitConfig("RATE_LIMIT_ADMIN", c.RateLimitAdmin); err != nil {
+		return err
+	}
+	if err := validateRateLimitConfig("RATE_LIMIT_SECRET_RESOLVE", c.RateLimitSecretResolve); err != nil {
+		return err
+	}
+	if err := validateRateLimitConfig("RATE_LIMIT_WATCH", c.RateLimitWatch); err != nil {
+		return err
+	}
+	if err := validateRateLimitConfig("RATE_LIMIT_BATCH", c.RateLimitBatch); err != nil {
+		return err
+	}
+	if err := validateRateLimitConfig("RATE_LIMIT_READ", c.RateLimitRead); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *ServerConfig) SecretAuditEnabled() bool {
+	if c.SecretAuditLogEnabled == nil {
+		return defaultSecretAuditLogEnabled
+	}
+	return *c.SecretAuditLogEnabled
+}
+
+func (c *ServerConfig) applyDefaults() {
+	if c.SecretMountPath == "" {
+		c.SecretMountPath = defaultSecretMountPath
+	}
+	if c.SealedSecretControllerNamespace == "" {
+		c.SealedSecretControllerNamespace = defaultSealedSecretControllerNamespace
+	}
+	if c.SealedSecretControllerName == "" {
+		c.SealedSecretControllerName = defaultSealedSecretControllerName
+	}
+	if c.SealedSecretScope == "" {
+		c.SealedSecretScope = defaultSealedSecretScope
+	}
+	if c.K8sApplyTimeout == 0 && !c.k8sApplyTimeoutExplicit {
+		c.K8sApplyTimeout = defaultK8sApplyTimeout
+	}
+	if c.SecretAuditLogEnabled == nil {
+		enabled := defaultSecretAuditLogEnabled
+		c.SecretAuditLogEnabled = &enabled
+	}
+	if c.ConsoleAPITimeout == 0 {
+		c.ConsoleAPITimeout = defaultConsoleAPITimeout
+	}
+	if c.ConsoleRegistryBootstrapAttempts == 0 {
+		c.ConsoleRegistryBootstrapAttempts = defaultConsoleRegistryBootstrapAttempts
+	}
+	if c.ConsoleRegistryBootstrapInitialBackoff == 0 {
+		c.ConsoleRegistryBootstrapInitialBackoff = defaultConsoleRegistryBootstrapInitialBackoff
+	}
+	if c.ConsoleRegistryBootstrapMaxBackoff == 0 {
+		c.ConsoleRegistryBootstrapMaxBackoff = defaultConsoleRegistryBootstrapMaxBackoff
+	}
+}
+
+func validateRateLimitConfig(prefix string, cfg RateLimitConfig) error {
+	if math.IsNaN(cfg.RequestsPerSecond) || math.IsInf(cfg.RequestsPerSecond, 0) {
+		return fmt.Errorf("%s_RPS must be finite, got %g", prefix, cfg.RequestsPerSecond)
+	}
+	if cfg.RequestsPerSecond < 0 {
+		return fmt.Errorf("%s_RPS must be >= 0, got %g", prefix, cfg.RequestsPerSecond)
+	}
+	if cfg.Burst < 0 {
+		return fmt.Errorf("%s_BURST must be >= 0, got %d", prefix, cfg.Burst)
+	}
+	if cfg.RequestsPerSecond == 0 && cfg.Burst == 0 {
+		return nil
+	}
+	if cfg.RequestsPerSecond <= 0 || cfg.Burst <= 0 {
+		return fmt.Errorf("%s rate limit requires both %s_RPS > 0 and %s_BURST > 0",
+			prefix, prefix, prefix)
 	}
 	return nil
 }
@@ -99,6 +300,32 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		slog.Warn("invalid int env var, using fallback", "key", key, "value", v, "fallback", fallback)
+		return fallback
+	}
+	return n
+}
+
+func envFloat(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		slog.Warn("invalid float env var, using fallback", "key", key, "value", v, "fallback", fallback)
+		return fallback
+	}
+	return n
 }
 
 func envBool(key string, fallback bool) bool {

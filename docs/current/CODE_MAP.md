@@ -7,8 +7,9 @@ Status: active.
 | Path | Purpose |
 |---|---|
 | `cmd/config-server/main.go` | Composition root: load config, initialize git repo/store/handler/server, start poll loop. |
-| `Dockerfile` | Container image build for the config-server binary. |
-| `Makefile` | Project build/test/lint command surface. |
+| `cmd/config-agent/main.go` | Config Agent bootstrap entrypoint: load agent config, create Config Server client, run local dry-run reads. |
+| `Dockerfile` | Container image build targets for the config-server and config-agent binaries. |
+| `Makefile` | Project build/test/lint/docker command surface. |
 
 ## Runtime / App
 
@@ -16,37 +17,47 @@ Status: active.
 |---|---|
 | `internal/config/` | Environment/flag parsing and validation for runtime configuration. |
 | `internal/server/` | `http.Server` lifecycle, graceful shutdown, readiness probe. |
-| `internal/handler/` | HTTP routing, request decoding, API key auth, JSON response/error envelope. |
+| `internal/handler/` | HTTP routing, request decoding, API key auth, endpoint-group rate limiting, JSON response/error envelope, Prometheus `/metrics` endpoint and route latency instrumentation, Git webhook refresh trigger, config/env cache validators and gzip compression, batch config/env reads, config/env watch long polling, versioned reads, history API responses, and public revert endpoint responses. |
 | `internal/apperror/` | Typed domain errors and error-code mapping used by handlers and store. |
+| `internal/metrics/` | In-process Prometheus text exposition registry for HTTP, reload, Git operation, watch wait, and degraded-state metrics. |
+| `internal/agent/` | Config Agent bootstrap runtime config, bounded Config Server API client, dry-run summary runner, K8s Lease leader election wrapper, read polling/version tracking loop, native config/env.sh payload renderer, ConfigMap/Secret apply adapter, Deployment rollout patcher, leading-edge debounce state machine, and e2e smoke coverage for the composed Agent flow. |
 
 ## Domain / Services
 
 | Path | Purpose |
 |---|---|
-| `internal/store/` | In-memory service snapshot, Git-backed reload, apply/delete operations, degraded status. |
-| `internal/parser/` | YAML structs/parsers/validation for config, env vars, secrets, and defaults. |
+| `internal/store/` | In-memory service snapshot, Git-backed reload and reload metrics, defaults source parsing/metadata, internal inherited config/env merge precomputation, inherited historical config/env reads, resource-scoped version tokens, historical config/env file reads, revert restore planning/application, config/env/secret apply operations, delete operations, history filtering, degraded status. |
+| `internal/parser/` | YAML structs, envelope schema validation, and parsers for config, env vars, secrets, and defaults. |
+| `internal/secret/` | Secret runtime boundary types, mounted K8s Secret file reader/watch support, deterministic SealedSecret YAML generation, controller public-key encryption, K8s SealedSecret apply adapter, and slog-backed non-sensitive audit logging. |
+| `internal/registry/` | AAP Console App Registry HTTP client, in-memory cache, startup bootstrap retry/backoff logic, cache update semantics, and status state. |
 
 ## Data / Persistence
 
 | Path | Purpose |
 |---|---|
-| `internal/gitops/` | `go-git` wrapper for clone/open, pull, commit/push, delete/push, snapshot walking. |
+| `internal/gitops/` | `go-git` wrapper for clone/open, pull, commit/push, delete/push, service restore/push, Git operation metrics, snapshot walking, service-scoped historical file reads, history iteration, and file-change classification. |
 | Config repo `configs/orgs/{org}/projects/{project}/services/{service}/` | External Git-backed data tree read and written by the server. |
 
 ## Tests
 
 | Path | Purpose |
 |---|---|
-| `internal/config/*_test.go` | Runtime config validation. |
+| `internal/config/*_test.go` | Runtime config validation, including rate-limit knob validation. |
 | `internal/apperror/*_test.go` | Error wrapping and `errors.As` behavior. |
-| `internal/parser/*_test.go` | YAML parser happy-path and validation failures. |
-| `internal/store/*_test.go` | Snapshot reload, apply/delete, degraded behavior, concurrency. |
-| `internal/gitops/*_test.go` | Local Git clone/pull/commit/delete/snapshot behavior. |
-| `internal/handler/*_test.go` | HTTP routes, auth, response shape, reload/degraded status. |
+| `internal/parser/*_test.go` | YAML parser happy-path, schema rejection, and semantic validation failures. |
+| `internal/secret/*_test.go` | Secret boundary value/default behavior, mounted secret reader/watch behavior, deterministic SealedSecret YAML generation, public-key encryption wiring, and K8s apply adapter behavior. |
+| `internal/registry/*_test.go` | Console App Registry client decoding, cache replacement/update semantics, and startup bootstrap retry behavior. |
+| `internal/store/*_test.go` | Snapshot reload, defaults source parsing, internal inheritance merge semantics, inheritance/admin-write preservation, resource-scoped versions, version-change waiting, historical config/env reads, revert restore planning/application, history filtering, config/env/secret apply, secret audit logging, delete, degraded behavior, concurrency. |
+| `internal/gitops/*_test.go` | Local Git clone/pull/commit/delete/restore/snapshot behavior plus service history/file-change primitives. |
+| `internal/metrics/*_test.go` | Prometheus text exposition for counters, histograms, gauges, and label escaping. |
+| `internal/handler/*_test.go` | HTTP routes, endpoint-group rate limiting, Prometheus endpoint/route/watch/degraded metrics, Git webhook refresh auth/success/failure behavior, config/env ETag, `If-None-Match`, gzip, and batch read behavior, config/env watch behavior, versioned and inherited read behavior, history API behavior, revert endpoint behavior, auth, admin write response shape and service-level payload preservation, App Registry webhook auth/cache updates, App Registry status reporting, secret write input cleanup, resolved env var secret reads, secret audit logging, reload/degraded status. |
+| `internal/agent/*_test.go` | Config Agent config loading/validation, Config Server API client behavior, bounded responses, dry-run counts, K8s Lease leader election takeover behavior, fetch loop retry/version tracking, renderer validation, ConfigMap/Secret apply behavior, rollout patch behavior, debounce timing behavior, and fake-client fetch/render/apply/rollout e2e smoke coverage (runs under default `go test ./...`; no build tag). |
+| `internal/integration/harness_integration_test.go` | Hermetic cross-component integration tests (`//go:build integration`). Covers: startup/load from a fake local Git repo; Console App Registry bootstrap from a fake HTTP server with `apps_loaded`/`status` assertion; admin config write through the full HTTP→store→Git→reload chain; admin env_vars write through the same pipeline; admin secret write with fake Sealer/Applier adapters verifying namespace, name, and sealed key; and out-of-band Git push detected by `ReloadFromRepo`. Run with `make test-integration`. |
+| `internal/integration/load_concurrency_integration_test.go` | Hermetic load/concurrency profiles (`//go:build integration`, HARDEN-1A.4). Covers: concurrent admin config writes (8 goroutines) exercising ADR-005 global store mutex; concurrent admin env-var writes (8 goroutines); concurrent watch unblock-on-write (6 long-poll watchers receiving HTTP 200 when version advances); concurrent Config Agent polling (16 agents × 5 polls, read-path concurrency floor); and concurrent mixed reads/writes (4 writers + 12 readers). All scenarios pass under `make test-integration` (`make test-race` omits `-tags=integration` and does not execute these tests). |
 
 ## Needs audit
 
 | Path | Reason |
 |---|---|
-| `docs/02_HLD.md` | Includes planned packages such as `seal`, `secret`, `registry`, and `agent` that are not implemented. |
-| `docs/01_PRD.md` | Phase checklist predates current implementation status; use `docs/04_IMPLEMENTATION_PLAN.md` as status ledger. |
+| `docs/02_HLD.md` | §1.1 / §2 still describe target Config Agent rollout flows (live non-dry-run entrypoint, full litellm rollout). §3.4 RBAC, §3.5 RBAC, §6.3 store memory model, §10 FR matrix, and §11.1 layout were aligned with the flat package layout in the iter1 doc-consistency pass. |
+| `docs/01_PRD.md` | §1 phase checklist predates the current implementation; use `docs/04_IMPLEMENTATION_PLAN.md` as the status ledger. §4.1 Store sample, §4.4 mutex framing, §4.9 Agent fetch loop, §4.15/§5 endpoint surface, and §4.16 auth contract were aligned with code in the iter1 doc-consistency pass. |

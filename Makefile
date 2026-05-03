@@ -1,12 +1,16 @@
-.PHONY: build test test-race test-integration test-e2e lint coverage docker-build clean
+.PHONY: build build-server build-agent test test-race test-integration test-e2e lint coverage docker-build docker-build-agent clean
 
-BINARY        := config-server
-CMD_DIR       := ./cmd/config-server
-DOCKER_IMAGE  := aap/config-server
-DOCKER_TAG    := latest
+DOCKER_IMAGE       ?= aap/config-server
+DOCKER_AGENT_IMAGE ?= aap/config-agent
+DOCKER_TAG         ?= latest
 
-build:
-	go build -o bin/$(BINARY) $(CMD_DIR)
+build: build-server build-agent
+
+build-server:
+	go build -o bin/config-server ./cmd/config-server
+
+build-agent:
+	go build -o bin/config-agent ./cmd/config-agent
 
 test:
 	go test ./... -timeout 60s
@@ -17,6 +21,9 @@ test-race:
 test-integration:
 	go test -tags=integration ./... -timeout 120s
 
+# test-e2e is reserved for future cluster-dependent E2E suites (build-tag gated).
+# The agent fake-client smoke (TestConfigAgentE2ESmokeFetchRenderApplyAndRollout)
+# runs unconditionally under `make test` since it is fully hermetic.
 test-e2e:
 	go test -tags=e2e ./... -timeout 300s
 
@@ -29,7 +36,10 @@ coverage:
 	@echo "Coverage report: coverage.html"
 
 docker-build:
-	docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+	docker build --target config-server -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+
+docker-build-agent:
+	docker build --target config-agent -t $(DOCKER_AGENT_IMAGE):$(DOCKER_TAG) .
 
 clean:
 	rm -rf bin/ coverage.out coverage.html
