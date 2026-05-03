@@ -20,8 +20,9 @@ make docker-build-agent  # → aap/config-agent image (dry-run only today, see R
 - Rollback method: roll back the deployed image or Git config repo commit
   through the owning deployment system.
 - Deployment manifests: Helm/Kubernetes manifests remain outside this repo by
-  `DEC-003`. Agent runtime contract (env vars, RBAC, NetworkPolicy expectations)
-  is captured in `docs/current/OPERATIONS.md`.
+  `DEC-003`. Config Server and Config Agent runtime contracts (env vars, RBAC,
+  NetworkPolicy expectations, image build targets, external manifest ownership)
+  are captured in `docs/current/OPERATIONS.md`.
 
 ## How to Run Locally
 

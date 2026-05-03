@@ -136,6 +136,8 @@ curl http://localhost:8080/api/v1/orgs
 | `RATE_LIMIT_WATCH_BURST`     | no                       | `0`                   | Config/env watch endpoint token-bucket burst; `0` disables. |
 | `RATE_LIMIT_BATCH_RPS`       | no                       | `0`                   | Batch read endpoint token-bucket rate; `0` disables. Pair with `RATE_LIMIT_BATCH_BURST`. |
 | `RATE_LIMIT_BATCH_BURST`     | no                       | `0`                   | Batch read endpoint token-bucket burst; `0` disables. |
+| `RATE_LIMIT_READ_RPS`        | no                       | `0`                   | History/read endpoint token-bucket rate; `0` disables. Pair with `RATE_LIMIT_READ_BURST`. **Recommended to enable** — history scans the full Git log per request and has no authentication gate. |
+| `RATE_LIMIT_READ_BURST`      | no                       | `0`                   | History/read endpoint token-bucket burst; `0` disables. |
 
 ## Config Agent dry-run
 
