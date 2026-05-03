@@ -3210,3 +3210,22 @@ type auditFuncAdapter func(context.Context, secret.AuditEvent) error
 func (f auditFuncAdapter) Record(ctx context.Context, event secret.AuditEvent) error {
 	return f(ctx, event)
 }
+
+func TestRateLimit_HistoryEndpoint(t *testing.T) {
+	st := newFakeStore()
+	st.services["org/proj/svc"] = &store.ServiceData{
+		Config: &parser.ServiceConfig{Config: map[string]any{"key": "val"}},
+	}
+	srv := newServerWithAPIKey(t, st, "", handler.WithRateLimits(handler.RateLimitSettings{
+		Read: handler.RateLimit{RequestsPerSecond: 1, Burst: 1},
+	}))
+	defer srv.Close()
+
+	path := "/api/v1/orgs/org/projects/proj/services/svc/history"
+	first := get(t, srv, path)
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first history request: want 200, got %d", first.StatusCode)
+	}
+	second := get(t, srv, path)
+	assertRateLimited(t, second)
+}
