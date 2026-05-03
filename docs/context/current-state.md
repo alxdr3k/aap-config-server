@@ -16,7 +16,7 @@ from an atomically swapped in-memory snapshot.
 - current milestone: `P1-M3` hardening in progress
 - active tracks: `HARDEN`
 - active phase: `HARDEN-1A`
-- active slice: `HARDEN-1A.3`
+- active slice: `HARDEN-1A.4`
 - last accepted gate: `AC-041`
 - next gate: `P1-M3` / `AC-042`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -139,10 +139,20 @@ from an atomically swapped in-memory snapshot.
   cooldown, quiet-period, and max-wait behavior covered by deterministic tests.
 - Config Agent image build target, RBAC/deployment handoff examples, and
   fake-client e2e smoke coverage for fetch/render/apply/rollout flow.
+- Hermetic integration test harness (`internal/integration`) covering 6
+  cross-component scenarios: startup/load from a fake local Git repo; Console
+  App Registry bootstrap through a fake HTTP server (with `apps_loaded`/`status`
+  assertion in `/api/v1/status`); admin config write through the full HTTP
+  handler → store → Git commit → reload chain; admin env_vars write through the
+  same pipeline; admin secret write with fake Sealer/Applier adapters (namespace,
+  name, and sealed key verified); and out-of-band Git push discovered by
+  `ReloadFromRepo` (asserts `updated=true`). No live cluster or network required.
+  Runs under `make test-integration`.
 
 ## Planned
 
-- integration/load validation and deployment hardening.
+- load/concurrency test profiles for admin writes, watch waits, and Config Agent polling (`HARDEN-1A.4`).
+- deployment handoff docs for image, env vars, network policy, and external manifest ownership (`HARDEN-1A.5`).
 
 ## Explicit non-goals
 
@@ -152,8 +162,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `HARDEN-1A.3`: build an integration test harness with fake Git,
-   fake K8s, and fake Console dependencies.
+1. Start `HARDEN-1A.4`: add load/concurrency test profiles for admin writes, watch waits, and Config Agent polling.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
@@ -180,6 +189,14 @@ from an atomically swapped in-memory snapshot.
 - `HARDEN-1A.2` has config/handler coverage for disabled defaults, invalid
   limiter knob validation, per-endpoint-group `429 rate_limited` behavior, and
   admin authentication before token consumption.
+- `HARDEN-1A.3` has integration test coverage in `internal/integration` for
+  startup load from a fake local Git repo, Console registry bootstrap from a
+  fake HTTP server (with `apps_loaded`/`status` assertion), admin config write
+  through the full HTTP→store→Git→reload chain, admin env_vars write through the
+  same pipeline, admin secret write through fake Sealer/Applier adapters (with
+  namespace/name/key assertions), and out-of-band Git push detected by
+  `ReloadFromRepo` (asserts `updated=true`). All scenarios run hermetically with
+  no live cluster or network dependency.
 - `EXT-1A.1` has local store coverage for immediate stale-version return,
   successful refresh notification, failed-refresh non-notification, and context
   cancellation.
