@@ -1,3 +1,4 @@
+@AGENTS.md
 @AGENTS.policy.md
 # Project Setup
 
