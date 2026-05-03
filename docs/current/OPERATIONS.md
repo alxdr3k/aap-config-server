@@ -287,11 +287,10 @@ spec:
     - ports:
         - port: 22
           protocol: TCP
-    # AAP Console API (when CONSOLE_API_URL is set)
-    - ports:
-        - port: 443
-          protocol: TCP
-    # Kubernetes API for SealedSecret public-key lookup and apply
+    # TCP/443 egress covers: AAP Console API (CONSOLE_API_URL) and
+    # Kubernetes API (SealedSecret lookup/apply). Scope to specific CIDRs
+    # for the Console endpoint and cluster API server in production;
+    # the ipBlock below is intentionally broad as a handoff baseline.
     - ports:
         - port: 443
           protocol: TCP
