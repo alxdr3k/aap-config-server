@@ -16,7 +16,7 @@ from an atomically swapped in-memory snapshot.
 - current milestone: `P1-M3` hardening in progress
 - active tracks: `HARDEN`
 - active phase: `HARDEN-1A`
-- active slice: `HARDEN-1A.4`
+- active slice: `HARDEN-1A.5`
 - last accepted gate: `AC-041`
 - next gate: `P1-M3` / `AC-042`
 - canonical ledger: `docs/04_IMPLEMENTATION_PLAN.md`
@@ -148,10 +148,15 @@ from an atomically swapped in-memory snapshot.
   name, and sealed key verified); and out-of-band Git push discovered by
   `ReloadFromRepo` (asserts `updated=true`). No live cluster or network required.
   Runs under `make test-integration`.
+- Load/concurrency profiles in `internal/integration/load_concurrency_integration_test.go`
+  (`HARDEN-1A.4`): 5 hermetic scenarios covering concurrent admin config writes (8 workers),
+  concurrent admin env-var writes (8 workers), concurrent long-poll watch unblocked by a
+  single write (6 watchers), concurrent Config Agent polling (16 agents × 5 polls), and
+  concurrent mixed reads/writes (4 writers + 12 readers). All scenarios pass under
+  `make test-integration` (`make test-race` excludes the `-tags=integration` build tag).
 
 ## Planned
 
-- load/concurrency test profiles for admin writes, watch waits, and Config Agent polling (`HARDEN-1A.4`).
 - deployment handoff docs for image, env vars, network policy, and external manifest ownership (`HARDEN-1A.5`).
 
 ## Explicit non-goals
@@ -162,7 +167,7 @@ from an atomically swapped in-memory snapshot.
 
 ## Current priorities
 
-1. Start `HARDEN-1A.4`: add load/concurrency test profiles for admin writes, watch waits, and Config Agent polling.
+1. Start `HARDEN-1A.5`: finalize deployment handoff docs for image, env vars, network policy, and external manifest ownership.
 2. Keep P1 work aligned with the leaf slices in `docs/04_IMPLEMENTATION_PLAN.md`.
 3. Revisit roadmap sequencing only when a new decision changes dependencies.
 
