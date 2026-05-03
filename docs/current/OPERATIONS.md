@@ -118,6 +118,69 @@ snapshot for serving reads.
   decision explicitly moves deployment ownership here.
 - Runtime network access should restrict unauthenticated config/env reads to trusted clients.
 
+### Namespace topology
+
+| Service | Namespace | Notes |
+|---------|-----------|-------|
+| Config Server, AAP Console | `aap-system` | Infra management services |
+| Config Agent, workload pods (langfuse, litellm, keycloak) | `codei` | Workload namespace; may change |
+| SealedSecret controller | `kube-system` | Default; unchanged |
+
+**Config Agent placement rule:** Agent must run in the workload namespace (`codei`), not `aap-system`.
+The Agent's ConfigMap/Secret/Lease targets all live in the workload namespace — placing the Agent
+in the wrong namespace breaks leader election.
+
+Agent `--config-server` flag must use the full FQDN:
+```
+--config-server=http://aap-config-server.aap-system.svc.cluster.local:8080
+```
+
+### Cross-namespace checklist (update when workload namespace changes)
+
+When the workload namespace changes from `codei` to something else:
+
+- [ ] **RoleBinding** — add a new `aap-config-server-sealedsecrets` RoleBinding in the new namespace
+  (see _Config Server RBAC_ below); the old namespace binding can be removed once no workloads remain there
+- [ ] **NetworkPolicy ingress** — update the `namespaceSelector` in the Config Server NetworkPolicy
+  to include the new namespace label
+- [ ] **Config Agent RBAC** — recreate ServiceAccount / Role / RoleBinding in the new namespace
+- [ ] **`--config-server` FQDN** — unchanged; Config Server stays in `aap-system`
+
+### Config Server RBAC — cross-namespace SealedSecret apply
+
+Config Server applies SealedSecrets into the workload namespace, so its ServiceAccount (`aap-system`)
+needs write access there. Use per-namespace RoleBindings rather than a ClusterRoleBinding.
+
+```yaml
+# ClusterRole — define once
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aap-config-server-sealedsecrets
+rules:
+  - apiGroups: ["bitnami.com"]
+    resources: ["sealedsecrets"]
+    verbs: ["get", "list", "create", "update", "patch"]
+---
+# RoleBinding — one per workload namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aap-config-server-sealedsecrets
+  namespace: codei          # repeat for each workload namespace
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aap-config-server-sealedsecrets
+subjects:
+  - kind: ServiceAccount
+    name: aap-config-server
+    namespace: aap-system
+```
+
+A separate RoleBinding is also needed in `kube-system` for the SealedSecret controller
+public-key proxy (`services/proxy` get).
+
 ### Image build
 
 Build the Config Server image (default Dockerfile target):
@@ -157,13 +220,13 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: litellm-config-agent
-  namespace: ai-platform
+  namespace: codei
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: litellm-config-agent
-  namespace: ai-platform
+  namespace: codei
 rules:
   - apiGroups: [""]
     resources: ["configmaps"]
@@ -186,11 +249,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: litellm-config-agent
-  namespace: ai-platform
+  namespace: codei
 subjects:
   - kind: ServiceAccount
     name: litellm-config-agent
-    namespace: ai-platform
+    namespace: codei
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -211,7 +274,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: litellm-config-agent
-  namespace: ai-platform
+  namespace: codei
 spec:
   replicas: 2
   selector:
@@ -227,7 +290,7 @@ spec:
         - name: config-agent
           image: aap/config-agent:latest
           args:
-            - --config-server=http://aap-config-server.default.svc:8080
+            - --config-server=http://aap-config-server.aap-system.svc.cluster.local:8080
             - --org=myorg
             - --project=ai
             - --service=litellm
@@ -259,7 +322,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: aap-config-server
-  namespace: default
+  namespace: aap-system
 spec:
   podSelector:
     matchLabels:
@@ -269,16 +332,13 @@ spec:
     - Egress
   ingress:
     # Allow Config Agent and admin clients on the HTTP API port.
-    # Restrict 'from' to the namespaces and pods that should reach the server.
+    # List every workload namespace that hosts a Config Agent.
     # Without a 'from' clause, ingress is accepted cluster-wide — always add
     # explicit selectors in production.
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: ai-platform  # adjust to your namespace
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: litellm-config-agent  # Config Agent pods
+              kubernetes.io/metadata.name: codei  # workload namespace (update if namespace changes)
       ports:
         - port: 8080
           protocol: TCP
