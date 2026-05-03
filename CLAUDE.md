@@ -1,3 +1,4 @@
+@AGENTS.policy.md
 # Project Setup
 
 ## Custom Commands
