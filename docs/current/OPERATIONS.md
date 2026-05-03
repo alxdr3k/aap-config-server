@@ -268,8 +268,18 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Config Agent and admin clients on the HTTP API port
-    - ports:
+    # Allow Config Agent and admin clients on the HTTP API port.
+    # Restrict 'from' to the namespaces and pods that should reach the server.
+    # Without a 'from' clause, ingress is accepted cluster-wide — always add
+    # explicit selectors in production.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ai-platform  # adjust to your namespace
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: litellm-config-agent  # Config Agent pods
+      ports:
         - port: 8080
           protocol: TCP
   egress:
