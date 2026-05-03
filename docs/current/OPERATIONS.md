@@ -60,6 +60,7 @@ Do not use that flag in production.
 | `RATE_LIMIT_SECRET_RESOLVE_RPS` / `RATE_LIMIT_SECRET_RESOLVE_BURST` | no | `0` / `0` | `resolve_secrets=true` token-bucket settings. Both must be positive to enable. |
 | `RATE_LIMIT_WATCH_RPS` / `RATE_LIMIT_WATCH_BURST` | no | `0` / `0` | Config/env watch token-bucket settings. Both must be positive to enable. |
 | `RATE_LIMIT_BATCH_RPS` / `RATE_LIMIT_BATCH_BURST` | no | `0` / `0` | Batch read token-bucket settings. Both must be positive to enable. |
+| `RATE_LIMIT_READ_RPS` / `RATE_LIMIT_READ_BURST` | no | `0` / `0` | History endpoint token-bucket settings. **Recommended to enable** — history scans the full git log per request and has no authentication gate; an unconfigured server is susceptible to CPU-pinning DOS via concurrent history requests. |
 
 ## Database
 

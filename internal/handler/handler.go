@@ -136,7 +136,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 		h.limitWatch(h.watchEnvVars))
 	h.handle(mux, "POST /api/v1/configs/batch", h.limitBatch(h.postConfigsBatch))
 	h.handle(mux, "GET /api/v1/orgs/{org}/projects/{project}/services/{service}/history",
-		h.getHistory)
+		h.limitRead(h.getHistory))
 	// Secret metadata is privileged even though values are never returned; auth
 	// is required so unauthenticated callers cannot enumerate which K8s secret
 	// objects back a service.

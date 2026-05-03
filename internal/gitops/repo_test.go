@@ -177,7 +177,7 @@ func TestDeleteAndPush(t *testing.T) {
 	}
 
 	// Now delete it.
-	hash, err := repo.DeleteAndPush(ctx, "delete svc", []string{
+	hash, _, err := repo.DeleteAndPush(ctx, "delete svc", []string{
 		"configs/orgs/myorg/projects/p/services/svc/config.yaml",
 	})
 	if err != nil {
@@ -340,7 +340,7 @@ func TestDeleteAndPush_RetriesOnRejectedPush(t *testing.T) {
 	})
 	defer restore()
 
-	hash, err := repo.DeleteAndPush(ctx, "delete svc", []string{target})
+	hash, _, err := repo.DeleteAndPush(ctx, "delete svc", []string{target})
 	if err != nil {
 		t.Fatalf("DeleteAndPush: %v", err)
 	}

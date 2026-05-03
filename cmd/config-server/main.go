@@ -84,6 +84,7 @@ func main() {
 			SecretResolve: rateLimitFromConfig(cfg.RateLimitSecretResolve),
 			Watch:         rateLimitFromConfig(cfg.RateLimitWatch),
 			Batch:         rateLimitFromConfig(cfg.RateLimitBatch),
+			Read:          rateLimitFromConfig(cfg.RateLimitRead),
 		}))
 
 	mux := http.NewServeMux()

@@ -1376,15 +1376,22 @@ func (s *Store) DeleteChanges(ctx context.Context, req *DeleteRequest) (*DeleteR
 	}
 
 	msg := fmt.Sprintf("delete config for %s/%s/%s", req.Org, req.Project, req.Service)
-	hash, err := s.repo.DeleteAndPush(ctx, msg, paths)
+	hash, deletedPaths, err := s.repo.DeleteAndPush(ctx, msg, paths)
 	if err != nil {
 		return nil, err
 	}
 
+	// Convert repo-relative paths to service-relative paths for the response.
+	svcRoot := ServicePath(req.Org, req.Project, req.Service) + "/"
+	var deletedFiles []string
+	for _, p := range deletedPaths {
+		rel := strings.TrimPrefix(filepath.ToSlash(p), filepath.ToSlash(svcRoot))
+		deletedFiles = append(deletedFiles, rel)
+	}
 	result := &DeleteResult{
 		Version:      hash,
 		UpdatedAt:    time.Now().UTC(),
-		DeletedFiles: []string{"config.yaml", "env_vars.yaml", "secrets.yaml", "sealed-secrets/"},
+		DeletedFiles: deletedFiles,
 	}
 
 	// Reload in-memory snapshot from the new HEAD so any concurrent remote

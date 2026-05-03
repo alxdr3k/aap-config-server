@@ -134,8 +134,9 @@ type GitRepo interface {
 	CommitAndPushFunc(ctx context.Context, msg string, build CommitFileBuilder) (string, error)
 
 	// DeleteAndPush removes the listed paths, commits, and pushes.
-	// Returns the new HEAD commit hash.
-	DeleteAndPush(ctx context.Context, msg string, paths []string) (string, error)
+	// Returns the new HEAD commit hash and the service-relative paths that were
+	// actually removed (i.e., existed before the commit).
+	DeleteAndPush(ctx context.Context, msg string, paths []string) (string, []string, error)
 
 	// RestoreServiceFilesAndPush replaces recognized files under one service
 	// path with files, commits, and pushes.
@@ -418,7 +419,7 @@ func (r localFileReader) ReadFile(path string) ([]byte, error) {
 }
 
 // DeleteAndPush removes the listed paths, commits, and pushes.
-func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (hash string, err error) {
+func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (hash string, deleted []string, err error) {
 	start := time.Now()
 	outcome := "success"
 	defer func() {
@@ -433,7 +434,7 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (h
 
 	for attempt := 0; attempt < maxPushRetries; attempt++ {
 		if err := r.pull(ctx); err != nil && !errors.Is(err, gogit.NoErrAlreadyUpToDate) {
-			return "", fmt.Errorf("pre-delete pull: %w", err)
+			return "", nil, fmt.Errorf("pre-delete pull: %w", err)
 		}
 		if afterPullHook != nil {
 			afterPullHook(attempt)
@@ -441,17 +442,22 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (h
 
 		w, err := r.repo.Worktree()
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 
+		var actuallyDeleted []string
 		for _, path := range paths {
 			targets, err := removalTargets(r.localPath, path)
 			if err != nil {
-				return "", err
+				return "", nil, err
 			}
 			fullPath := filepath.Join(r.localPath, path)
+			if _, statErr := os.Stat(fullPath); statErr == nil {
+				// File/dir existed on disk before removal — it will actually be deleted.
+				actuallyDeleted = append(actuallyDeleted, filepath.ToSlash(path))
+			}
 			if err := os.RemoveAll(fullPath); err != nil && !os.IsNotExist(err) {
-				return "", fmt.Errorf("remove %s: %w", path, err)
+				return "", nil, fmt.Errorf("remove %s: %w", path, err)
 			}
 			if len(targets) == 0 {
 				targets = []string{path}
@@ -465,7 +471,7 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (h
 			}
 		}
 
-		hash, err := w.Commit(msg, &gogit.CommitOptions{
+		commitHash, err := w.Commit(msg, &gogit.CommitOptions{
 			Author:            signature(),
 			AllowEmptyCommits: false,
 		})
@@ -474,9 +480,9 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (h
 				// Nothing was actually deleted — treat as no-op success.
 				outcome = "noop"
 				h, _ := r.headHash()
-				return h, nil
+				return h, nil, nil
 			}
-			return "", fmt.Errorf("git commit delete: %w", err)
+			return "", nil, fmt.Errorf("git commit delete: %w", err)
 		}
 
 		pushErr := r.repo.PushContext(ctx, &gogit.PushOptions{
@@ -484,22 +490,22 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (h
 			Auth:       r.auth,
 		})
 		if pushErr == nil {
-			return hash.String(), nil
+			return commitHash.String(), actuallyDeleted, nil
 		}
 		if !isNonFastForwardPush(pushErr) {
 			if rerr := resetToParent(r.repo, w); rerr != nil {
 				slog.Error("failed to reset after terminal push (delete) error", "resetErr", rerr, "pushErr", pushErr)
 			}
-			return "", apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
+			return "", nil, apperror.Wrap(apperror.CodeGitPush, "push failed", pushErr)
 		}
 
 		slog.Warn("git push (delete) rejected, will retry", "attempt", attempt+1)
 		if err := resetToParent(r.repo, w); err != nil {
-			return "", fmt.Errorf("reset after push rejection: %w", err)
+			return "", nil, fmt.Errorf("reset after push rejection: %w", err)
 		}
 	}
 
-	return "", apperror.New(apperror.CodeGitPush, fmt.Sprintf("push (delete) failed after %d retries", maxPushRetries))
+	return "", nil, apperror.New(apperror.CodeGitPush, fmt.Sprintf("push (delete) failed after %d retries", maxPushRetries))
 }
 
 // RestoreServiceFilesAndPush replaces recognized files under one service path,
@@ -545,7 +551,10 @@ func (r *Repo) RestoreServiceFilesAndPush(
 			if _, ok := targetFiles[path]; ok {
 				continue
 			}
-			rel, _ := serviceRelativeRepoPath(path, org, project, service)
+			rel, ok := serviceRelativeRepoPath(path, org, project, service)
+			if !ok {
+				continue
+			}
 			deleted = append(deleted, rel)
 			fullPath := filepath.Join(r.localPath, filepath.FromSlash(path))
 			if err := os.RemoveAll(fullPath); err != nil && !os.IsNotExist(err) {
@@ -889,71 +898,98 @@ func (r *Repo) ReadServiceFilesAtCommit(
 
 // IterateServiceHistory walks commits from HEAD newest-first and emits only
 // commits that changed recognized files under the requested service path.
+// fn is called for each matching entry outside the repo lock so that fn may
+// safely call other Repo methods (e.g. ReadFileAtCommit). Return an error
+// from fn to stop iteration early.
 func (r *Repo) IterateServiceHistory(ctx context.Context, org, project, service string, fn func(ServiceHistoryEntry) error) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	entries, err := r.serviceHistoryEntries(ctx, org, project, service)
-	if err != nil {
-		return err
+	// Phase 1: scan the git log under the repo lock, streaming entries into a
+	// buffered channel.  The cancel lets the consumer signal the producer to
+	// stop early (e.g. when fn returns an error or the limit is reached).
+	scanCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type result struct {
+		entry ServiceHistoryEntry
+		err   error
 	}
-	for _, entry := range entries {
-		if err := ctx.Err(); err != nil {
-			return err
+	ch := make(chan result, 8)
+
+	go func() {
+		defer close(ch)
+		r.mu.Lock()
+		defer r.mu.Unlock()
+
+		head, err := r.repo.Head()
+		if err != nil {
+			select {
+			case ch <- result{err: fmt.Errorf("git head: %w", err)}:
+			case <-scanCtx.Done():
+			}
+			return
 		}
-		if err := fn(entry); err != nil {
+		iter, err := r.repo.Log(&gogit.LogOptions{
+			From:  head.Hash(),
+			Order: gogit.LogOrderCommitterTime,
+		})
+		if err != nil {
+			select {
+			case ch <- result{err: fmt.Errorf("git log: %w", err)}:
+			case <-scanCtx.Done():
+			}
+			return
+		}
+		defer iter.Close()
+
+		_ = iter.ForEach(func(commit *object.Commit) error {
+			if err := scanCtx.Err(); err != nil {
+				return err
+			}
+			files, err := serviceFilesChangedInCommit(commit, org, project, service)
+			if err != nil {
+				select {
+				case ch <- result{err: err}:
+				case <-scanCtx.Done():
+				}
+				return err
+			}
+			if len(files) == 0 {
+				return nil
+			}
+			author := commit.Author.Email
+			if author == "" {
+				author = commit.Author.Name
+			}
+			entry := ServiceHistoryEntry{
+				Version:      commit.Hash.String(),
+				Message:      strings.TrimSpace(commit.Message),
+				Author:       author,
+				Timestamp:    commit.Author.When.UTC(),
+				FilesChanged: files,
+			}
+			select {
+			case ch <- result{entry: entry}:
+			case <-scanCtx.Done():
+				return scanCtx.Err()
+			}
+			return nil
+		})
+	}()
+
+	// Phase 2: consume entries and call fn without holding the lock.
+	for res := range ch {
+		if res.err != nil {
+			return res.err
+		}
+		if err := fn(res.entry); err != nil {
+			cancel() // signal producer to stop
 			return err
 		}
 	}
 	return nil
-}
-
-func (r *Repo) serviceHistoryEntries(ctx context.Context, org, project, service string) ([]ServiceHistoryEntry, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	head, err := r.repo.Head()
-	if err != nil {
-		return nil, fmt.Errorf("git head: %w", err)
-	}
-	iter, err := r.repo.Log(&gogit.LogOptions{
-		From:  head.Hash(),
-		Order: gogit.LogOrderCommitterTime,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("git log: %w", err)
-	}
-	defer iter.Close()
-
-	var entries []ServiceHistoryEntry
-	if err := iter.ForEach(func(commit *object.Commit) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		files, err := serviceFilesChangedInCommit(commit, org, project, service)
-		if err != nil {
-			return err
-		}
-		if len(files) == 0 {
-			return nil
-		}
-		author := commit.Author.Email
-		if author == "" {
-			author = commit.Author.Name
-		}
-		entries = append(entries, ServiceHistoryEntry{
-			Version:      commit.Hash.String(),
-			Message:      strings.TrimSpace(commit.Message),
-			Author:       author,
-			Timestamp:    commit.Author.When.UTC(),
-			FilesChanged: files,
-		})
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return entries, nil
 }
 
 func serviceFilesChangedInCommit(commit *object.Commit, org, project, service string) ([]ServiceFileChange, error) {

@@ -28,6 +28,10 @@ type RateLimitSettings struct {
 	SecretResolve RateLimit
 	Watch         RateLimit
 	Batch         RateLimit
+	// Read limits unauthenticated read-heavy endpoints (history). The history
+	// endpoint scans the git log on every request; without a limiter a single
+	// client can pin one CPU per concurrent request.
+	Read RateLimit
 }
 
 type endpointRateLimiters struct {
@@ -35,6 +39,7 @@ type endpointRateLimiters struct {
 	secretResolve *rate.Limiter
 	watch         *rate.Limiter
 	batch         *rate.Limiter
+	read          *rate.Limiter
 }
 
 func newEndpointRateLimiters(settings RateLimitSettings) endpointRateLimiters {
@@ -43,6 +48,7 @@ func newEndpointRateLimiters(settings RateLimitSettings) endpointRateLimiters {
 		secretResolve: newRateLimiter(settings.SecretResolve),
 		watch:         newRateLimiter(settings.Watch),
 		batch:         newRateLimiter(settings.Batch),
+		read:          newRateLimiter(settings.Read),
 	}
 }
 
@@ -63,6 +69,10 @@ func (h *Handler) limitWatch(next http.HandlerFunc) http.HandlerFunc {
 
 func (h *Handler) limitBatch(next http.HandlerFunc) http.HandlerFunc {
 	return h.limitEndpoint(h.rateLimiters.batch, next)
+}
+
+func (h *Handler) limitRead(next http.HandlerFunc) http.HandlerFunc {
+	return h.limitEndpoint(h.rateLimiters.read, next)
 }
 
 func (h *Handler) limitEndpoint(limiter *rate.Limiter, next http.HandlerFunc) http.HandlerFunc {
