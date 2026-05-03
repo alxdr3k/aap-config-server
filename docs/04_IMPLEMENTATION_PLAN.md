@@ -62,7 +62,7 @@ Gate status:
 | `P0-M3` | Documentation system migrated to boilerplate structure. |  | `accepted` | `AC-014`, `AC-015` | `docs/00_*`, `docs/current/*`, `AGENTS.md`, `.github/`, PR #10 | Migration landed on main. |
 | `P1-M1` | Secret write/resolve with SealedSecret, K8s apply, and Console App Registry integration. |  | `accepted` | `AC-020`, `AC-021` | ADR-004, `internal/secret`, `internal/registry`, `internal/handler` | Secret path and App Registry integration landed. |
 | `P1-M2` | Config Agent rollout path. |  | `accepted` | `AC-030` | ADR-001, ADR-002, `internal/agent`, `Dockerfile`, `docs/current/OPERATIONS.md` | `AGENT-1A.1`~`AGENT-1A.8` landed with fake-client e2e smoke coverage. |
-| `P1-M3` | Console integration extensions and production hardening. |  | `in_progress` | `AC-040`~`AC-042` | `docs/01_PRD.md`, `DEC-003` | `EXT-1A.1`~`EXT-1D.5` and `HARDEN-1A.1`~`HARDEN-1A.3` landed; `HARDEN-1A.4` is next. |
+| `P1-M3` | Console integration extensions and production hardening. |  | `in_progress` | `AC-040`~`AC-042` | `docs/01_PRD.md`, `DEC-003` | `EXT-1A.1`~`EXT-1D.5` and `HARDEN-1A.1`~`HARDEN-1A.4` landed; `HARDEN-1A.5` is next. |
 
 ## Tracks
 
@@ -75,7 +75,7 @@ Gate status:
 | `REGISTRY` | AAP Console App Registry bootstrap and webhook cache. | `REGISTRY-1A` | `accepted` | Startup bootstrap, webhook cache updates, and status observability landed. |
 | `AGENT` | Config Agent and rollout orchestration. | `AGENT-1A` | `accepted` | Agent bootstrap, leader election, read polling, rendering, ConfigMap/Secret apply, rollout patch, debounce, image target, and e2e smoke coverage landed. |
 | `EXT` | Watch, history, revert, inheritance, batch, webhook, metrics, and HTTP response extensions. | `EXT-1D` | `accepted` | `EXT-1A` watch slices, `EXT-1B.1`~`EXT-1B.5` history/versioned-read/revert slices, `EXT-1C.1`~`EXT-1C.4` inheritance slices, and `EXT-1D.1`~`EXT-1D.5` HTTP response/batch/metrics/webhook extensions landed. |
-| `HARDEN` | Schema validation, rate limiting, integration/load tests, and deployment handoff docs. | `HARDEN-1A` | `in_progress` | Schema validation and rate limiting landed; integration harness is ready next. |
+| `HARDEN` | Schema validation, rate limiting, integration/load tests, and deployment handoff docs. | `HARDEN-1A` | `in_progress` | Schema validation, rate limiting, integration harness, and load/concurrency profiles landed; deployment handoff docs (`HARDEN-1A.5`) is next. |
 
 ## Phases / Slices
 
@@ -131,7 +131,7 @@ Gate status:
 | `HARDEN-1A.1` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add explicit schema validation layer for config, env vars, defaults, and secret metadata files. | `EXT-1C.1`, `SECRET-1A.6` | `AC-042` | `passing` | `landed` | `internal/parser/validate.go`, `internal/parser/*_test.go`, `docs/current/*` |  |
 | `HARDEN-1A.2` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add configurable rate limiting for admin, secret resolve, watch, and batch endpoints. | `OPS-1A.1`, `EXT-1D.3`, `HARDEN-1A.1` | `AC-042` | `passing` | `landed` | `internal/config`, `internal/handler`, `cmd/config-server`, `docs/current/*` |  |
 | `HARDEN-1A.3` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Build integration test harness with fake Git, fake K8s, and fake Console dependencies. | `SECRET-1A.8`, `REGISTRY-1A.3`, `AGENT-1A.8` | `AC-042` | `passing` | `landed` | `internal/integration/harness_integration_test.go`; 6 hermetic scenarios: startup/load, Console bootstrap with status assertion, admin config write, admin env_vars write, secret write with fake K8s adapters, out-of-band Git push detected by ReloadFromRepo |  |
-| `HARDEN-1A.4` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add load/concurrency test profiles for admin writes, watch waits, and Config Agent polling. | `HARDEN-1A.3`, `EXT-1A.3` | `AC-042` | `defined` | `planned` | `docs/development-process.md` |  |
+| `HARDEN-1A.4` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Add load/concurrency test profiles for admin writes, watch waits, and Config Agent polling. | `HARDEN-1A.3`, `EXT-1A.3` | `AC-042` | `passing` | `landed` | `internal/integration/load_concurrency_integration_test.go`; 5 hermetic load/concurrency scenarios: concurrent admin config writes (8 workers), concurrent admin env-var writes (8 workers), concurrent watch unblock-on-write (6 watchers), concurrent Config Agent polling (16 agents × 5 polls), concurrent mixed reads/writes (4 writers + 12 readers); all pass under `-race` |  |
 | `HARDEN-1A.5` | `P1-M3` | `HARDEN` | `HARDEN-1A` | Finalize deployment handoff docs for image, env vars, network policy expectations, and external manifest ownership (per `DEC-003`). | `HARDEN-1A.4` | `AC-042` | `defined` | `planned` | `docs/05_RUNBOOK.md`, `docs/current/OPERATIONS.md` |  |
 
 ## Gates / Acceptance
