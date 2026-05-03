@@ -114,7 +114,7 @@ no live Kubernetes cluster or network access is required. Covered scenarios:
 - Concurrent Config Agent polling (16 agents × 5 polls) — read-path concurrency floor with snapshot serving.
 - Concurrent mixed reads/writes (4 writers + 12 readers) — interleaved read/write concurrency under the global mutex.
 
-All integration scenarios are fully hermetic and all profiles pass under `make test-race`.
+All integration scenarios are fully hermetic and pass under `make test-integration`. Note: `make test-race` does not include the `-tags=integration` build tag, so integration tests (including load/concurrency profiles) are not executed by that target.
 
 ## E2E tests
 

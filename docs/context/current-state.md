@@ -153,7 +153,7 @@ from an atomically swapped in-memory snapshot.
   concurrent admin env-var writes (8 workers), concurrent long-poll watch unblocked by a
   single write (6 watchers), concurrent Config Agent polling (16 agents × 5 polls), and
   concurrent mixed reads/writes (4 writers + 12 readers). All scenarios pass under
-  `make test-integration` and `make test-race`.
+  `make test-integration` (`make test-race` excludes the `-tags=integration` build tag).
 
 ## Planned
 
