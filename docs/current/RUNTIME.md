@@ -88,10 +88,13 @@ returned. The endpoint defaults to inherited reads and supports request-level
 
 Runtime-configured token-bucket rate limits can be enabled independently for
 admin endpoints, `resolve_secrets=true` env var reads, config/env watch
-endpoints, and the batch read endpoint. Each group requires a positive RPS and
-burst pair; the zero default disables limiting. Limited requests return
-`429 rate_limited` with `Retry-After: 1`. Admin endpoint limiting runs after
-API-key authentication so failed auth does not consume admin tokens.
+endpoints, the batch read endpoint, and the history/read endpoint. Each group
+requires a positive RPS and burst pair; the zero default disables limiting.
+Limited requests return `429 rate_limited` with `Retry-After: 1`. Admin
+endpoint limiting runs after API-key authentication so failed auth does not
+consume admin tokens. Enabling `RATE_LIMIT_READ_RPS` / `RATE_LIMIT_READ_BURST`
+is recommended for the history endpoint — history scans the full Git log per
+request and has no authentication gate.
 
 `GET /metrics` returns Prometheus text exposition. Implemented metric families
 cover HTTP request counts and duration histograms by method, route template,

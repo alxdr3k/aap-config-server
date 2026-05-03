@@ -118,12 +118,13 @@ snapshot for serving reads.
   decision explicitly moves deployment ownership here.
 - Runtime network access should restrict unauthenticated config/env reads to trusted clients.
 
-### Config Agent image build
+### Image build
 
-The default Docker target remains `config-server`:
+Build the Config Server image (default Dockerfile target):
 
 ```bash
 make docker-build
+# equivalent:
 docker build --target config-server -t aap/config-server:latest .
 ```
 
@@ -131,7 +132,15 @@ Build the Config Agent image with the dedicated target:
 
 ```bash
 make docker-build-agent
+# equivalent:
 docker build --target config-agent -t aap/config-agent:latest .
+```
+
+Tag and push to your registry before deploying:
+
+```bash
+docker tag aap/config-server:latest <registry>/aap/config-server:<version>
+docker push <registry>/aap/config-server:<version>
 ```
 
 ### Config Agent RBAC and deployment handoff example
@@ -238,6 +247,87 @@ spec:
                   name: config-agent-api
                   key: api-key
 ```
+
+### Config Server NetworkPolicy handoff example
+
+The following snippet is a non-authoritative reference for the external
+deployment system that owns NetworkPolicy manifests under `DEC-003`.
+Adjust namespaces, pod selectors, and port ranges to match your cluster.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aap-config-server
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: aap-config-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow Config Agent and admin clients on the HTTP API port.
+    # Restrict 'from' to the namespaces and pods that should reach the server.
+    # Without a 'from' clause, ingress is accepted cluster-wide — always add
+    # explicit selectors in production.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ai-platform  # adjust to your namespace
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: litellm-config-agent  # Config Agent pods
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    # Git remote over SSH (adjust port if using HTTPS/443)
+    - ports:
+        - port: 22
+          protocol: TCP
+    # TCP/443 egress covers: AAP Console API (CONSOLE_API_URL) and
+    # Kubernetes API (SealedSecret lookup/apply). Scope to specific CIDRs
+    # for the Console endpoint and cluster API server in production;
+    # the ipBlock below is intentionally broad as a handoff baseline.
+    - ports:
+        - port: 443
+          protocol: TCP
+      to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.0.0/16
+```
+
+Network access requirements at runtime:
+
+| Destination | Port | Required when |
+|---|---|---|
+| Git remote (SSH) | 22 | `GIT_SSH_KEY` set |
+| Git remote (HTTPS) | 443 | `GIT_USERNAME`/`GIT_PASSWORD` set |
+| AAP Console API | 443 | `CONSOLE_API_URL` set |
+| Kubernetes API | 443 | secret writes with SealedSecret integration |
+
+### External manifest ownership
+
+Per `DEC-003`, Helm charts and Kubernetes manifests (Deployment, Service,
+ServiceAccount, RBAC, NetworkPolicy, PodDisruptionBudget) remain in the
+external deployment repo. This repo provides:
+
+- Binary and Docker image build targets (`Dockerfile`, `Makefile`).
+- Runtime env var reference (`docs/current/OPERATIONS.md` env vars table).
+- Non-authoritative RBAC and NetworkPolicy handoff examples (above and
+  `### Config Agent RBAC and deployment handoff example`).
+- Runbook guidance (`docs/05_RUNBOOK.md`).
+
+The external deployment owner is responsible for:
+
+- Choosing image tags and registry paths.
+- Applying RBAC, NetworkPolicy, and resource quota manifests.
+- Managing `API_KEY`, Git auth secrets, and `CONFIG_AGENT_API_KEY`.
+- Configuring rate limits (`RATE_LIMIT_*_RPS` / `RATE_LIMIT_*_BURST`) appropriate for their cluster.
 
 ### CI/CD ownership
 
