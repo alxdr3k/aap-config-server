@@ -196,3 +196,8 @@ brief_run_json_file() {
   local state_dir="$1"
   printf '%s\n' "$state_dir/dev-cycle-run.json"
 }
+
+brief_audit_jsonl_file() {
+  local state_dir="$1"
+  printf '%s\n' "$state_dir/dev-cycle-audit-passes.jsonl"
+}

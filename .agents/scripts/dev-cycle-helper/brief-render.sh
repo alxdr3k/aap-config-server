@@ -1,5 +1,27 @@
 # shellcheck shell=bash
 
+render_audit_markdown() {
+  local payload_file="$1"
+  jq -r '
+    def finding_line:
+      ((.summary_ko // .summary // "기록 없음") | tostring) +
+      (if (.severity // "") != "" then " [" + (.severity | tostring) + "]" else "" end);
+    def candidate_line:
+      ((.id // "후보") | tostring) +
+      (if (.summary_ko // "") != "" then ": " + (.summary_ko | tostring) else "" end) +
+      (if (.unblock_ko // "") != "" then " 시작 조건: " + (.unblock_ko | tostring) else "" end);
+    [
+      "Opus 환기 audit (turn \(.audit_turn), after cycle \(.after_cycle))",
+      "",
+      "- 검토 범위: " + (if ((.over_cycles // []) | length) > 0 then ((.over_cycles | map(tostring) | join(", ")) + " 사이클") else "직전 누적 변경" end),
+      "- 요약: \(.summary_ko)",
+      (if ((.findings // []) | length) > 0 then "- 발견:\n" + ((.findings // []) | map("  - " + finding_line) | join("\n")) else "- 발견: 없음" end),
+      (if ((.recommended_next // []) | length) > 0 then "- 추천 다음 작업:\n" + ((.recommended_next // []) | map("  - " + candidate_line) | join("\n")) else empty end),
+      (if (.no_action_reason_ko // "") != "" then "- 액션 없음 사유: \(.no_action_reason_ko)" else empty end)
+    ] | join("\n")
+  ' "$payload_file"
+}
+
 render_cycle_markdown() {
   local payload_file="$1"
   jq -r '
@@ -334,15 +356,19 @@ finish_cycle() {
 }
 
 summary_json() {
-  local context run_id log state_dir jsonl start_epoch_file start_epoch now elapsed elapsed_text repo
+  local context run_id log state_dir jsonl audit_jsonl start_epoch_file start_epoch now elapsed elapsed_text repo
   require_jq || return 1
   context="$(brief_context)" || return 1
   run_id="$(printf '%s\n' "$context" | sed -n '1p')"
   log="$(printf '%s\n' "$context" | sed -n '2p')"
   state_dir="$(ensure_state_dir)"
   jsonl="$(brief_jsonl_file "$state_dir")"
+  audit_jsonl="$(brief_audit_jsonl_file "$state_dir")"
   if [[ ! -f "$jsonl" ]]; then
     : > "$jsonl" || return 1
+  fi
+  if [[ ! -f "$audit_jsonl" ]]; then
+    : > "$audit_jsonl" || return 1
   fi
   backfill_jsonl_from_markdown_if_needed "$log" "$jsonl" "$run_id" || return 1
   validate_jsonl_state "$jsonl" || return 1
@@ -359,6 +385,7 @@ summary_json() {
   repo="$(repo_name)"
   jq -n \
     --slurpfile cycles "$jsonl" \
+    --slurpfile audit_passes "$audit_jsonl" \
     --arg run_id "$run_id" \
     --arg repo "$repo" \
     --arg log "$log" \
@@ -406,11 +433,18 @@ summary_json() {
       if ($xs | length) == 0 then "- \($label): 없음"
       elif ($xs | length) == 1 then "- \($label): \($xs[0])"
       else "- \($label):\n" + ($xs | map("  - " + .) | join("\n")) end;
+    def audit_text:
+      "turn \(.audit_turn) (after cycle \(.after_cycle))" +
+      (if ((.over_cycles // []) | length) > 0 then ", 검토 범위 " + ((.over_cycles | map(tostring) | join(", ")) + " 사이클") else "" end) +
+      " — \(.summary_ko // "기록 없음")" +
+      (if ((.findings // []) | length) > 0 then ", 발견 \((.findings // []) | length)건" else "" end) +
+      (if ((.recommended_next // []) | length) > 0 then ", 추천 \((.recommended_next // []) | length)건" else "" end);
     ($cycles | length) as $count |
     ($cycles[-1] // {}) as $last |
     ($last.next_candidates // []) as $candidates |
     ([$cycles[]? as $c | ($c.auto_promotion_candidates // [])[]? | "사이클 \($c.cycle): \(promotion_candidate_text)"]) as $promotion_candidates |
     ([$cycles[]? as $c | ($c.auto_promotions // [])[]? | "사이클 \($c.cycle): \(promotion_text)"]) as $promotions |
+    ([$audit_passes[]? | audit_text]) as $audit_lines |
     ([
       "최종 브리핑",
       "",
@@ -418,6 +452,7 @@ summary_json() {
       block("작업"; if $count == 0 then [] else [$cycles[] | "사이클 \(.cycle): \(headline(.))"] end),
       block("검증"; [$cycles[] as $c | ($c.verification // [])[]? | item_text as $v | "사이클 \($c.cycle): \($v)"]),
       block("리뷰/반영"; if $count == 0 then [] else [$cycles[] | "사이클 \(.cycle): \(review_land_text(.))"] end),
+      (if ($audit_lines | length) > 0 then block("Opus 환기 audit"; $audit_lines) else empty end),
       (if ($promotion_candidates | length) > 0 then block("자동 승격 검토"; $promotion_candidates) else empty end),
       (if ($promotions | length) > 0 then block("자동 승격"; $promotions) else empty end),
       (if ($candidates | length) > 0 then block("다음 검토 후보"; [$candidates[] | candidate_text]) else empty end),
@@ -435,6 +470,7 @@ summary_json() {
       next_candidates:$candidates,
       auto_promotion_candidates:[$cycles[]?.auto_promotion_candidates[]?],
       auto_promotions:[$cycles[]?.auto_promotions[]?],
+      audit_passes:($audit_passes | map({audit_turn, after_cycle, summary_ko, over_cycles, findings_count:((.findings // []) | length), recommended_count:((.recommended_next // []) | length)})),
       rendered_markdown:$rendered
     }'
 }

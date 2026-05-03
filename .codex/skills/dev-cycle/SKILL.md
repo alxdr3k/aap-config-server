@@ -1,12 +1,12 @@
 ---
 name: dev-cycle
-description: "전체 개발 사이클: sync -> discover -> implement -> verify -> review -> land. 플래그: --loop [N], --phase <id>"
+description: "전체 개발 사이클: sync -> discover -> implement -> verify -> review -> land. 플래그: --loop [N], --phase <id>, --opus-audit-every <N>"
 ---
 <!-- my-skill:generated
 skill: dev-cycle
-base-sha256: 91a92dd1c1ee6df655ed36373f2e17056e211dfe0f1b70b165b1e9f881ea5f0a
+base-sha256: 05589aff7e5943169b889dbe661fa0307f301d1e3a98da3cad6304019a6a0e4e
 overlay-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-output-sha256: 91a92dd1c1ee6df655ed36373f2e17056e211dfe0f1b70b165b1e9f881ea5f0a
+output-sha256: 05589aff7e5943169b889dbe661fa0307f301d1e3a98da3cad6304019a6a0e4e
 do-not-edit: edit .codex/skill-overrides/dev-cycle.md instead
 -->
 
@@ -17,6 +17,7 @@ do-not-edit: edit .codex/skill-overrides/dev-cycle.md instead
 - `--loop`: cycle 완료 후 반복한다. Step 3에서 **ALL CLEAR**이고 자동 승격한 후보가 없으면 종료한다.
 - `--loop N`: 최대 N회 반복한다. **ALL CLEAR**이고 자동 승격한 후보가 없으면 N회 전에도 종료한다.
 - `--phase <id>`: 탐색과 구현 범위를 해당 roadmap / task / milestone / track / phase / slice id로 제한한다. 값을 파싱하거나 변환하지 않는다.
+- `--opus-audit-every <N>`: cycle 종료 후 직전 cycle index가 N의 배수면 read-only Opus 환기 audit pass를 1회 수행한다. N은 양의 정수다. 누적된 변경 방향성을 Opus가 검토하고 결과만 brief log에 기록한다. 코드 수정/commit/push는 하지 않는다.
 
 ## Invariants
 
@@ -106,9 +107,12 @@ JSON
 "$DEV_CYCLE_HELPER" sync
 REPO_TYPE="$("$DEV_CYCLE_HELPER" repo-type)"
 REVIEW_BASE="$("$DEV_CYCLE_HELPER" review-base)"
+"$DEV_CYCLE_HELPER" record-audit-baseline
 echo "Repo type: $REPO_TYPE"
 echo "Review base: $REVIEW_BASE"
 ```
+
+`record-audit-baseline`은 첫 cycle이 끝나기 전 한 번만 post-sync HEAD를 `dev-cycle-run.json.base_sha`에 기록하고, 그 이후 호출은 idempotent로 무시한다. 첫 audit window의 START_SHA fallback이 sync로 가져온 upstream commits를 포함하지 않도록 한다.
 
 ## Step 2 - Discover
 
@@ -191,7 +195,7 @@ REVIEW_DOSSIER_JSON="$("$DEV_CYCLE_HELPER" review-dossier)"
 
 - `CHANGE_SCOPE_JSON.review_inputs`에 있는 base range, staged diff, unstaged diff, untracked files를 모두 리뷰한다.
 - `REVIEW_DOSSIER_JSON.review_dossier`는 diff 크기, 파일 확산, 계약/중요 경로처럼 script가 계산 가능한 신호만 담는다. dossier가 없거나 helper가 실패하면 `CHANGE_SCOPE_JSON`과 아래 위험 trigger를 수동으로 적용한다.
-- `review_dossier.reviewer_route.recommended == "opus_or_high_effort"`이면 현재 Codex 환경에서 명시적으로 허용된 high-capability/high-effort reviewer가 있을 때만 사용한다. 기준은 휴리스틱이다: 200라인 초과는 집중도 저하 경고, 400라인 초과는 강한 리뷰/분할 후보, 변경 파일 5개 초과와 보안/영속성/설정/배포/공개 command 경로는 high trigger다.
+- `review_dossier.risk_triggers`는 200/400라인 초과, 변경 파일 5개 초과, 보안/영속성/설정/배포/공개 command 경로 같은 휴리스틱 위험 신호다. reviewer 입력 정보로 참고한다.
 - Direct-push repo와 Standard repo 모두 같은 입력 규칙을 쓴다. Standard repo도 `$REVIEW_BASE...HEAD`만 보지 않는다. commit 전 local diff와 untracked files가 있으면 반드시 Review Pass 입력에 포함한다.
 - Review Pass는 diff review와 impact triage/scan이 함께 통과한 상태다. impact scan을 review OK 이후 별도 단계로 두지 않는다.
 - Impact triage: docs/typo/slice/test-only처럼 외부 surface가 없으면 `Impact: local only`로 끝낸다.
@@ -233,8 +237,54 @@ REVIEW_DOSSIER_JSON="$("$DEV_CYCLE_HELPER" review-dossier)"
 - Step 1 기준 상태가 깨끗한지 확인한 뒤 cycle 종료 처리를 한다.
 - timeout, merge block, unresolved actionable feedback이면 `result:"blocked"` payload로 `finish-cycle-json`을 실행하고 중단한다.
 
+## Step 10 - Opus Audit Gate
+
+`--opus-audit-every <N>` flag가 있고 직전 cycle index가 N의 배수일 때만 수행한다. 그 외에는 이 step을 건너뛴다.
+
+- 현재 Codex 환경에서 명시적으로 허용된 read-only Opus reviewer를 호출한다. 입력은 다음으로 제한한다:
+  - 직전 N cycle의 brief log entries (`.dev-cycle/dev-cycle-briefs.jsonl`의 마지막 N개). **이게 canonical 검토 단위다.** cycle ↔ commit은 1:1이 아닐 수 있으므로 (zero-commit `all_clear` cycle, PR 피드백 다중 commit, squash 안 하는 direct-push repo 등) git range는 commit 갯수가 아니라 cycle entry의 `repo.head` 기준으로 잡는다.
+  - 직전 N cycle의 누적 git log와 diff. range는 brief log에서 뽑는다:
+    ```bash
+    # after_cycle = 방금 끝낸 cycle, N = audit_every
+    START_SHA="$(jq -r --argjson c "$((after_cycle - N))" 'select(.cycle == $c) | .repo.head' .dev-cycle/dev-cycle-briefs.jsonl | head -1)"
+    END_SHA="$(jq -r --argjson c "$after_cycle" 'select(.cycle == $c) | .repo.head' .dev-cycle/dev-cycle-briefs.jsonl | head -1)"
+    # 첫 audit (after_cycle == N)이면 cycle 0이 없어 START_SHA가 비어있다. init-brief가 .dev-cycle/dev-cycle-run.json에 저장한 base_sha를 fallback으로 쓴다.
+    if [[ -z "$START_SHA" ]]; then
+      START_SHA="$(jq -r '.base_sha // empty' .dev-cycle/dev-cycle-run.json)"
+    fi
+    git log --oneline "${START_SHA}..${END_SHA:-HEAD}"
+    git diff --stat "${START_SHA}..${END_SHA:-HEAD}"
+    ```
+  - 현재 `docs/context/current-state.md` 또는 동등한 status ledger (있으면)
+  - 직전 N cycle 동안 누적된 dossier `risk_triggers` 요약 (선택)
+- Opus는 누적된 변경 방향성, codex finding 적용으로 인한 over-fit, 일관성 침식, 누적 ad-hoc 패턴, 빠진 후속 작업을 본다. 코드 수정/commit/push/PR 변경은 하지 않는다.
+- 결과를 `audit-pass-json`에 넘기되 `--opus-audit-every`의 N을 첫 인자로 전달해 정확한 window 길이를 helper가 강제하도록 한다.
+
+```bash
+"$DEV_CYCLE_HELPER" audit-pass-json "$N" <<'JSON'
+{
+  "schema_version": 1,
+  "after_cycle": <방금 끝낸 cycle 번호>,
+  "over_cycles": [<검토한 cycle 번호 배열>],
+  "summary_ko": "audit 결론",
+  "findings": [
+    {"summary_ko": "발견한 패턴", "severity": "high|medium|low (선택)"}
+  ],
+  "recommended_next": [
+    {"id": "후속 task id 또는 라벨", "summary_ko": "권장 작업", "unblock_ko": "시작 조건 (선택)"}
+  ],
+  "no_action_reason_ko": "환기 결과 actionable 없음 (선택)"
+}
+JSON
+```
+
+- `over_cycles`는 정확히 N개, 1씩 증가하는 contiguous 배열로 채우고 마지막 항목이 `after_cycle`과 일치해야 한다 (예: `after_cycle=6`, `N=3`이면 `[4, 5, 6]`). 길이가 N이 아니거나 누락/future/non-contiguous cycle이면 helper가 거부한다.
+- ack JSON의 `rendered_markdown`을 사용자에게 그대로 보여준 뒤 다음 cycle 또는 종료로 진행한다.
+- audit pass가 실패하면 (Opus 실행 오류, `audit-pass-json` 거부, helper 오류 등 valid한 audit record가 만들어지지 않은 모든 케이스) **loop를 그 자리에서 멈추고 사용자에게 사유를 보고한다.** fail-open으로 진행하면 환기가 누락된 채로 후속 cycle이 돌아 audit gate가 무의미해진다. 사용자가 명시적으로 "이번 audit 건너뛰고 진행"을 지시한 경우에만 다음 cycle로 넘어간다.
+- `recommended_next`는 다음 cycle Step 2 discovery에 참고 정보로 첨부할 수 있다.
+
 ## Loop
 
-`--loop` 또는 `--loop N`이면 cycle brief를 append하고 사용자에게 보여준 뒤 다음 cycle로 간다. 단, 직전 cycle이 `all_clear`이고 ack의 `auto_promotions_count`가 `0`이면 loop를 종료한다. 직전 cycle이 `all_clear`라도 `auto_promotions_count > 0`이면 새 ready 작업이 생긴 것이므로 다음 cycle로 계속 진행한다. Direct-push repo의 같은 loop 실행에서 직전 cycle이 `landed`였거나 legacy `shipped`였거나 `all_clear` + `auto_promotions_count > 0`로 끝났고 local `main`이 clean이면 다음 cycle은 Step 2부터 시작한다. 그 외에는 Step 1로 돌아간다. 이어받은 cycle에서는 brief log의 run id와 git log를 확인해 현재 loop의 이전 cycle만 복원한다.
+`--loop` 또는 `--loop N`이면 cycle brief를 append하고 사용자에게 보여준 뒤, Step 10 (Opus Audit Gate) 진입 조건이 맞으면 audit pass를 1회 수행한 다음 다음 cycle로 간다. 단, 직전 cycle이 `all_clear`이고 ack의 `auto_promotions_count`가 `0`이면 loop를 종료한다. 직전 cycle이 `all_clear`라도 `auto_promotions_count > 0`이면 새 ready 작업이 생긴 것이므로 다음 cycle로 계속 진행한다. Direct-push repo의 같은 loop 실행에서 직전 cycle이 `landed`였거나 legacy `shipped`였거나 `all_clear` + `auto_promotions_count > 0`로 끝났고 local `main`이 clean이면 다음 cycle은 Step 2부터 시작한다. 그 외에는 Step 1로 돌아간다. 이어받은 cycle에서는 brief log의 run id와 git log를 확인해 현재 loop의 이전 cycle만 복원한다.
 
 종료 시 `"$DEV_CYCLE_HELPER" summary-json`을 실행하고 summary JSON의 `rendered_markdown`을 `최종 브리핑`으로 사용자에게 보여준다. 임의로 축약하지 않는다.

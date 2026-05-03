@@ -4,9 +4,9 @@ description: 현재 PR의 codex 리뷰를 기다리고 코멘트 수정 후 push
 ---
 <!-- my-skill:generated
 skill: codex-loop
-base-sha256: 78a9d48632a21e0c94e5ed896a06f2ed2da4c2e9f806048d87b1ab5f85cbfd4d
+base-sha256: 563aebb1712d9ded59613d50b0c604c16cb5f85e231ae20fd5e1217a27c19ef7
 overlay-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-output-sha256: 78a9d48632a21e0c94e5ed896a06f2ed2da4c2e9f806048d87b1ab5f85cbfd4d
+output-sha256: 563aebb1712d9ded59613d50b0c604c16cb5f85e231ae20fd5e1217a27c19ef7
 do-not-edit: edit .codex/skill-overrides/codex-loop.md instead
 -->
 
@@ -90,7 +90,7 @@ feedback을 대체하지 않는다. codex-loop 자체는 기존 exit code 기반
 ## Feedback 처리
 
 - codex review 결과를 그대로 작업 목록으로 받아들이지 말고 적대적/비판적으로 재평가한다. 각 comment/review item마다 주장, 근거, 재현 가능성, 실제 영향, severity, 범위 적합성을 먼저 판정한다.
-- `.agents/scripts/dev-cycle-helper.sh` 또는 `$HOME/.agents/scripts/dev-cycle-helper.sh`가 있으면 `review-dossier`로 diff size, 파일 확산, 계약/중요 경로를 먼저 확인한다. dossier가 `opus_or_high_effort`를 권장하거나 feedback 자체가 semantic risk를 담을 때만 현재 Codex 환경에서 명시적으로 허용된 high-capability/high-effort reviewer 사용을 고려한다.
+- `.agents/scripts/dev-cycle-helper.sh` 또는 `$HOME/.agents/scripts/dev-cycle-helper.sh`가 있으면 `review-dossier`로 diff size, 파일 확산, 계약/중요 경로를 reviewer 입력 정보로 확인한다. high-capability/high-effort reviewer 사용 여부는 feedback의 semantic risk를 보고 본인이 판단한다.
 - reviewer를 사용할 경우 raw PR 전체를 넘기지 말고 새 feedback, 관련 diff, helper-generated review dossier 또는 수동 risk summary, 재현/검증 출력, 이전 finding 요약만 전달한다.
 - 유효한 item은 가장 합리적인 해결 방식을 선택한다: root-cause code fix, test 보강, 문서/계약 정정, 요구사항 clarification, 또는 사용자 결정 요청. 리뷰를 만족시키려고 보안/검증/계약을 약화하거나 symptom-only patch를 만들지 않는다.
 - 코멘트가 모호하거나 우선순위 판단이 필요하면 코드 수정 전 사용자에게 확인한다.

@@ -7,12 +7,17 @@ description: 현재 PR의 codex 리뷰를 기다리고 코멘트 수정 후 push
 
 사용자에게 보이는 보고, feedback 정리, 질문은 한국어로 작성한다. 코드, 명령, 파일명, 원문 인용은 원문 언어를 유지한다.
 
+## Flags
+
+- `--opus-review`: feedback 타당성 검토를 dossier 라우팅과 무관하게 항상 Opus sub-agent로 실행한다.
+
 ## Model Routing
 
 Claude Code에서 model-routed sub-agent를 사용할 수 있으면 아래 원칙을 따른다. 사용할 수 없거나 handoff 비용이 더 크면 같은 세션에서 수행한다.
 
 - PR 감지, polling, pass reaction 확인, review 요청 comment 작성은 `wait-codex-review.sh`가 담당한다. 이 작업을 Haiku sub-agent로 대체하지 않는다.
-- 새 feedback의 타당성 검토가 복잡하거나 보안/아키텍처/계약 변경과 관련되면 Opus read-only reviewer를 사용한다. `dev-cycle-helper.sh review-dossier`를 사용할 수 있으면 먼저 dossier를 만들고, `opus_or_high_effort` 권장 또는 feedback 자체의 semantic risk가 있을 때만 넘긴다.
+- `--opus-review`가 있으면 새 feedback이 도착할 때마다 dossier 결과와 무관하게 항상 Opus sub-agent로 타당성 검토를 수행한다.
+- `--opus-review`가 없을 때: feedback의 타당성 검토는 main session에서 수행한다. `dev-cycle-helper.sh review-dossier`의 `risk_triggers`는 reviewer 입력 정보로 활용한다.
 - feedback 수정은 Sonnet/main execution을 기본으로 하고, 작은 수정에는 별도 worker를 만들지 않는다.
 - Haiku 또는 Explore는 PR metadata/comment를 짧게 요약하거나 넓은 read-only 탐색을 압축할 때만 사용한다.
 - 같은 PR에서 동일 파일군에 대해 3회 이상 review/fix가 반복될 때만 Opus reviewer resume을 고려한다. 기본은 이전 finding 요약 + incremental diff를 새로 전달한다.

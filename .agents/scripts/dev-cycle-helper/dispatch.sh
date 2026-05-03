@@ -17,6 +17,8 @@ commands:
   validate-brief <run-id> <brief-log>
   finish-cycle
   finish-cycle-json
+  audit-pass-json [audit_every]
+  record-audit-baseline
   summary
   summary-json
 EOF
@@ -38,6 +40,8 @@ dev_cycle_helper_main() {
     validate-brief) shift; validate_brief "$@" ;;
     finish-cycle) finish_cycle ;;
     finish-cycle-json) finish_cycle_json ;;
+    audit-pass-json) shift; audit_pass_json "$@" ;;
+    record-audit-baseline) record_audit_baseline ;;
     summary) summary ;;
     summary-json) summary_json ;;
     help|-h|--help|"") usage ;;

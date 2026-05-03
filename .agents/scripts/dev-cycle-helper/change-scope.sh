@@ -324,8 +324,6 @@ review_dossier() {
           [trigger("critical_paths"; "high"; "보안/영속성/설정/배포/공개 CLI 경로가 변경됐습니다."; {paths:$critical_paths})]
         else [] end)
     ) as $risk_triggers |
-    ($risk_triggers | map(select(.severity == "high")) | length) as $high_count |
-    ($risk_triggers | map(select(.severity == "medium")) | length) as $medium_count |
     $scope + {
       kind:"dev_cycle_review_dossier",
       review_dossier:{
@@ -340,22 +338,11 @@ review_dossier() {
           numstat_range_form:(if $numstat_range_form == "" then null else $numstat_range_form end)
         },
         risk_triggers:$risk_triggers,
-        reviewer_route:{
-          recommended:(
-            if $high_count > 0 then "opus_or_high_effort"
-            elif $medium_count > 0 then "standard_with_dossier"
-            else "standard" end
-          ),
-          reason_ko:(
-            if $high_count > 0 then "고위험 trigger가 있어 더 강한 리뷰 모델/추론을 권장합니다."
-            elif $medium_count > 0 then "중간 위험 trigger가 있어 dossier 기반 집중 리뷰를 권장합니다."
-            else "기계적 위험 trigger가 없어 표준 리뷰로 충분해 보입니다." end
-          )
-        },
         notes_ko:[
           "이 dossier는 diff 크기, 파일 확산, 계약/중요 경로 같은 기계적 신호만 계산합니다.",
           "200/400라인 기준과 파일 수 기준은 보편 법칙이 아니라 리뷰 집중도와 변경 확산을 보수적으로 다루기 위한 휴리스틱입니다.",
-          "의미적 위험, 요구사항 적합성, 제품 판단은 reviewer가 별도로 확인해야 합니다."
+          "의미적 위험, 요구사항 적합성, 제품 판단은 reviewer가 별도로 확인해야 합니다.",
+          "risk_triggers는 reviewer 입력 정보로 활용합니다."
         ]
       }
     }'; then

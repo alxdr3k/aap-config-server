@@ -5,9 +5,9 @@ argument-hint: [review text, PR/comment URL, or path to review notes]
 ---
 <!-- my-skill:generated
 skill: apply-review
-base-sha256: e12247a1bd72d97d86deeaf6bd0172d462a11b9b584c33827caf27674d32f0fb
+base-sha256: 124ca9c5a0ae7ab608fa3917ae47c47b1acb234e949d045ee790cd4373ea6f58
 overlay-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-output-sha256: e12247a1bd72d97d86deeaf6bd0172d462a11b9b584c33827caf27674d32f0fb
+output-sha256: 124ca9c5a0ae7ab608fa3917ae47c47b1acb234e949d045ee790cd4373ea6f58
 do-not-edit: edit .codex/skill-overrides/apply-review.md instead
 -->
 
@@ -27,7 +27,7 @@ $ARGUMENTS
 
 - If `$ARGUMENTS` is a URL or a reference (PR number, comment ID, file path), fetch the actual content first.
 - Extract every distinct actionable item. Keep independent items separate; merge only trivially-related fixes.
-- `.agents/scripts/dev-cycle-helper.sh` 또는 `$HOME/.agents/scripts/dev-cycle-helper.sh`가 있으면 `review-dossier`로 diff size, 파일 확산, 계약/중요 경로를 확인한다. dossier가 `opus_or_high_effort`를 권장하거나 review item 자체가 semantic risk를 담을 때만 현재 Codex 환경에서 명시적으로 허용된 high-capability/high-effort reviewer 사용을 고려하고, raw repo 대신 review 원문, 관련 diff, dossier/risk summary, 필요한 call site, 검증 출력만 전달한다.
+- `.agents/scripts/dev-cycle-helper.sh` 또는 `$HOME/.agents/scripts/dev-cycle-helper.sh`가 있으면 `review-dossier`로 diff size, 파일 확산, 계약/중요 경로를 reviewer 입력 정보로 확인한다. high-capability/high-effort reviewer 사용 여부는 review item의 semantic risk를 보고 본인이 판단하고, raw repo 대신 review 원문, 관련 diff, dossier/risk summary, 필요한 call site, 검증 출력만 전달한다.
 - Write the plan with Codex's `update_plan` tool - one item per discrete change. Include file/area hints in the item text so you can resume after interruption.
 - If the review is ambiguous, list your interpretation as part of the plan rather than asking up front. Only stop for a question when an item is genuinely undecidable.
 
