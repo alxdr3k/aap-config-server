@@ -452,22 +452,16 @@ func (r *Repo) DeleteAndPush(ctx context.Context, msg string, paths []string) (h
 				return "", nil, err
 			}
 			fullPath := filepath.Join(r.localPath, path)
-			if len(targets) > 0 {
-				// removalTargets enumerated individual files; report those.
-				for _, t := range targets {
-					if _, statErr := os.Stat(filepath.Join(r.localPath, t)); statErr == nil {
-						actuallyDeleted = append(actuallyDeleted, filepath.ToSlash(t))
-					}
+			if len(targets) == 0 {
+				targets = []string{path}
+			}
+			for _, t := range targets {
+				if _, statErr := os.Stat(filepath.Join(r.localPath, t)); statErr == nil {
+					actuallyDeleted = append(actuallyDeleted, filepath.ToSlash(t))
 				}
-			} else if _, statErr := os.Stat(fullPath); statErr == nil {
-				// Single file path that exists.
-				actuallyDeleted = append(actuallyDeleted, filepath.ToSlash(path))
 			}
 			if err := os.RemoveAll(fullPath); err != nil && !os.IsNotExist(err) {
 				return "", nil, fmt.Errorf("remove %s: %w", path, err)
-			}
-			if len(targets) == 0 {
-				targets = []string{path}
 			}
 			for _, target := range targets {
 				// go-git: Remove stages the deletion regardless of whether the
