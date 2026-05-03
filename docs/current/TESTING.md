@@ -92,6 +92,18 @@ Equivalent:
 go test -tags=integration ./... -timeout 120s
 ```
 
+Integration tests live in `internal/integration/` under the `//go:build integration`
+build tag. The harness uses only local-filesystem Git repos (via `go-git`), an
+`httptest.Server` as a fake Console, and in-memory fake Sealer/Applier adapters —
+no live Kubernetes cluster or network access is required. Covered scenarios:
+
+- Startup/load from a fake local Git repo with seeded config/env files.
+- Console App Registry bootstrap through a fake HTTP server (verifies `apps_loaded` and `status: ok` in `/api/v1/status`).
+- Admin config write through the full HTTP handler → store → Git commit → reload chain.
+- Admin env_vars write through the same pipeline.
+- Admin secret write with fake Sealer/Applier adapters (verifies namespace, name, and sealed key).
+- Snapshot visibility after an out-of-band Git push (bypasses Store, asserts `ReloadFromRepo` returns `updated=true`).
+
 ## E2E tests
 
 `internal/agent/e2e_smoke_test.go` covers the Config Agent
