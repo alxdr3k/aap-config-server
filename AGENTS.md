@@ -73,7 +73,7 @@ and report the missing `go` binary explicitly.
 - Create feature branches from `dev`, and open PRs back to `dev`.
 - Promote `dev` to `main` only through a PR.
 - Never push to `main` directly.
-- Never force-push.
+- Never force-push to `main` or `dev`. Force-push on feature branches (e.g. after a rebase) is fine.
 
 ## Extraction tasks
 

@@ -58,7 +58,7 @@ Each todo must be small enough that its execution won't approach response or con
 - **Scope discipline**: address review items only. No drive-by refactors, no speculative cleanup.
 - **Project conventions**: respect `CLAUDE.md`, `.claude/rules/**`, and existing code style. If a review item conflicts with a project rule, flag it and follow the rule.
 - **Commits**: do not commit unless the review or project workflow explicitly requests it. If commits are expected, pair test + implementation per the project's TDD rules.
-- **Secrets / destructive ops**: never fix a review item by weakening a security check, skipping hooks, or force-pushing.
+- **Secrets / destructive ops**: never fix a review item by weakening a security check or skipping hooks.
 
 ## Branching
 
@@ -67,4 +67,4 @@ Each todo must be small enough that its execution won't approach response or con
 - Create feature branches from `dev`, and open PRs back to `dev`.
 - Promote `dev` to `main` only through a PR.
 - Never push to `main` directly.
-- Never force-push.
+- Never force-push to `main` or `dev`. Force-push on feature branches (e.g. after a rebase) is fine.
