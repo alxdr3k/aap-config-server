@@ -312,7 +312,17 @@ restore_bundle() {
 
   if [ -f "$in_path.sha256" ]; then
     log "verifying bundle checksum"
-    ( cd "$(dirname "$in_path")" && sha256sum -c "$(basename "$in_path").sha256" ) >/dev/null \
+    # `sha256sum -c <sidecar>` would verify whichever filename is recorded
+    # inside the sidecar, not the file the user actually selected. Extract
+    # only the expected hex digest and re-bind it to $(basename "$in_path")
+    # so a stale/tampered sidecar pointing at another file in the same
+    # directory cannot smuggle through an unverified bundle.
+    local expected_hex
+    expected_hex="$(awk 'NR==1{print $1; exit}' "$in_path.sha256")"
+    [ -n "$expected_hex" ] || die "bundle .sha256 sidecar is empty"
+    ( cd "$(dirname "$in_path")" \
+      && printf '%s  %s\n' "$expected_hex" "$(basename "$in_path")" \
+         | sha256sum -c - ) >/dev/null \
       || die "bundle checksum mismatch"
   else
     warn "no .sha256 sidecar found at $in_path.sha256 — skipping checksum verify"
