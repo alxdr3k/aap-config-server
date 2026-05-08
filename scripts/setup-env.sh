@@ -67,10 +67,41 @@ detect_arch() {
 }
 
 read_go_version_from_gomod() {
-  awk '/^toolchain go/ { sub(/^go/, "", $2); print $2; exit }
-       /^go [0-9]/    { print $2; cached=$2 }
-       END { if (!cached) exit 1 }' go.mod \
-  | head -n1
+  # Prefer the toolchain directive when present — it pins a specific
+  # toolchain version that may be newer than the language baseline `go` line.
+  local v
+  v="$(awk '/^toolchain[ \t]+go/ { sub(/^go/, "", $2); print $2; exit }' go.mod)"
+  if [ -n "$v" ]; then
+    printf '%s\n' "$v"
+    return 0
+  fi
+  v="$(awk '/^go[ \t]+[0-9]/ { print $2; exit }' go.mod)"
+  [ -n "$v" ] || return 1
+  printf '%s\n' "$v"
+}
+
+# Portable SHA-256 helpers — Linux ships `sha256sum` (coreutils), stock macOS
+# only ships `shasum -a 256`. Probe once and adapt.
+sha256_compute() {
+  # sha256_compute FILE → stdout: "<hex>  <basename>"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1"
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1"
+  else
+    die "neither sha256sum nor shasum is installed; cannot compute SHA-256"
+  fi
+}
+
+sha256_check_stdin() {
+  # Reads "<hex>  <name>" lines from stdin and verifies.
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c -
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -c -
+  else
+    die "neither sha256sum nor shasum is installed; cannot verify SHA-256"
+  fi
 }
 
 require_cmd() {
@@ -176,7 +207,6 @@ install_go() {
 
   require_cmd curl
   require_cmd tar
-  require_cmd sha256sum
 
   local tmp
   tmp="$(mktemp -d)"
@@ -189,7 +219,7 @@ install_go() {
     || die "failed to download Go checksum"
 
   ( cd "$tmp" && printf '%s  %s\n' "$(cat "$archive.sha256")" "$archive" \
-      | sha256sum -c - ) >/dev/null \
+      | sha256_check_stdin ) >/dev/null \
     || die "Go archive checksum mismatch"
 
   mkdir -p "$GO_DIR"
@@ -280,7 +310,7 @@ build_bundle() {
   out="$(cd "$(dirname "$out")" && pwd)/$(basename "$out")"
   log "writing $out"
   tar -czf "$out" -C "$stage" .
-  ( cd "$(dirname "$out")" && sha256sum "$(basename "$out")" > "$(basename "$out").sha256" )
+  ( cd "$(dirname "$out")" && sha256_compute "$(basename "$out")" > "$(basename "$out").sha256" )
   log "bundle ready: $out"
   log "checksum:     $out.sha256"
 }
@@ -292,7 +322,7 @@ restore_bundle() {
 
   if [ -f "$in_path.sha256" ]; then
     log "verifying bundle checksum"
-    ( cd "$(dirname "$in_path")" && sha256sum -c "$(basename "$in_path").sha256" ) >/dev/null \
+    ( cd "$(dirname "$in_path")" && sha256_check_stdin < "$(basename "$in_path").sha256" ) >/dev/null \
       || die "bundle checksum mismatch"
   else
     warn "no .sha256 sidecar found at $in_path.sha256 — skipping checksum verify"
