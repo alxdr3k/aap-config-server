@@ -362,6 +362,11 @@ restore_bundle() {
     || die "bundle is missing tools/go/ — refusing to replace local SDK"
   [ -x "$stage/tools/go/bin/go" ] \
     || die "bundle's tools/go/bin/go is missing or non-executable — refusing to replace local SDK"
+  # Mode bits don't prove the binary can actually run (corrupted blob,
+  # wrong-arch ELF, dynamic-linker mismatch). Exec it to confirm before we
+  # delete the existing SDK.
+  "$stage/tools/go/bin/go" version >/dev/null 2>&1 \
+    || die "bundle's tools/go/bin/go failed to execute on this host — refusing to replace local SDK"
   rm -rf "$GO_DIR"
   mv "$stage/tools/go" "$GO_DIR"
 
