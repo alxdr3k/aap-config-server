@@ -15,6 +15,6 @@ export GOMODCACHE="$_repo_root/.cache/go-mod"
 export GOLANGCI_LINT_CACHE="$_repo_root/.cache/golangci-lint"
 export GOENV=off
 export GOTOOLCHAIN=local
-export PATH="$GOROOT/bin:$GOPATH/bin:$PATH"
+export PATH="$GOROOT/bin:$_repo_root/.tools/bin:$GOPATH/bin:$PATH"
 
 unset _repo_root

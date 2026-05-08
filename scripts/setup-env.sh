@@ -340,15 +340,22 @@ restore_bundle() {
   # already ran above, but we still validate the bundle's recorded target_os
   # so a same-arch foreign-OS bundle is rejected fast instead of overwriting
   # .tools/go and failing later when binaries refuse to execute.
-  local b_os b_arch host_arch
+  local b_os b_arch b_go host_arch
   b_os="$(awk -F= '/^target_os=/{print $2}' "$stage/MANIFEST")"
   b_arch="$(awk -F= '/^target_arch=/{print $2}' "$stage/MANIFEST")"
+  b_go="$(awk -F= '/^go_version=/{print $2}' "$stage/MANIFEST")"
   host_arch="$(detect_arch)"
   if [ "$b_os" != "linux" ]; then
     die "bundle target_os is '$b_os' but only 'linux' is supported"
   fi
   if [ "$b_arch" != "$host_arch" ]; then
     die "bundle is for $b_arch but this host is $host_arch"
+  fi
+  # Reject bundles whose Go SDK doesn't match the toolchain the repo's go.mod
+  # currently asks for, so an older bundle restored onto a newer checkout
+  # fails fast here instead of producing confusing build/test errors later.
+  if [ -n "$b_go" ] && [ "$b_go" != "$GO_VERSION" ]; then
+    die "bundle ships Go $b_go but go.mod requires $GO_VERSION (rebuild the bundle)"
   fi
 
   if [ -e "$GO_DIR" ] && [ "$FORCE" = false ]; then
