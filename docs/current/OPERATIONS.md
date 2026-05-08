@@ -10,6 +10,13 @@ Required local inputs:
 - Git auth through SSH key or HTTPS BasicAuth.
 - An `API_KEY`, unless explicitly opting into unauthenticated local dev.
 
+For first-time setup on a clean host, use `scripts/setup-env.sh` to install
+the pinned Go toolchain, prefetch modules, and pre-build the binaries. For
+air-gapped staging/production, build an offline bundle on a connected host
+(`--bundle PATH`) and install from it on the target (`--from-bundle PATH`).
+See `docs/current/TESTING.md#one-shot-setup-scriptssetup-envsh` for the full
+flow.
+
 Example:
 
 ```bash

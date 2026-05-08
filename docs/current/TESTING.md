@@ -30,6 +30,35 @@ This expects Go at `.tools/go` and keeps `GOCACHE`, `GOMODCACHE`, `GOPATH`, and
 `GOLANGCI_LINT_CACHE` under `.cache/`. It also sets `GOTOOLCHAIN=local` so Go
 does not auto-install a different toolchain outside the repo.
 
+### One-shot setup (`scripts/setup-env.sh`)
+
+`scripts/setup-env.sh` (Linux only) installs the Go toolchain into `.tools/go`,
+prefetches the module cache, optionally installs `golangci-lint` / `govulncheck`,
+and pre-builds `bin/config-server` and `bin/config-agent`. It is the recommended
+entry point on a clean dev host:
+
+```bash
+./scripts/setup-env.sh                    # install everything (needs internet)
+./scripts/setup-env.sh --with-lint --with-vuln
+. scripts/dev-env.sh                      # activate before running make targets
+```
+
+For air-gapped staging/production hosts, build a bundle on a connected machine
+of the same arch and copy it across:
+
+```bash
+# on a host with internet
+./scripts/setup-env.sh --bundle /tmp/aap-bundle.tar.gz --with-lint --with-vuln
+
+# on the air-gapped host (after copying the .tar.gz and .sha256 sidecar)
+./scripts/setup-env.sh --from-bundle /tmp/aap-bundle.tar.gz
+```
+
+The bundle includes the Go SDK, the populated module cache, optional auxiliary
+binaries, and pre-built binaries. The script supports Linux only and is per-arch:
+`--from-bundle` refuses to install a bundle whose recorded `target_arch` differs
+from the current host. See `scripts/setup-env.sh --help` for the full flag set.
+
 ## Build
 
 ```bash
