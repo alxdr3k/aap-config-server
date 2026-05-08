@@ -87,6 +87,7 @@ BUNDLE_PATH=""
 GO_VERSION=""
 TARGET_OS="linux"
 TARGET_ARCH=""
+ARCH_EXPLICIT=false
 WITH_LINT=false
 WITH_VULN=false
 SKIP_BUILD=false
@@ -103,7 +104,7 @@ while [ $# -gt 0 ]; do
     --bundle)         need_value "$1" "${2:-}"; MODE="bundle";      BUNDLE_PATH="$2"; shift 2 ;;
     --from-bundle)    need_value "$1" "${2:-}"; MODE="from-bundle"; BUNDLE_PATH="$2"; shift 2 ;;
     --go-version)     need_value "$1" "${2:-}"; GO_VERSION="$2";    shift 2 ;;
-    --arch)           need_value "$1" "${2:-}"; TARGET_ARCH="$2";   shift 2 ;;
+    --arch)           need_value "$1" "${2:-}"; TARGET_ARCH="$2"; ARCH_EXPLICIT=true; shift 2 ;;
     --with-lint)      WITH_LINT=true; shift ;;
     --with-vuln)      WITH_VULN=true; shift ;;
     --skip-build)     SKIP_BUILD=true; shift ;;
@@ -127,6 +128,13 @@ if [ "$MODE" = "bundle" ]; then
     *.tar.gz|*.tgz) ;;
     *) die "--bundle PATH must end in .tar.gz or .tgz (got: $BUNDLE_PATH)" ;;
   esac
+fi
+
+# In from-bundle mode the host arch is dictated by the running machine, not by
+# the user. Reject --arch overrides so the bundle's recorded arch is verified
+# against the actual host (see restore_bundle).
+if [ "$MODE" = "from-bundle" ] && [ "$ARCH_EXPLICIT" = true ]; then
+  die "--arch is not allowed with --from-bundle (host arch is detected from /proc)"
 fi
 
 TARGET_ARCH="${TARGET_ARCH:-$(detect_arch)}"
@@ -320,11 +328,13 @@ restore_bundle() {
   log "manifest:"
   sed 's/^/    /' "$stage/MANIFEST" >&2
 
-  # Cross-arch safety check.
-  local b_arch
+  # Cross-arch safety check — re-detect the host arch from /proc rather than
+  # trusting TARGET_ARCH, so a stale or spoofed value cannot pass the guard.
+  local b_arch host_arch
   b_arch="$(awk -F= '/^target_arch=/{print $2}' "$stage/MANIFEST")"
-  if [ "$b_arch" != "$TARGET_ARCH" ]; then
-    die "bundle is for $b_arch but this host is $TARGET_ARCH"
+  host_arch="$(detect_arch)"
+  if [ "$b_arch" != "$host_arch" ]; then
+    die "bundle is for $b_arch but this host is $host_arch"
   fi
 
   if [ -e "$GO_DIR" ] && [ "$FORCE" = false ]; then
