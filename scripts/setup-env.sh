@@ -354,6 +354,14 @@ restore_bundle() {
   if [ -e "$GO_DIR" ] && [ "$FORCE" = false ]; then
     die "$GO_DIR exists — pass --force to overwrite"
   fi
+  # Verify the bundle payload BEFORE touching the existing Go SDK so a
+  # malformed/partial tarball (missing tools/go, missing bin/go, etc.) cannot
+  # leave the host with no local toolchain at all — particularly painful on
+  # air-gapped boxes where recovery means another bundle transfer.
+  [ -d "$stage/tools/go" ] \
+    || die "bundle is missing tools/go/ — refusing to replace local SDK"
+  [ -x "$stage/tools/go/bin/go" ] \
+    || die "bundle's tools/go/bin/go is missing or non-executable — refusing to replace local SDK"
   rm -rf "$GO_DIR"
   mv "$stage/tools/go" "$GO_DIR"
 
