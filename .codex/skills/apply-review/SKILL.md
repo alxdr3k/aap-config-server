@@ -72,4 +72,4 @@ Each plan item must be small enough that its execution won't approach response o
 - **User-facing language**: summarize review feedback, progress, questions, and final reports in Korean. Keep code, commands, filenames, and quoted source text in their original language.
 - **Project conventions**: respect `AGENTS.md` and existing repo guidance/code style when present. If a review item conflicts with a project rule, flag it and follow the rule.
 - **Commits**: do not commit unless the review or project workflow explicitly requests it. If `$ARGUMENTS` is a PR/comment URL, treat that as a request to commit fixes per the project's branching policy. If commits are expected, pair test + implementation per the project's TDD rules.
-- **Secrets / destructive ops**: never fix a review item by weakening a security check, skipping hooks, or force-pushing.
+- **Secrets / destructive ops**: never fix a review item by weakening a security check or skipping hooks.

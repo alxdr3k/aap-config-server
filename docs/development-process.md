@@ -262,7 +262,7 @@ fix: agent - rolling restart annotation 누락 수정
 - 기능/수정 작업은 `dev`에서 `feat/<short-description>` 브랜치를 만든 뒤 `dev`로 PR을 연다.
 - `dev`는 통합 브랜치이며, `main` 승격은 `dev`에서 `main`으로 여는 PR로만 수행한다.
 - `main`에 직접 push하지 않는다.
-- force-push하지 않는다.
+- `main` / `dev`에 force-push하지 않는다. feature 브랜치는 rebase 후 force-push 허용.
 
 ---
 
