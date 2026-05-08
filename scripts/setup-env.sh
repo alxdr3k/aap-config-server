@@ -173,14 +173,21 @@ install_go() {
   local url="https://go.dev/dl/${archive}"
 
   if [ -x "$GO_DIR/bin/go" ] && [ "$FORCE" = false ]; then
+    # The probes can fail (foreign-arch SDK fails to exec, corrupted binary,
+    # etc.). With set -euo pipefail an unguarded command substitution would
+    # abort the script before we could fall through to the replacement branch,
+    # so we explicitly tolerate failure with `|| true` and treat empty values
+    # as "unknown — must replace".
     local existing existing_arch
-    existing="$("$GO_DIR/bin/go" version 2>/dev/null | awk '{print $3}' | sed 's/^go//')"
+    existing="$("$GO_DIR/bin/go" version 2>/dev/null | awk '{print $3}' | sed 's/^go//' || true)"
     existing_arch="$("$GO_DIR/bin/go" env GOHOSTARCH 2>/dev/null || true)"
-    if [ "$existing" = "$GO_VERSION" ] && [ "$existing_arch" = "$TARGET_ARCH" ]; then
+    if [ -n "$existing" ] && [ -n "$existing_arch" ] \
+       && [ "$existing" = "$GO_VERSION" ] \
+       && [ "$existing_arch" = "$TARGET_ARCH" ]; then
       log "Go $GO_VERSION ($TARGET_ARCH) already installed at $GO_DIR (use --force to reinstall)"
       return 0
     fi
-    warn "found Go $existing ($existing_arch) at $GO_DIR; replacing with $GO_VERSION ($TARGET_ARCH)"
+    warn "found Go ${existing:-unknown} (${existing_arch:-unknown}) at $GO_DIR; replacing with $GO_VERSION ($TARGET_ARCH)"
     rm -rf "$GO_DIR"
   elif [ -e "$GO_DIR" ]; then
     rm -rf "$GO_DIR"
@@ -328,11 +335,18 @@ restore_bundle() {
   log "manifest:"
   sed 's/^/    /' "$stage/MANIFEST" >&2
 
-  # Cross-arch safety check — re-detect the host arch from /proc rather than
-  # trusting TARGET_ARCH, so a stale or spoofed value cannot pass the guard.
-  local b_arch host_arch
+  # Cross-platform safety check — re-detect host OS/arch rather than trusting
+  # TARGET_*, so a stale or spoofed value cannot pass the guard. ensure_linux
+  # already ran above, but we still validate the bundle's recorded target_os
+  # so a same-arch foreign-OS bundle is rejected fast instead of overwriting
+  # .tools/go and failing later when binaries refuse to execute.
+  local b_os b_arch host_arch
+  b_os="$(awk -F= '/^target_os=/{print $2}' "$stage/MANIFEST")"
   b_arch="$(awk -F= '/^target_arch=/{print $2}' "$stage/MANIFEST")"
   host_arch="$(detect_arch)"
+  if [ "$b_os" != "linux" ]; then
+    die "bundle target_os is '$b_os' but only 'linux' is supported"
+  fi
   if [ "$b_arch" != "$host_arch" ]; then
     die "bundle is for $b_arch but this host is $host_arch"
   fi
