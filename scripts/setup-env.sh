@@ -193,13 +193,17 @@ install_go() {
   local url="https://go.dev/dl/${archive}"
 
   if [ -x "$GO_DIR/bin/go" ] && [ "$FORCE" = false ]; then
-    local existing
+    local existing existing_os existing_arch
     existing="$("$GO_DIR/bin/go" version 2>/dev/null | awk '{print $3}' | sed 's/^go//')"
-    if [ "$existing" = "$GO_VERSION" ]; then
-      log "Go $GO_VERSION already installed at $GO_DIR (use --force to reinstall)"
+    existing_os="$("$GO_DIR/bin/go" env GOHOSTOS 2>/dev/null || true)"
+    existing_arch="$("$GO_DIR/bin/go" env GOHOSTARCH 2>/dev/null || true)"
+    if [ "$existing" = "$GO_VERSION" ] \
+       && [ "$existing_os" = "$TARGET_OS" ] \
+       && [ "$existing_arch" = "$TARGET_ARCH" ]; then
+      log "Go $GO_VERSION ($TARGET_OS/$TARGET_ARCH) already installed at $GO_DIR (use --force to reinstall)"
       return 0
     fi
-    warn "found Go $existing at $GO_DIR; replacing with $GO_VERSION"
+    warn "found Go $existing ($existing_os/$existing_arch) at $GO_DIR; replacing with $GO_VERSION ($TARGET_OS/$TARGET_ARCH)"
     rm -rf "$GO_DIR"
   elif [ -e "$GO_DIR" ]; then
     rm -rf "$GO_DIR"
@@ -236,11 +240,18 @@ install_modcache() {
 
 install_lint() {
   $WITH_LINT || return 0
-  if [ -x "$TOOLS_BIN/golangci-lint" ]; then
+  # Strip leading "v" so we can compare against `golangci-lint version --short`
+  # which prints e.g. "2.11.4" without the prefix.
+  local pinned="${LINT_VERSION#v}"
+  if [ -x "$TOOLS_BIN/golangci-lint" ] && [ "$FORCE" = false ]; then
     local existing
     existing="$("$TOOLS_BIN/golangci-lint" version --short 2>/dev/null || echo unknown)"
-    log "golangci-lint already present (version: $existing)"
-    return 0
+    if [ "$existing" = "$pinned" ]; then
+      log "golangci-lint $LINT_VERSION already pinned at $TOOLS_BIN"
+      return 0
+    fi
+    warn "found golangci-lint $existing at $TOOLS_BIN; reinstalling pinned $LINT_VERSION"
+    rm -f "$TOOLS_BIN/golangci-lint"
   fi
   log "installing golangci-lint $LINT_VERSION"
   GOBIN="$TOOLS_BIN" go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${LINT_VERSION}"
