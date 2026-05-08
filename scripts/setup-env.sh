@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup-env.sh — One-shot dev environment setup for AAP Config Server.
+# setup-env.sh — One-shot dev environment setup for AAP Config Server (Linux only).
 #
 # Modes (pick one):
 #   --install              Install Go toolchain + module cache + (optional) tools.
@@ -10,7 +10,6 @@
 #
 # Common options:
 #   --go-version VER       Override Go version (default: read from go.mod).
-#   --os OS                linux|darwin (default: auto-detect).
 #   --arch ARCH            amd64|arm64 (default: auto-detect).
 #   --with-lint            Also install golangci-lint (pinned, see LINT_VERSION).
 #   --with-vuln            Also install govulncheck (latest).
@@ -27,15 +26,14 @@
 #   bin/                   pre-built config-server, config-agent
 #
 # Bundle layout (tar.gz):
-#   MANIFEST               key=value pairs (versions, os, arch, created_at)
-#   tools/go/              Go SDK (per OS/arch — bundle is NOT cross-platform)
+#   MANIFEST               key=value pairs (versions, arch, created_at)
+#   tools/go/              Go SDK (per arch — bundle is NOT cross-arch)
 #   tools/bin/             optional aux binaries
 #   cache/go-mod/          populated module cache
 #   bin/                   optional pre-built binaries
 set -euo pipefail
 
 LINT_VERSION="v2.11.4"
-DEFAULT_GO_VERSION=""   # filled from go.mod if not overridden
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -50,11 +48,10 @@ usage() {
   exit "${1:-0}"
 }
 
-detect_os() {
+ensure_linux() {
   case "$(uname -s)" in
-    Linux)   echo linux ;;
-    Darwin)  echo darwin ;;
-    *) die "unsupported OS: $(uname -s)" ;;
+    Linux) ;;
+    *) die "this script supports Linux only (got: $(uname -s))" ;;
   esac
 }
 
@@ -80,30 +77,6 @@ read_go_version_from_gomod() {
   printf '%s\n' "$v"
 }
 
-# Portable SHA-256 helpers — Linux ships `sha256sum` (coreutils), stock macOS
-# only ships `shasum -a 256`. Probe once and adapt.
-sha256_compute() {
-  # sha256_compute FILE → stdout: "<hex>  <basename>"
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1"
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1"
-  else
-    die "neither sha256sum nor shasum is installed; cannot compute SHA-256"
-  fi
-}
-
-sha256_check_stdin() {
-  # Reads "<hex>  <name>" lines from stdin and verifies.
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum -c -
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 -c -
-  else
-    die "neither sha256sum nor shasum is installed; cannot verify SHA-256"
-  fi
-}
-
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
@@ -112,7 +85,7 @@ require_cmd() {
 MODE="install"
 BUNDLE_PATH=""
 GO_VERSION=""
-TARGET_OS=""
+TARGET_OS="linux"
 TARGET_ARCH=""
 WITH_LINT=false
 WITH_VULN=false
@@ -130,7 +103,6 @@ while [ $# -gt 0 ]; do
     --bundle)         need_value "$1" "${2:-}"; MODE="bundle";      BUNDLE_PATH="$2"; shift 2 ;;
     --from-bundle)    need_value "$1" "${2:-}"; MODE="from-bundle"; BUNDLE_PATH="$2"; shift 2 ;;
     --go-version)     need_value "$1" "${2:-}"; GO_VERSION="$2";    shift 2 ;;
-    --os)             need_value "$1" "${2:-}"; TARGET_OS="$2";     shift 2 ;;
     --arch)           need_value "$1" "${2:-}"; TARGET_ARCH="$2";   shift 2 ;;
     --with-lint)      WITH_LINT=true; shift ;;
     --with-vuln)      WITH_VULN=true; shift ;;
@@ -141,6 +113,8 @@ while [ $# -gt 0 ]; do
     *) die "unknown argument: $1 (use --help)" ;;
   esac
 done
+
+ensure_linux
 
 case "$MODE" in
   bundle|from-bundle)
@@ -155,13 +129,11 @@ if [ "$MODE" = "bundle" ]; then
   esac
 fi
 
-TARGET_OS="${TARGET_OS:-$(detect_os)}"
 TARGET_ARCH="${TARGET_ARCH:-$(detect_arch)}"
 
 if [ -z "$GO_VERSION" ]; then
   GO_VERSION="$(read_go_version_from_gomod)" || die "could not read Go version from go.mod"
 fi
-DEFAULT_GO_VERSION="$GO_VERSION"
 
 # --------------------------------------------------------------- env paths ---
 TOOLS_DIR="$REPO_ROOT/.tools"
@@ -193,17 +165,14 @@ install_go() {
   local url="https://go.dev/dl/${archive}"
 
   if [ -x "$GO_DIR/bin/go" ] && [ "$FORCE" = false ]; then
-    local existing existing_os existing_arch
+    local existing existing_arch
     existing="$("$GO_DIR/bin/go" version 2>/dev/null | awk '{print $3}' | sed 's/^go//')"
-    existing_os="$("$GO_DIR/bin/go" env GOHOSTOS 2>/dev/null || true)"
     existing_arch="$("$GO_DIR/bin/go" env GOHOSTARCH 2>/dev/null || true)"
-    if [ "$existing" = "$GO_VERSION" ] \
-       && [ "$existing_os" = "$TARGET_OS" ] \
-       && [ "$existing_arch" = "$TARGET_ARCH" ]; then
-      log "Go $GO_VERSION ($TARGET_OS/$TARGET_ARCH) already installed at $GO_DIR (use --force to reinstall)"
+    if [ "$existing" = "$GO_VERSION" ] && [ "$existing_arch" = "$TARGET_ARCH" ]; then
+      log "Go $GO_VERSION ($TARGET_ARCH) already installed at $GO_DIR (use --force to reinstall)"
       return 0
     fi
-    warn "found Go $existing ($existing_os/$existing_arch) at $GO_DIR; replacing with $GO_VERSION ($TARGET_OS/$TARGET_ARCH)"
+    warn "found Go $existing ($existing_arch) at $GO_DIR; replacing with $GO_VERSION ($TARGET_ARCH)"
     rm -rf "$GO_DIR"
   elif [ -e "$GO_DIR" ]; then
     rm -rf "$GO_DIR"
@@ -211,6 +180,7 @@ install_go() {
 
   require_cmd curl
   require_cmd tar
+  require_cmd sha256sum
 
   local tmp
   tmp="$(mktemp -d)"
@@ -223,7 +193,7 @@ install_go() {
     || die "failed to download Go checksum"
 
   ( cd "$tmp" && printf '%s  %s\n' "$(cat "$archive.sha256")" "$archive" \
-      | sha256_check_stdin ) >/dev/null \
+      | sha256sum -c - ) >/dev/null \
     || die "Go archive checksum mismatch"
 
   mkdir -p "$GO_DIR"
@@ -321,7 +291,7 @@ build_bundle() {
   out="$(cd "$(dirname "$out")" && pwd)/$(basename "$out")"
   log "writing $out"
   tar -czf "$out" -C "$stage" .
-  ( cd "$(dirname "$out")" && sha256_compute "$(basename "$out")" > "$(basename "$out").sha256" )
+  ( cd "$(dirname "$out")" && sha256sum "$(basename "$out")" > "$(basename "$out").sha256" )
   log "bundle ready: $out"
   log "checksum:     $out.sha256"
 }
@@ -330,10 +300,11 @@ restore_bundle() {
   local in_path="$BUNDLE_PATH"
   [ -f "$in_path" ] || die "bundle not found: $in_path"
   require_cmd tar
+  require_cmd sha256sum
 
   if [ -f "$in_path.sha256" ]; then
     log "verifying bundle checksum"
-    ( cd "$(dirname "$in_path")" && sha256_check_stdin < "$(basename "$in_path").sha256" ) >/dev/null \
+    ( cd "$(dirname "$in_path")" && sha256sum -c "$(basename "$in_path").sha256" ) >/dev/null \
       || die "bundle checksum mismatch"
   else
     warn "no .sha256 sidecar found at $in_path.sha256 — skipping checksum verify"
@@ -349,12 +320,11 @@ restore_bundle() {
   log "manifest:"
   sed 's/^/    /' "$stage/MANIFEST" >&2
 
-  # Cross-platform safety check.
-  local b_os b_arch
-  b_os="$(awk -F= '/^target_os=/{print $2}'   "$stage/MANIFEST")"
+  # Cross-arch safety check.
+  local b_arch
   b_arch="$(awk -F= '/^target_arch=/{print $2}' "$stage/MANIFEST")"
-  if [ "$b_os" != "$TARGET_OS" ] || [ "$b_arch" != "$TARGET_ARCH" ]; then
-    die "bundle is for $b_os/$b_arch but this host is $TARGET_OS/$TARGET_ARCH"
+  if [ "$b_arch" != "$TARGET_ARCH" ]; then
+    die "bundle is for $b_arch but this host is $TARGET_ARCH"
   fi
 
   if [ -e "$GO_DIR" ] && [ "$FORCE" = false ]; then

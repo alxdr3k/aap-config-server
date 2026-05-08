@@ -32,9 +32,9 @@ does not auto-install a different toolchain outside the repo.
 
 ### One-shot setup (`scripts/setup-env.sh`)
 
-`scripts/setup-env.sh` installs the Go toolchain into `.tools/go`, prefetches
-the module cache, optionally installs `golangci-lint` / `govulncheck`, and
-pre-builds `bin/config-server` and `bin/config-agent`. It is the recommended
+`scripts/setup-env.sh` (Linux only) installs the Go toolchain into `.tools/go`,
+prefetches the module cache, optionally installs `golangci-lint` / `govulncheck`,
+and pre-builds `bin/config-server` and `bin/config-agent`. It is the recommended
 entry point on a clean dev host:
 
 ```bash
@@ -44,7 +44,7 @@ entry point on a clean dev host:
 ```
 
 For air-gapped staging/production hosts, build a bundle on a connected machine
-of the same OS/arch and copy it across:
+of the same arch and copy it across:
 
 ```bash
 # on a host with internet
@@ -55,8 +55,8 @@ of the same OS/arch and copy it across:
 ```
 
 The bundle includes the Go SDK, the populated module cache, optional auxiliary
-binaries, and pre-built binaries. Bundles are not cross-platform — `--from-bundle`
-refuses to install a bundle whose recorded `target_os`/`target_arch` differs
+binaries, and pre-built binaries. The script supports Linux only and is per-arch:
+`--from-bundle` refuses to install a bundle whose recorded `target_arch` differs
 from the current host. See `scripts/setup-env.sh --help` for the full flag set.
 
 ## Build
