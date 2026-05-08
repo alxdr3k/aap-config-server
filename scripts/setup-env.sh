@@ -10,13 +10,16 @@
 #
 # Common options:
 #   --go-version VER       Override Go version (default: read from go.mod).
-#   --arch ARCH            amd64|arm64 (default: auto-detect).
 #   --with-lint            Also install golangci-lint (pinned, see LINT_VERSION).
 #   --with-vuln            Also install govulncheck (latest).
 #   --skip-build           Don't pre-build bin/ binaries.
 #   --skip-modcache        Don't pre-populate module cache (smaller bundle).
 #   --force                Overwrite existing .tools/go install.
 #   -h, --help             Show this help.
+#
+# The host architecture is always auto-detected — there is no cross-arch
+# build path because install_modcache / build_binaries / verify_install all
+# execute the freshly-installed Go SDK on this machine.
 #
 # Layout (relative to repo root, all .gitignored):
 #   .tools/go/             Go SDK
@@ -86,8 +89,6 @@ MODE="install"
 BUNDLE_PATH=""
 GO_VERSION=""
 TARGET_OS="linux"
-TARGET_ARCH=""
-ARCH_EXPLICIT=false
 WITH_LINT=false
 WITH_VULN=false
 SKIP_BUILD=false
@@ -104,7 +105,6 @@ while [ $# -gt 0 ]; do
     --bundle)         need_value "$1" "${2:-}"; MODE="bundle";      BUNDLE_PATH="$2"; shift 2 ;;
     --from-bundle)    need_value "$1" "${2:-}"; MODE="from-bundle"; BUNDLE_PATH="$2"; shift 2 ;;
     --go-version)     need_value "$1" "${2:-}"; GO_VERSION="$2";    shift 2 ;;
-    --arch)           need_value "$1" "${2:-}"; TARGET_ARCH="$2"; ARCH_EXPLICIT=true; shift 2 ;;
     --with-lint)      WITH_LINT=true; shift ;;
     --with-vuln)      WITH_VULN=true; shift ;;
     --skip-build)     SKIP_BUILD=true; shift ;;
@@ -130,14 +130,7 @@ if [ "$MODE" = "bundle" ]; then
   esac
 fi
 
-# In from-bundle mode the host arch is dictated by the running machine, not by
-# the user. Reject --arch overrides so the bundle's recorded arch is verified
-# against the actual host (see restore_bundle).
-if [ "$MODE" = "from-bundle" ] && [ "$ARCH_EXPLICIT" = true ]; then
-  die "--arch is not allowed with --from-bundle (host arch is detected from /proc)"
-fi
-
-TARGET_ARCH="${TARGET_ARCH:-$(detect_arch)}"
+TARGET_ARCH="$(detect_arch)"
 
 if [ -z "$GO_VERSION" ]; then
   GO_VERSION="$(read_go_version_from_gomod)" || die "could not read Go version from go.mod"
