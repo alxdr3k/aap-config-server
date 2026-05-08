@@ -237,10 +237,9 @@ install_lint() {
 
 install_vuln() {
   $WITH_VULN || return 0
-  if [ -x "$TOOLS_BIN/govulncheck" ]; then
-    log "govulncheck already present"
-    return 0
-  fi
+  # --with-vuln promises @latest, so always run `go install` to pick up new
+  # releases. The Go module/build cache makes the no-op case cheap when the
+  # latest tag hasn't moved since the previous run.
   log "installing govulncheck@latest"
   GOBIN="$TOOLS_BIN" go install golang.org/x/vuln/cmd/govulncheck@latest
 }
