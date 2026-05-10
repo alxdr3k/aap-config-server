@@ -276,6 +276,16 @@ def collect_definitions_and_references(files)
         file_defined_ids << match[1]
       end
 
+      # Consolidation pattern: heading like `#### Originally DEC-016: …` or
+      # `## Removed Q-005: …` defines the ID for resolution lookups, even
+      # though the canonical entry has been merged elsewhere. Require a
+      # strict trailing colon so prose like `## Note REQ-001 is open` does
+      # not get mis-classified as a definition.
+      if (match = line.match(/^\s{0,3}#+\s+[A-Za-z][A-Za-z-]*\s+`?(#{ID_PATTERN.source})`?:/))
+        canonical_defs[match[1]] << Definition.new(id: match[1], path: relative(path), line: number)
+        file_defined_ids << match[1]
+      end
+
       if (match = line.match(/^\s*\|\s*`?(#{ID_PATTERN.source})`?\s*\|/))
         table_defs[match[1]] << Definition.new(id: match[1], path: relative(path), line: number)
         file_defined_ids << match[1]
