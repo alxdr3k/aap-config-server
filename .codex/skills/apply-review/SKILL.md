@@ -5,9 +5,9 @@ argument-hint: [review text, PR/comment URL, or path to review notes]
 ---
 <!-- my-skill:generated
 skill: apply-review
-base-sha256: 124ca9c5a0ae7ab608fa3917ae47c47b1acb234e949d045ee790cd4373ea6f58
+base-sha256: 2c7fba46e9b4741bc90cc4626994521b0a9e981b7beab07d117338bc36436008
 overlay-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-output-sha256: 124ca9c5a0ae7ab608fa3917ae47c47b1acb234e949d045ee790cd4373ea6f58
+output-sha256: 2c7fba46e9b4741bc90cc4626994521b0a9e981b7beab07d117338bc36436008
 do-not-edit: edit .codex/skill-overrides/apply-review.md instead
 -->
 
