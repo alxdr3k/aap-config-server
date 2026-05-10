@@ -1,0 +1,56 @@
+# Doc Governance — skeleton workflow.
+#
+# Copy this file to `doc-governance.yml` (drop the `.example` suffix) after
+# copying `scripts/check-doc-governance.rb` into your project.
+#
+# Default mode checks active docs for duplicate IDs, dangling ID references,
+# and missing AC links on `must` REQ rows.
+# It intentionally excludes templates, discovery, archive, and generated docs.
+#
+# Strict mode detects leftover placeholders/template remnants. Enable it only
+# after the project has filled boilerplate placeholders.
+#
+# Markdown link and anchor validation should be handled by a dedicated
+# Markdown/link checker in a separate optional step or workflow.
+
+name: Doc Governance
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check active documentation governance
+        run: ruby scripts/check-doc-governance.rb
+
+      # Optional strict mode:
+      # Enable only after boilerplate placeholders have been replaced.
+      #
+      # - name: Check for placeholder remnants
+      #   env:
+      #     DOC_GOVERNANCE_STRICT: "1"
+      #   run: ruby scripts/check-doc-governance.rb
+
+      # Optional Markdown link validation examples:
+      # Pick one that fits the target project's toolchain and keep it separate
+      # from the boilerplate-specific governance check above.
+      #
+      # Node example:
+      # - name: Check Markdown links with markdown-link-check
+      #   run: npx --yes markdown-link-check "docs/**/*.md"
+      #
+      # Standalone binary example:
+      # - name: Check Markdown links with lychee
+      #   uses: lycheeverse/lychee-action@v2
+      #   with:
+      #     args: --no-progress "docs/**/*.md" "README.md"
