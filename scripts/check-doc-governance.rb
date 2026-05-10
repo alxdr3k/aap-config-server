@@ -252,7 +252,14 @@ def record_definition(definitions, id, path, line)
 end
 
 def collect_definitions_and_references(files)
-  definitions = Hash.new { |hash, key| hash[key] = [] }
+  # Bucket definitions by source so we can resolve canonical authorship:
+  # heading / ASM bullet / ADR filename rank above table-row definitions.
+  # When canonical sources exist for an ID, table-row occurrences become
+  # references instead of duplicate definitions. This matches docs that
+  # carry a TOC summary table + canonical detail heading + cross-doc summary
+  # tables for the same ID.
+  canonical_defs = Hash.new { |hash, key| hash[key] = [] }
+  table_defs = Hash.new { |hash, key| hash[key] = [] }
   references = []
   adr_filename_errors = []
 
@@ -264,19 +271,19 @@ def collect_definitions_and_references(files)
         references << Reference.new(id: id, path: relative(path), line: number)
       end
 
-      if (match = line.match(/^\s{0,3}#+\s+(#{ID_PATTERN.source})(?::|\b)/))
-        record_definition(definitions, match[1], path, number)
+      if (match = line.match(/^\s{0,3}#+\s+`?(#{ID_PATTERN.source})`?(?::|\b)/))
+        canonical_defs[match[1]] << Definition.new(id: match[1], path: relative(path), line: number)
         file_defined_ids << match[1]
       end
 
-      if (match = line.match(/^\s*\|\s*(#{ID_PATTERN.source})\s*\|/))
-        record_definition(definitions, match[1], path, number)
+      if (match = line.match(/^\s*\|\s*`?(#{ID_PATTERN.source})`?\s*\|/))
+        table_defs[match[1]] << Definition.new(id: match[1], path: relative(path), line: number)
         file_defined_ids << match[1]
       end
 
-      next unless (match = line.match(/^\s*[-*]\s+(ASM-\d{3,4})\s*:/))
+      next unless (match = line.match(/^\s*[-*]\s+`?(ASM-\d{3,4})`?\s*:/))
 
-      record_definition(definitions, match[1], path, number)
+      canonical_defs[match[1]] << Definition.new(id: match[1], path: relative(path), line: number)
       file_defined_ids << match[1]
     end
 
@@ -287,9 +294,25 @@ def collect_definitions_and_references(files)
     id = "ADR-#{match[1]}"
     defined_adr_ids = file_defined_ids.select { |defined_id| defined_id.start_with?("ADR-") }
     if defined_adr_ids.empty?
-      record_definition(definitions, id, path, 1)
+      canonical_defs[id] << Definition.new(id: id, path: relative(path), line: 1)
     elsif !defined_adr_ids.include?(id)
       adr_filename_errors << "#{rel}:1 ADR filename implies #{id} but content defines #{defined_adr_ids.to_a.sort.join(', ')}"
+    end
+  end
+
+  # Resolution: canonical (heading / ASM bullet / ADR filename) wins over
+  # table-row. When both exist for an ID, demote table-row occurrences to
+  # references so they neither dangle nor inflate duplicate counts.
+  definitions = Hash.new { |hash, key| hash[key] = [] }
+  all_ids = canonical_defs.keys.to_set | table_defs.keys.to_set
+  all_ids.each do |id|
+    if canonical_defs.key?(id) && !canonical_defs[id].empty?
+      definitions[id] = canonical_defs[id]
+      table_defs[id].each do |td|
+        references << Reference.new(id: id, path: td.path, line: td.line)
+      end
+    else
+      definitions[id] = table_defs[id]
     end
   end
 
@@ -321,11 +344,11 @@ def check_must_requirements(files)
 
   files.each do |path|
     content_lines(path) do |line, number|
-      next unless line.match?(/^\s*\|\s*REQ-\d{3,4}\s*\|/)
+      next unless line.match?(/^\s*\|\s*`?REQ-\d{3,4}`?\s*\|/)
 
       cells = line.strip.delete_prefix("|").delete_suffix("|").split("|").map(&:strip)
-      id = cells.first
-      priority_index = cells.index { |cell| cell.downcase == "must" }
+      id = cells.first.to_s.tr("`", "")
+      priority_index = cells.index { |cell| cell.downcase.tr("`", "") == "must" }
       next unless priority_index
 
       related_ac_text = cells[(priority_index + 1)..]&.join(" | ").to_s
