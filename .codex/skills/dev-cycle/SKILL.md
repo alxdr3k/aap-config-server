@@ -4,9 +4,9 @@ description: "전체 개발 사이클: sync -> discover -> implement -> verify -
 ---
 <!-- my-skill:generated
 skill: dev-cycle
-base-sha256: 1244abcddbafb29dbeba81ddb2358e01188e4df28e611bfe62af2a2834d124c7
+base-sha256: 1fbe7b911611e78497a84ed541ce8401e6843d63675207704222ad11c91d75fb
 overlay-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-output-sha256: 1244abcddbafb29dbeba81ddb2358e01188e4df28e611bfe62af2a2834d124c7
+output-sha256: 1fbe7b911611e78497a84ed541ce8401e6843d63675207704222ad11c91d75fb
 do-not-edit: edit .codex/skill-overrides/dev-cycle.md instead
 -->
 
@@ -228,8 +228,34 @@ REVIEW_DOSSIER_JSON="$("$DEV_CYCLE_HELPER" review-dossier)"
 ## Step 8 - Land
 
 - Direct-push repo: 의도한 파일만 stage, commit, `git push origin main`. PR은 만들지 않는다.
-- Standard repo: 의도한 파일만 stage, commit, `DEV_CYCLE_WORK_BRANCH` push, GitHub app 또는 `gh pr create --base "$REVIEW_BASE" --head "$DEV_CYCLE_WORK_BRANCH" --draft=false`로 **draft가 아닌 open PR**을 생성한 뒤 Step 9로 간다.
+- Standard repo: 의도한 파일만 stage, commit, `DEV_CYCLE_WORK_BRANCH` push. 이어서 PR body를 `PR_BODY_FILE` 경로의 파일로 작성하고 (아래 'Test plan 섹션' 참고) `check-test-plan`을 통과한 뒤 GitHub app 또는 `gh pr create`로 **draft가 아닌 open PR**을 생성한다. 생성 결과 URL에서 PR 번호를 추출해 `PR_NUMBER`에 저장하고 Step 9에서 같은 변수를 사용한다.
+
+  ```bash
+  PR_BODY_FILE="$(mktemp -t dev-cycle-pr-body-XXXXXX.md)"
+  # ...PR body를 "$PR_BODY_FILE"에 작성한다 ('Test plan 섹션' 포함)...
+  "$DEV_CYCLE_HELPER" check-test-plan < "$PR_BODY_FILE"   # ack ok:true 확인
+  PR_URL="$(gh pr create --base "$REVIEW_BASE" --head "$DEV_CYCLE_WORK_BRANCH" \
+            --body-file "$PR_BODY_FILE" --draft=false)"
+  PR_NUMBER="${PR_URL##*/}"
+  ```
 - 사용자가 publish 금지를 명시했으면 여기서 멈추고 local state만 보고한다.
+
+### Test plan 섹션 (Standard repo PR)
+
+PR body에는 반드시 `## Test plan` 섹션을 포함한다. reviewer가 그대로 따라 확인할 수 있는 단위로 적는다.
+
+- 추가/수정한 자동화 테스트: 파일 경로, describe/it 또는 함수명, 각 케이스가 assert하는 contract 한 줄.
+- 실행한 verify 명령과 결과: pass/fail count, 가능하면 before/after 수, skip 사유.
+- 자동화 테스트가 없는 변경 (docs-only contract, command/skill 문구, status ledger 등)이면 대신 실행한 contract 검증 (render/generated consistency, schema/example validation, lint 등)과 결과를 적고, 자동화 테스트를 추가하지 않은 이유를 한 줄로 명시한다.
+- Step 5/7에서 본 검증 결과와 test plan 내용이 일치해야 한다. 실행하지 않은 검증을 적지 않는다.
+
+생성 전 (Step 8)과 merge 직전 (Step 9) 모두 helper로 검증한다.
+
+```bash
+"$DEV_CYCLE_HELPER" check-test-plan < "$PR_BODY_FILE"
+```
+
+ack JSON이 `{"ok":true,...}`가 아니면 body를 보강한 뒤 다시 실행한다. `check-test-plan`은 H2 또는 H3 ATX 헤더만 인식한다 (`## Test plan`, `### Test plan`, CommonMark의 closing `#` 마커 `## Test plan ##` 포함). 한국어 `## 테스트 계획`도 인식하며 case-insensitive다. 동급 또는 상위 레벨 헤더만 섹션을 종결하므로 `## Test plan` 아래의 `### Automated tests` 같은 하위 헤더는 본문으로 카운트된다. fenced code block (```` ``` ```` 또는 `~~~`) 내부의 헤더는 무시한다. HTML comment (`<!-- ... -->`) 내부의 헤더-처럼-생긴 라인과 섹션 안의 comment-only 라인은 reviewer에게 보이지 않으므로 content로 카운트하지 않는다. setext 헤더 (`Text\n---`)는 지원하지 않는다.
 
 ## Step 8.5 - Cycle Brief Gate
 
@@ -241,7 +267,14 @@ REVIEW_DOSSIER_JSON="$("$DEV_CYCLE_HELPER" review-dossier)"
 ## Step 9 - PR Merge Gate
 
 - Direct-push repo: Step 9를 건너뛰고 cycle 종료 처리로 간다.
-- Standard repo: 방금 연 open PR에 대해 `codex-loop` 스킬을 같은 세션에서 실행한다.
+- Standard repo: Step 8에서 저장한 `PR_NUMBER`와 `PR_BODY_FILE`을 사용해 방금 연 open PR의 body를 다시 검증한다. context reset 등으로 두 변수를 잃었으면 `PR_NUMBER="$(gh pr view --json number -q .number)"`로 현재 branch의 open PR을 다시 찾고, `PR_BODY_FILE`은 `PR_BODY_FILE="$(mktemp -t dev-cycle-pr-body-XXXXXX.md)"`로 새 임시 파일을 만든 뒤 Step 8 본문을 재작성하거나 `gh pr view "$PR_NUMBER" --json body -q .body > "$PR_BODY_FILE"`로 복구한다.
+
+  ```bash
+  gh pr view "$PR_NUMBER" --json body -q .body | "$DEV_CYCLE_HELPER" check-test-plan
+  ```
+
+  ack가 `ok:false`면 (생성 직후 body가 누락됐거나, 사람/리뷰어가 섹션을 지운 경우) `gh pr edit "$PR_NUMBER" --body-file "$PR_BODY_FILE"`로 test plan을 복구한 뒤 다음 단계로 간다. 복구가 불가능하면 `result:"blocked"`로 종료한다.
+- 검증을 통과하면 `codex-loop` 스킬을 같은 세션에서 실행한다.
 - `codex-loop`는 review feedback 처리, checks 확인, merge까지 완료해야 한다. 해당 PR이 merge되기 전에는 cycle을 마치거나 다음 loop로 넘어가지 않는다.
 - merge 완료 후 `$REVIEW_BASE`로 checkout하고 `git pull --ff-only origin "$REVIEW_BASE"`로 sync한다.
 - sync 후 local `DEV_CYCLE_WORK_BRANCH`를 삭제한다. squash merge 때문에 일반 삭제가 실패하면, PR merge와 clean working tree를 확인한 뒤 local branch만 강제 삭제한다. 이 cleanup이 끝나기 전에는 cycle을 마치거나 다음 loop로 넘어가지 않는다.

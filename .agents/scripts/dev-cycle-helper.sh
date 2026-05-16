@@ -17,6 +17,7 @@ source "$DEV_CYCLE_HELPER_LIB_DIR/core.sh"
 source "$DEV_CYCLE_HELPER_LIB_DIR/change-scope.sh"
 source "$DEV_CYCLE_HELPER_LIB_DIR/brief-state.sh"
 source "$DEV_CYCLE_HELPER_LIB_DIR/brief-render.sh"
+source "$DEV_CYCLE_HELPER_LIB_DIR/test-plan.sh"
 source "$DEV_CYCLE_HELPER_LIB_DIR/dispatch.sh"
 
 dev_cycle_helper_main "$@"
