@@ -38,9 +38,25 @@
 #   CODEX_PASS_ACTOR     exact GitHub login that signals pass via reaction
 #                        (default: chatgpt-codex-connector[bot])
 #   CODEX_PASS_REACTION  GitHub reaction content (default: +1, i.e. 👍)
+#   CODEX_PASS_COMMENT_PATTERN
+#                        case-insensitive Oniguruma regex; if the pass actor
+#                        leaves an issue comment or review body matching this
+#                        pattern after the baseline, treat it as a pass signal
+#                        in addition to the reaction. The default matches
+#                        "Didn't find any major issues" with either straight
+#                        (U+0027) or curly (U+2019) apostrophe — or no
+#                        apostrophe at all — while rejecting opposite-meaning
+#                        phrasings like "I did find any major issues".
+#                        (default regex: didn['’]?t find any major issues)
 #   CODEX_REVIEW_REQUEST_BODY
-#                        issue comment body posted when no eyes signal exists
-#                        (default: @codex review)
+#                        issue comment body posted once per baseline as soon as
+#                        polling starts (no longer gated on eyes). The default
+#                        explicitly asks codex to reply with a pass comment
+#                        rather than only a reaction, so the pass-comment
+#                        fallback can trigger via webhook.
+#                        (default: a multi-line comment beginning with
+#                        "@codex review" — see the script source for the
+#                        exact body)
 #   CODEX_REVIEW_OUTPUT json enables structured observation stdout. Human mode
 #                        is unchanged. Equivalent CLI flag: --json.
 
@@ -60,8 +76,15 @@ repo=""
 pr=""
 baseline=""
 observation_feedback_items="[]"
-pass_observed=false
+pass_reaction_observed=false
+pass_comment_observed=false
 eyes_present=false
+# Default pass-comment regex (case-insensitive). Initialized up front because
+# emit_json_observation may run before the full env-var resolution block if
+# the script exits early (e.g. PR detection failure under --json mode), and
+# the variable is referenced without a `${var:-default}` fallback there.
+default_pass_comment_pattern=$'didn[\'’]?t find any major issues'
+pass_comment_pattern="${CODEX_PASS_COMMENT_PATTERN:-$default_pass_comment_pattern}"
 timeout_count=0
 review_request_posted=0
 review_request_acknowledged=0
@@ -114,7 +137,9 @@ emit_json_observation() {
     --arg baseline "$baseline" \
     --arg pass_actor "${pass_actor:-chatgpt-codex-connector[bot]}" \
     --arg pass_reaction "${pass_reaction:-+1}" \
-    --argjson pass_observed "$pass_observed" \
+    --arg pass_comment_pattern "$pass_comment_pattern" \
+    --argjson pass_reaction_observed "$pass_reaction_observed" \
+    --argjson pass_comment_observed "$pass_comment_observed" \
     --argjson feedback_items "$observation_feedback_items" \
     --argjson timeout_count "$timeout_count" \
     --argjson timeout_seconds "${timeout:-600}" \
@@ -143,7 +168,8 @@ emit_json_observation() {
       repo:$repo,
       pr_number:(try ($pr | tonumber) catch null),
       baseline:(if $baseline == "" then null else $baseline end),
-      pass_reaction:{actor:$pass_actor, content:$pass_reaction, observed:$pass_observed},
+      pass_reaction:{actor:$pass_actor, content:$pass_reaction, observed:$pass_reaction_observed},
+      pass_comment:{actor:$pass_actor, pattern:$pass_comment_pattern, observed:$pass_comment_observed},
       feedback_items:$feedback_items,
       timeout:{
         count:$timeout_count,
@@ -213,7 +239,14 @@ timeout="${CODEX_POLL_TIMEOUT:-600}"
 initial_empty_delay="${CODEX_INITIAL_EMPTY_DELAY:-300}"
 pass_actor="${CODEX_PASS_ACTOR:-chatgpt-codex-connector[bot]}"
 pass_reaction="${CODEX_PASS_REACTION:-+1}"
-review_request_body="${CODEX_REVIEW_REQUEST_BODY:-@codex review}"
+# pass_comment_pattern is initialized earlier (before PR resolution) so it
+# is always defined when emit_json_observation runs.
+# Default review-request body. Built via $'...' so apostrophe and embedded
+# quotes survive. Asks codex to reply with a pass comment when no issues are
+# found, so pass-comment fallback receives a webhook-deliverable signal
+# instead of a reaction (which GitHub never delivers via webhook).
+default_review_request_body=$'@codex review\n\nIf you have no major issues to flag, please reply with a comment containing "Didn\'t find any major issues" rather than only adding a reaction. This lets the automated review loop confirm pass via webhook without polling reactions.'
+review_request_body="${CODEX_REVIEW_REQUEST_BODY:-$default_review_request_body}"
 request_author="$(gh api user -q .login 2>/dev/null || true)"
 
 # --- API helpers ---
@@ -239,6 +272,29 @@ fetch_list_or_empty() {
     if [ "$(classify_api_error "$out")" = "permanent" ]; then
       record_api_error "$label" permanent "$out"
       echo "ERROR: $label permanent API failure: $out" >&2
+      echo "[]"
+      return 0
+    fi
+    printf '%s\n' "$label" >> "$fetch_failures"
+    echo "WARN: $label fetch failed (using empty set): $out" >&2
+    echo "[]"
+    return 0
+  fi
+  printf '%s' "$out" | jq -s 'add // []'
+}
+
+# Reactions endpoint variant: treats permanent failures (403/404/etc.) as
+# soft. The pass-comment fallback can still detect codex pass via
+# webhook-deliverable issue comments / reviews alone, so a blocked /reactions
+# endpoint must NOT abort the loop — otherwise environments where reactions
+# is unreachable (the exact case this fallback exists for) would never get a
+# chance to receive the comment-based pass signal.
+fetch_reactions_or_empty() {
+  local label="$1"; shift
+  local out
+  if ! out=$(gh api --paginate "$@" 2>&1); then
+    if [ "$(classify_api_error "$out")" = "permanent" ]; then
+      echo "WARN: $label permanent failure — continuing without reactions (pass-comment fallback can still detect codex pass): $out" >&2
       echo "[]"
       return 0
     fi
@@ -360,19 +416,25 @@ while :; do
     baseline="$last_clamped_baseline"
   fi
 
-  # 1) Pass reaction wins (filtered by baseline so old 👍 doesn't falsely pass)
-  reactions=$(fetch_list_or_empty "reactions" "repos/$repo/issues/$pr/reactions")
-  stop_if_permanent_api_error
+  # 1) Fetch reactions. fetch_reactions_or_empty absorbs permanent failures
+  # (returns []) so a blocked /reactions endpoint does not abort the loop —
+  # the pass-comment fallback (2b below) still has a chance to fire.
+  reactions=$(fetch_reactions_or_empty "reactions" "repos/$repo/issues/$pr/reactions")
+
+  # 1a) Pass reaction (filtered by baseline so old 👍 doesn't falsely pass).
+  # On reactions permanent error this evaluates over an empty list (count=0)
+  # and falls through to the comment fallback.
   pass=$(printf '%s' "$reactions" | jq --arg actor "$pass_actor" --arg react "$pass_reaction" --arg base "$baseline" '
     [.[] | select(.user.login == $actor) | select(.content == $react) | select(.created_at > $base)] | length')
   if [ "$pass" != "0" ]; then
     echo "PASSED (reaction $pass_reaction from $pass_actor; baseline=$baseline)" >&2
-    pass_observed=true
+    pass_reaction_observed=true
     finish passed 0
   fi
 
-  # 2) Gather feedback. Each source is independent — partial successes still
-  # surface their fresh items so a single endpoint failure doesn't stall.
+  # 2) Gather comment/review feedback. fetch_list_or_empty still records
+  # permanent errors here — if comments/reviews themselves are unreachable,
+  # the loop genuinely cannot make progress.
   ic=$(fetch_list_or_empty "issue_comments"  "repos/$repo/issues/$pr/comments")
   stop_if_permanent_api_error
   rv=$(fetch_list_or_empty "reviews"         "repos/$repo/pulls/$pr/reviews")
@@ -380,17 +442,49 @@ while :; do
   rc=$(fetch_list_or_empty "review_comments" "repos/$repo/pulls/$pr/comments")
   stop_if_permanent_api_error
 
+  # 2a) Compute new feedback items first. Codex pass-comments are explicitly
+  # excluded here so a co-occurring pass signal does not pollute the feedback
+  # list, and other actionable feedback in the same window is handled BEFORE
+  # we declare pass — otherwise a pass-comment could mask reviewer comments
+  # and drive an auto-merge despite unresolved feedback.
   new_items=$(jq -n --arg base "$baseline" --arg request_body "$review_request_body" \
     --arg author "$request_author" \
+    --arg pass_actor "$pass_actor" --arg pass_pattern "$pass_comment_pattern" \
     --argjson ic "$ic" --argjson rv "$rv" --argjson rc "$rc" '
+    # Pass-comment recognition. Pattern is a case-insensitive regex; default
+    # rejects opposite-meaning wording like "I did find any major issues"
+    # that a substring contains() would have accepted. For review objects,
+    # an explicit CHANGES_REQUESTED (or DISMISSED) state veto overrides any
+    # body match — a review that explicitly requests changes must always
+    # count as actionable feedback. issue_comments have no state (treated
+    # as "").
+    def is_pass_comment:
+      (.user.login == $pass_actor)
+      and (($pass_pattern | length) > 0)
+      and (((.body // "") | test($pass_pattern; "i")))
+      and (((.state // "") | (. != "CHANGES_REQUESTED" and . != "DISMISSED")));
+    # When the author is known, dedup self review-requests against either the
+    # current configured body OR any legacy variant that starts with
+    # "@codex review" — that legacy prefix matters only because earlier
+    # versions of this script defaulted to single-line "@codex review" and
+    # in-place upgrades must not reclassify those self-comments as feedback.
+    # When the author is unknown (gh api user failed), the legacy prefix is
+    # UNSAFE because a third-party actionable comment like
+    # "@codex review please fix flaky test" would be silently dropped. So
+    # fall back to exact body match only in the empty-author branch.
+    def is_self_review_request:
+      ((.body // "") == $request_body)
+      or (((.body // "") | startswith("@codex review")));
     ($ic | [.[] | select(.created_at > $base) | select(
       if (($author | length) > 0) then
-        (.user.login != $author) or (.body != $request_body)
+        (.user.login != $author) or (is_self_review_request | not)
       else
         .body != $request_body
       end
-    ) | {kind:"issue_comment", at:.created_at, login:.user.login, body:.body, state:""}])
-    + ($rv | [.[] | select((.submitted_at // "") > $base) | {kind:"review", at:.submitted_at, login:.user.login, body:(.body // ""), state:(.state // "")}])
+    ) | select(is_pass_comment | not)
+      | {kind:"issue_comment", at:.created_at, login:.user.login, body:.body, state:""}])
+    + ($rv | [.[] | select((.submitted_at // "") > $base) | select(is_pass_comment | not)
+                  | {kind:"review", at:.submitted_at, login:.user.login, body:(.body // ""), state:(.state // "")}])
     + ($rc | [.[] | select(.created_at > $base) | {kind:"review_comment", at:.created_at, login:.user.login, path:.path, line:(.line // .original_line), body:.body, state:""}])
     | sort_by(.at)')
 
@@ -415,53 +509,101 @@ while :; do
     finish feedback 1
   fi
 
+  # 2b) No new actionable feedback. Honor a pass-comment ONLY when every
+  # feedback source we evaluated is complete — a transient failure on any
+  # of ic/rv/rc forces that source to [] and could leave real feedback
+  # invisible while a pass body in a surviving source still triggers exit 0.
+  # Defer pass to the next poll in that case.
+  if [ -n "$pass_comment_pattern" ] \
+     && ! grep -qxE 'issue_comments|reviews|review_comments' "$fetch_failures"; then
+    pass_by_text=$(jq -n \
+      --argjson ic "$ic" --argjson rv "$rv" \
+      --arg base "$baseline" --arg actor "$pass_actor" \
+      --arg pat "$pass_comment_pattern" '
+      def matches:
+        ($pat | length) > 0 and ((.body // "") | test($pat; "i"));
+      # CHANGES_REQUESTED / DISMISSED reviews never count as pass, even if
+      # the configured regex matches their body.
+      def state_ok: ((.state // "") | (. != "CHANGES_REQUESTED" and . != "DISMISSED"));
+      ($ic | [.[] | select(.user.login == $actor)
+                  | select(.created_at > $base)
+                  | select(matches)] | length)
+      + ($rv | [.[] | select(.user.login == $actor)
+                  | select((.submitted_at // "") > $base)
+                  | select(matches)
+                  | select(state_ok)] | length)')
+    if [ "$pass_by_text" != "0" ]; then
+      echo "PASSED (comment matches CODEX_PASS_COMMENT_PATTERN from $pass_actor; baseline=$baseline)" >&2
+      pass_comment_observed=true
+      finish passed 0
+    fi
+  fi
+
+  # eyes_signal must be scoped to the current baseline — otherwise an old
+  # eyes-acked review-request from a previous cycle would mark the freshly
+  # posted request as acknowledged and bypass the 3-poll unacked timeout.
+  # Only computable when both reactions and issue_comments fetched cleanly;
+  # otherwise we defer the eyes check and treat as "not yet" so posting and
+  # unacked counting can still progress on transient fetch failures.
   if ! grep -qxE 'reactions|issue_comments' "$fetch_failures"; then
     eyes_signal=$(jq -n \
       --arg author "$request_author" \
       --arg request_body "$review_request_body" \
+      --arg base "$baseline" \
       --argjson reactions "$reactions" \
       --argjson ic "$ic" '
       (
-        ($reactions | [.[] | select(.content == "eyes")] | length) > 0
+        ($reactions | [.[] | select(.content == "eyes") | select(.created_at > $base)] | length) > 0
       ) or (
         ($ic | [.[] |
-          select(
+          select(.created_at > $base)
+          | select(
             (($author | length) > 0 and ((.user.login // "") == $author))
-            or (($author | length) == 0 and ((.body // "") == $request_body))
+            or (
+              ($author | length) == 0 and ((.body // "") == $request_body)
+            )
           )
           | select((.reactions.eyes // 0) > 0)
         ] | length) > 0
       )
       | if . then 1 else 0 end')
+  else
+    eyes_signal=0
+  fi
 
-    if [ "$eyes_signal" = "1" ]; then
-      eyes_present=true
-      review_request_acknowledged=1
+  # Review-request lifecycle. eyes_signal=1 takes priority over posting:
+  # this same-baseline acknowledgement may belong to an earlier helper
+  # invocation that already posted the request, so reposting would create
+  # duplicate bot comments and risk secondary rate limits. Falling back:
+  # if not yet acked, post once per invocation; if posted and still
+  # unacked, count polls toward the 3-strike timeout.
+  if [ "$eyes_signal" = "1" ]; then
+    eyes_present=true
+    review_request_acknowledged=1
+    review_request_polls=0
+  elif [ "$review_request_posted" = "0" ]; then
+    eyes_present=false
+    echo "→ posting review request comment (baseline당 1회, eyes 상태와 무관)" >&2
+    if post_out=$(gh api "repos/$repo/issues/$pr/comments" \
+      -f body="$review_request_body" 2>&1 >/dev/null); then
+      review_request_posted=1
       review_request_polls=0
-    elif [ "$review_request_posted" = "0" ]; then
-      eyes_present=false
-      echo "→ no eyes reaction on PR body or my comments; posting review request" >&2
-      if post_out=$(gh api "repos/$repo/issues/$pr/comments" \
-        -f body="$review_request_body" 2>&1 >/dev/null); then
-        review_request_posted=1
-        review_request_polls=0
-        first_activity_probe=0
-      else
-        post_class="$(classify_api_error "$post_out")"
-        if [ "$post_class" = "permanent" ]; then
-          record_api_error "post_review_request" permanent "$post_out"
-          echo "ERROR: failed to post review request comment (permanent): $post_out" >&2
-          finish api_error 4
-        fi
-        echo "WARN: transient failure posting review request; will retry next poll: $post_out" >&2
+      first_activity_probe=0
+    else
+      post_class="$(classify_api_error "$post_out")"
+      if [ "$post_class" = "permanent" ]; then
+        record_api_error "post_review_request" permanent "$post_out"
+        echo "ERROR: failed to post review request comment (permanent): $post_out" >&2
+        finish api_error 4
       fi
-    elif [ "$review_request_acknowledged" = "0" ]; then
-      eyes_present=false
-      review_request_polls=$((review_request_polls + 1))
-      if [ "$review_request_polls" -ge 3 ]; then
-        echo "TIMEOUT: review request was not acknowledged with eyes within ${review_request_polls} polling iterations" >&2
-        finish review_request_unacknowledged 2
-      fi
+      echo "WARN: transient failure posting review request; will retry next poll: $post_out" >&2
+    fi
+  elif [ "$review_request_acknowledged" = "0" ]; then
+    eyes_present=false
+    review_request_polls=$((review_request_polls + 1))
+    if [ "$review_request_polls" -ge 3 ]; then
+      echo "TIMEOUT: review request was not acknowledged with eyes within ${review_request_polls} polling iterations" >&2
+      finish review_request_unacknowledged 2
     fi
   fi
 

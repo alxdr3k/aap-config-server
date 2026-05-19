@@ -1,12 +1,11 @@
 aap-config-server	/Users/yngn/ws/aap-config-server	dev	boilerplate	none
 aap-console	/Users/yngn/ws/aap-console	dev	boilerplate	none
 actwyn	/Users/yngn/ws/actwyn	main	boilerplate	none
+boilerplate	/Users/yngn/ws/boilerplate	main	boilerplate	none
 concluv	/Users/yngn/ws/concluv	main	boilerplate	none
 devdeck	/Users/yngn/ws/devdeck	main	boilerplate	none
-open-codesign	/Users/yngn/ws/open-codesign	main	custom	none
 second-brain	/Users/yngn/ws/second-brain	main	universal	none
 statistics-for-data-science	/Users/yngn/ws/statistics-for-data-science	main	universal	none
-trading.wave	/Users/yngn/ws/trading.wave	dev	universal	none
 xeflabs	/Users/yngn/ws/xeflabs	dev	universal	none
 github-discord-bot	/Users/yngn/ws/xeflabs/github-discord-bot	dev	universal	none
 github-runner	/Users/yngn/ws/xeflabs/github-runner	dev	universal	none

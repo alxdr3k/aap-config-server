@@ -90,16 +90,6 @@ profile_for() {
 
 project_candidates() {
   find "$ROOT" -maxdepth 3 -name ".claude" -type d -exec dirname {} \; 2>/dev/null || true
-
-  [[ -f "$MY_SKILL/deploy-projects.txt" ]] || return 0
-  while IFS= read -r line; do
-    line="${line%%#*}"
-    line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    [[ -n "$line" ]] || continue
-    if [[ "$line" == /* ]]; then echo "$line"
-    else echo "$ROOT/$line"
-    fi
-  done < "$MY_SKILL/deploy-projects.txt"
 }
 
 discover() {
@@ -543,7 +533,7 @@ case "$cmd" in
       # BEGIN/END markers. Caller redirects with `> adoption_report.md`.
       printf '# Adoption report — invariant tracking\n\n'
       printf '_Generated: %s_\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      printf 'Source: `targets.tsv` (my-skill/codex/skills/boilerplate/).\n\n'
+      printf 'Source: `targets.tsv` (my-skill repo root).\n\n'
       # checkout column makes detection's data source visible in the
       # generated report. Anything other than `ok` means detected was
       # computed against arbitrary local state, NOT the configured base.

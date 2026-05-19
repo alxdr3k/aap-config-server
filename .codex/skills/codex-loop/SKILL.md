@@ -1,16 +1,16 @@
 ---
 name: codex-loop
-description: 현재 PR의 codex 리뷰를 기다리고 코멘트 수정 후 push, 통과 reaction을 받으면 정책에 맞춰 merge
+description: 현재 PR의 codex 리뷰를 기다리고 코멘트 수정 후 push, 통과 신호(reaction 또는 pass-comment 매칭)를 받으면 정책에 맞춰 merge
 ---
 <!-- my-skill:generated
 skill: codex-loop
-base-sha256: 563aebb1712d9ded59613d50b0c604c16cb5f85e231ae20fd5e1217a27c19ef7
+base-sha256: cff31cfefbd329f47d9f1ef38e6fb361224f9202322a45f61e7d32553bf8b744
 overlay-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-output-sha256: 563aebb1712d9ded59613d50b0c604c16cb5f85e231ae20fd5e1217a27c19ef7
+output-sha256: cff31cfefbd329f47d9f1ef38e6fb361224f9202322a45f61e7d32553bf8b744
 do-not-edit: edit .codex/skill-overrides/codex-loop.md instead
 -->
 
-현재 작업 중인 PR에 대해 codex 리뷰를 기다리고, 코멘트가 달리면 수정 후 push. 통과 reaction까지 반복한 뒤 PR을 정책에 맞춰 merge한다.
+현재 작업 중인 PR에 대해 codex 리뷰를 기다리고, 코멘트가 달리면 수정 후 push. 통과 신호(`$CODEX_PASS_ACTOR`의 `$CODEX_PASS_REACTION` reaction 또는 baseline 이후 `$CODEX_PASS_ACTOR`가 남긴 issue comment/review body가 `$CODEX_PASS_COMMENT_PATTERN`(기본 regex `didn['’]?t find any major issues`, case-insensitive)에 매칭, 단 review의 state가 `CHANGES_REQUESTED`/`DISMISSED`이면 매칭 무관 actionable feedback으로 유지)까지 반복한 뒤 PR을 정책에 맞춰 merge한다.
 
 사용자에게 보이는 보고, feedback 정리, 질문은 한국어로 작성한다. 코드, 명령, 파일명, 원문 인용은 원문 언어를 유지한다.
 
@@ -49,7 +49,7 @@ exit code를 바꾸지 않고 stdout에 compact `schema_version:1`,
 
 | exit | 의미 | 다음 행동 |
 | ---- | ---- | --------- |
-| 0 | Codex pass reaction 감지 | checks 확인 후 PR merge |
+| 0 | Codex pass 신호(reaction 또는 pass-comment 매칭) 감지 | checks 확인 후 PR merge |
 | 1 | 새 comment/review가 stdout에 출력됨 | 분석 -> 수정 -> commit -> push -> 스크립트 재실행 |
 | 2 | 두 번째 timeout 또는 review 요청 미확인 | loop 종료, 사용자에게 타임아웃 보고 |
 | 3 | PR 감지 실패 | PR 번호 또는 URL 요청 후 스크립트 인자로 재실행 |
@@ -60,14 +60,18 @@ exit code를 바꾸지 않고 stdout에 compact `schema_version:1`,
 계속 조회한다. PR 생성 직후 Codex/GitHub 쪽 초기 처리 지연 때문에 빈 PR을 너무 촘촘하게
 polling하지 않기 위한 동작이다.
 
-각 polling iter에서 helper는 PR 본문 reaction과 인증 사용자 comment의 reaction을
-확인한다.
+각 polling iter에서 helper는 PR 본문 reaction, 인증 사용자 comment의 reaction,
+그리고 codex bot이 남긴 issue comment/review body의 pass-comment 매칭을 확인한다.
+reaction 또는 pass-comment 매칭 중 하나라도 baseline 이후 발견되면 exit 0으로
+종료한다.
 
-- `eyes` reaction이 PR 본문 또는 내 comment에 있으면 계속 대기한다.
-- `eyes` reaction이 없고 아직 review 요청을 남기지 않았으면 PR에 `@codex review`
-  comment를 1회 남긴다.
+- 첫 polling iter에서 review 요청을 아직 남기지 않았으면 PR에 `$CODEX_REVIEW_REQUEST_BODY`
+  (기본 본문은 codex에게 pass-comment 형태로 답해달라는 명시적 부탁을 포함)
+  코멘트를 1회 무조건 남긴다. codex의 reaction 상태와 무관.
+- 게시 후 PR 본문 또는 내 comment에 `eyes` reaction이 생기면 acknowledge로
+  인식하고 계속 대기한다.
 - review 요청 comment 자체는 새 feedback으로 처리하지 않는다.
-- comment를 남긴 뒤 다음 3번의 polling iter 안에 PR 본문 또는 내 comment에 `eyes`
+- 게시 후 다음 3번의 polling iter 안에 PR 본문 또는 내 comment에 `eyes`
   reaction이 생기지 않으면 exit 2로 종료한다.
 - 일반 polling timeout은 한 번 더 대기하고, 두 번째 timeout에서 exit 2로 종료한다.
 
@@ -100,8 +104,9 @@ feedback을 대체하지 않는다. codex-loop 자체는 기존 exit code 기반
 
 ## Merge 처리
 
-exit 0은 Codex pass reaction을 감지했다는 뜻이다. 이 경우 사용자의 추가 확인을
-기다리지 말고 PR을 merge한다. 단, merge 전 다음을 확인한다.
+exit 0은 Codex pass 신호(reaction 또는 pass-comment 매칭)를 감지했다는 뜻이다.
+이 경우 사용자의 추가 확인을 기다리지 말고 PR을 merge한다. 단, merge 전 다음을
+확인한다.
 
 1. PR이 draft가 아니어야 한다.
 2. required checks가 통과해야 한다.
