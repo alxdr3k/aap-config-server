@@ -119,30 +119,71 @@ echo "Review base: $REVIEW_BASE"
 
 ## Step 2 - Discover
 
-`/codex:rescue --fresh --wait`를 foreground로 실행한다. `--phase <id>`가 있으면 프롬프트에 그대로 넣는다.
-`/codex:rescue`에 전달하는 프롬프트는 영어로 작성한다. 반환 결과를 사용자에게 보고할 때는 한국어로 정리한다.
+스킬을 호출한 메인 세션이 직접 탐색한다. `/codex:rescue`나 다른 sub-agent로 위임하지 않는다. 사용자에게 보고할 때는 한국어로 정리한다.
 
-Prompt:
+### 진입 정합
 
-```text
-Choose one task for the next cycle based on this repo's guidance, README, docs/context/current-state.md if present, docs/04_IMPLEMENTATION_PLAN.md current/status ledger if present, thin current docs, source, and tests.
-Read long design/archive/generated documents only when needed.
-Prefer implementation candidates, and cut the work to a commit-sized task/slice. Choose docs-only only when there is no code work to do and only docs are wrong.
-Return NEXT TASK only for ready, unblocked, authorized work. Planned/deferred/blocked scope is inventory to report, not an execution queue.
-If both docs and code are needed, return it as an implementation task and include docs update in the acceptance criteria.
-If --phase is present, inspect only that id's scope.
-If no ready slice exists, return ALL CLEAR and include a "Next review candidates" list of up to three non-ready slices with status, unblock/review condition, and any needed user decision or external input. Also note any candidate that appears mechanically auto-promotable, but do not edit files during Step 2.
+- repo에 `AGENTS.md`가 있으면 그 파일의 "Read order" 섹션을 canonical로 따른다. 본 Step의 읽기 순서는 기본값이고, repo가 자체 read order를 정의했으면 그쪽이 우선한다.
+- **Project mode stop rule은 `AGENTS.policy.md`가 존재하고 그 파일이 "Project mode stop rule" 섹션을 정의한 repo에서만 발동한다**. 그 조건을 만족하면, `docs/context/current-state.md`의 `Project mode` 블록을 확인해 `mode`가 `greenfield` 또는 `adoption`이 아닐 때 (블록 없음 / `unset` / 다른 값) 정책이 정의한 대로 사용자에게 모드 결정을 요청하고 Step 2를 중단한다. mode가 `adoption`이면 `docs/DOCUMENTATION.md`가 정의한 adoption backfill이 끝났는지 같이 확인한다. `AGENTS.policy.md`가 없거나 해당 섹션이 없으면 stop rule을 적용하지 않고 그냥 진행한다.
 
-Return one of:
-## NEXT TASK
-<one task including roadmap position or task/slice id, files/areas, gate/acceptance criteria, docs update, and validation>
+### Profile 분기
 
-## DOC FIX NEEDED
-<docs-only fix list>
+본 Step의 읽기 순서는 repo가 boilerplate 구조를 얼마나 채택했는지로 분기한다. **반드시 어느 한 profile에 매칭되도록 fallback이 정의되어 있다.**
 
-## ALL CLEAR
-<current state summary, plus Next review candidates when no ready slice exists>
-```
+| Profile | 조건 (둘 다 만족) | 동작 |
+|---------|------|------|
+| **Boilerplate-full** | `docs/context/current-state.md` 존재 **AND** `docs/04_IMPLEMENTATION_PLAN.md` 존재 | 아래 "Boilerplate-structure 읽기 순서" 적용 |
+| **Boilerplate-partial** | 위 두 파일 중 하나만 존재 (staged adoption / migration 중간 상태) | "Boilerplate-structure 읽기 순서"를 **best-effort로 적용** — 존재하는 boilerplate 파일은 그대로 읽고, 누락 파일에 해당하는 단계는 건너뛰며, 누락된 파일이 ready 판정에 필요한 정보를 담는 경우 그 정리 자체를 DOC FIX NEEDED 후보로 보고한다. IMPL_PLAN vocabulary 강제 규칙(아래 "공통 규칙")은 IMPL_PLAN이 존재할 때만 적용 |
+| **Universal** | 위 두 파일 모두 없음 | 아래 "Universal profile 읽기 순서" 적용 |
+
+### Boilerplate-structure 읽기 순서
+
+위 표 기준 **Boilerplate-full** 또는 **Boilerplate-partial** profile에서 적용. 각 단계에서 task 후보가 좁혀지면 거기서 멈추고 다음 단계는 task가 실제로 닿는 부분만 읽는다. 누락 파일은 건너뛰고 진행한다.
+
+1. `docs/context/current-state.md` — 활성 milestone / track / phase / slice, hardening 현황, blocker, project mode
+2. `docs/04_IMPLEMENTATION_PLAN.md` — status ledger (milestone → track → phase → slice, gate, acceptance, evidence, dependency, next, blocks 컬럼). `## Risks (open)` 섹션은 ready 판정 직전 반드시 본다
+3. `docs/current/CODE_MAP.md`, `docs/current/RUNTIME.md`, `docs/current/DATA_MODEL.md`, `docs/current/TESTING.md`, `docs/current/OPERATIONS.md` 중 task가 닿는 thin nav docs
+4. CI/CD, release, deployment pipeline 또는 required check를 바꾸는 task면 `docs/11_CI_CD.md`
+5. AC/TEST/TRACE 상태 변경이 필요하면 `docs/06_ACCEPTANCE_TESTS.md`, `docs/09_TRACEABILITY_MATRIX.md`
+6. 제품 scope 결정이 영향을 받으면 `docs/01_PRD.md`, 아키텍처 결정이 영향을 받으면 `docs/02_HLD.md` + 관련 `docs/adr/*.md`
+7. 미해결 결정이 task ready 판정을 막을 수 있으면 `docs/07_QUESTIONS_REGISTER.md`, `docs/08_DECISION_REGISTER.md`
+8. 작업 후보와 직접 관련된 source / tests / migrations / config
+
+긴 `docs/design/archive/*`, `docs/discovery/*`, `docs/generated/*`, `docs/_generated/*`는 위 단계로 task를 좁힌 뒤 그 task에 직접 필요한 경우에만 본다. invariant tracking 시스템(`docs/templates/relation_enum.yaml`)을 쓰는 repo에서 Q/DEC/ADR 작성이 task 본문에 포함되면 `AGENTS.policy.md` "Cross-document invariant tracking"이 정의한 generated artifacts(`docs/_generated/scope_tree.yaml`, `term_usage.yaml`, `effective_invariant_policy.yaml`)를 함께 읽는다.
+
+### Universal profile 읽기 순서
+
+위 표 기준 **Universal** profile에서 적용.
+
+1. `AGENTS.md` / `CLAUDE.md` / `README` 등 entrypoint 문서
+2. repo가 정의한 status/issue tracker (있으면)
+3. 작업 후보와 직접 관련된 source / tests
+
+### 공통 규칙
+
+- `--phase <id>`가 있으면 그 id의 milestone / track / phase / slice / roadmap label 범위에 속하는 문서·source만 본다. 범위 밖 candidate는 무시한다.
+- **Boilerplate-full / Boilerplate-partial profile에 한해**, `docs/04_IMPLEMENTATION_PLAN.md`가 존재하면 그 파일의 status vocabulary와 단계 hierarchy(milestone / track / phase / slice / gate / acceptance / evidence)를 보고에 그대로 사용한다. 임의 단어로 paraphrase하지 않는다. **Universal profile 및 IMPL_PLAN이 없는 Boilerplate-partial 케이스에서는 이 규칙을 적용하지 않고**, repo가 실제로 사용하는 status/issue tracker의 용어를 그대로 따른다.
+
+### 판단 기준
+
+아래 규칙에서 "ledger"는 Boilerplate-full/Boilerplate-partial profile에서는 `docs/04_IMPLEMENTATION_PLAN.md`를, Universal profile (또는 IMPL_PLAN이 없는 Boilerplate-partial 케이스)에서는 repo가 실제 사용하는 status/issue tracker를 가리킨다.
+
+- 구현 후보를 우선하되 commit 가능한 task/slice 크기로 자른다.
+- `NEXT TASK`는 ready, unblocked, authorized 작업만 선택한다. `planned`, `deferred`, `blocked`에 해당하는 scope (또는 universal repo에서 그에 상응하는 tracker 상태)는 inventory로 보고할 수 있지만 실행 큐로 보지 않는다.
+- ready 판정 전 ledger의 dependency · gate · acceptance · 활성 risk (또는 universal repo의 동등 신호 — blocking issue, missing test/PR, 명시된 prerequisite 등)가 해당 task의 시작을 막지 않는지 확인한다. Boilerplate profile에서 직전 cycle merge로 이미 해소된 항목이 IMPL_PLAN에 반영되지 않은 경우, 그 정리 자체가 docs-only DOC FIX NEEDED 후보가 될 수 있다.
+- 문서와 코드가 둘 다 필요하면 구현 작업으로 반환하고 docs update를 acceptance criteria에 포함한다.
+- docs-only는 구현할 코드 작업이 없고 문서만 틀린 경우에만 선택한다.
+- ready task/slice가 없으면 `ALL CLEAR`로 판단하되, 다음에 검토할 non-ready 후보를 최대 3개까지 함께 기록한다. 각 후보에는 ledger상의 status (universal repo에서는 tracker의 실제 상태값), 검토/해제 조건, 필요한 사용자 결정이나 외부 입력을 포함한다. 기계적으로 자동 승격 가능해 보이는 후보(선행 dependency가 ledger 기준으로 closed)도 표시하되 Step 2에서는 파일을 수정하지 않는다.
+
+### 반환 형식
+
+탐색 결과를 사용자에게 보고할 때 아래 중 정확히 하나의 형식을 사용한다. Profile에 따라 boilerplate 전용 필드(`milestone / track / phase / slice id`, `IMPL_PLAN 문서 참조`)가 universal repo의 동등 신호로 대체된다.
+
+**## NEXT TASK** — 작업 식별자 (Boilerplate-full/partial: milestone / track / phase / slice id; Universal: roadmap / issue / ticket id 또는 source 경로), 파일·영역, gate / acceptance criteria (또는 universal repo의 done criteria), 필요한 docs update, validation 명령을 포함한 하나의 작업.
+
+**## DOC FIX NEEDED** — docs-only 수정 목록. 어느 문서가 잘못됐는지 명시한다 (Boilerplate-full/partial: `current-state.md` / `04_IMPLEMENTATION_PLAN.md` / thin current docs / 06/07/08 / ADR 중 어디; Universal: README / repo가 사용하는 문서 경로).
+
+**## ALL CLEAR** — 현재 상태 요약 (Boilerplate-full/partial: 활성 milestone / track / phase / 마지막 landed slice; Universal: 최근 작업·릴리스 요약). ready 후보가 없어서 종료하는 경우 다음 검토 후보(최대 3개)와 각 후보의 status (ledger 또는 tracker의 실제 값), 해제 조건을 포함한다.
 
 ## Step 3 - Decide
 
