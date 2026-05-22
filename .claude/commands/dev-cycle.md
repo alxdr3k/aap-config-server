@@ -206,10 +206,12 @@ REVIEW_DOSSIER_JSON="$("$DEV_CYCLE_HELPER" review-dossier)"
 | 조건 | 리뷰어 |
 |------|--------|
 | `--opus-review` | Opus sub-agent (Codex 리뷰 스킵) |
-| 1~2회차 기본 | `/codex:adversarial-review --base "$REVIEW_BASE"` |
-| 3회차~ 기본 | `/codex:review --base "$REVIEW_BASE"` |
+| 1~2회차 기본 | `/codex:adversarial-review --base "$REVIEW_BASE" --model gpt-5.5` |
+| 3회차~ 기본 | `/codex:review --base "$REVIEW_BASE" --model gpt-5.5` |
 
-Direct-push repo는 회차와 무관하게 항상 `/codex:adversarial-review`를 사용한다.
+Direct-push repo는 회차와 무관하게 항상 `/codex:adversarial-review --model gpt-5.5`를 사용한다.
+
+Codex 리뷰어는 항상 `--model gpt-5.5`를 명시적으로 전달한다. 사용자별 `~/.codex/config.toml` default model이 달라도 dev-cycle Step 6 리뷰는 동일한 reviewer 모델로 고정되어, cycle 간 finding 품질이 model 선택에 의해 흔들리지 않도록 한다.
 
 - 리뷰어(Codex 또는 Opus)에게 넘기는 입력은 full repo가 아니라 `CHANGE_SCOPE_JSON.review_inputs`, dossier summary/risk triggers, 필요한 call site/검증 출력으로 제한한다. 이전 pass의 전체 transcript를 재사용하지 말고, 필요한 경우 이전 actionable finding 요약만 넘긴다.
 - Direct-push repo와 Standard repo 모두 같은 입력 규칙을 쓴다. commit 전 local diff와 untracked files가 있으면 반드시 포함한다.
